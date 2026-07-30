@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17120d">
+  <title>The Common Confessor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/game.css">
+</head>
+<body>
+  <canvas id="church-canvas" aria-label="A painterly overhead view of the village church"></canvas>
+  <div class="vignette"></div>
+
+  <section id="start-screen" class="full-overlay">
+    <div class="start-card parchment">
+      <p class="eyebrow">A living parish, 1500s</p>
+      <h1>The Common Confessor</h1>
+      <p>You are the priest of a village whose 200 named souls will remember your counsel, act upon it, and change one another.</p>
+      <label>World seed <input id="seed-input" maxlength="50"></label>
+      <div class="start-actions">
+        <button id="new-game" class="primary">Open the parish register</button>
+        <button id="continue-game" hidden>Continue saved parish</button>
+      </div>
+      <p class="small">Uses The Common Crown's local Gemma model when available. Deterministic parish rules remain active offline.</p>
+    </div>
+  </section>
+
+  <header id="top-bar" class="wood-panel game-ui" hidden>
+    <div>
+      <p class="eyebrow">The Common Confessor</p>
+      <strong id="calendar-label"></strong>
+    </div>
+    <div class="top-actions">
+      <span id="ai-status" data-state="checking">Gemma: checking...</span>
+      <button id="save-game">Save</button>
+      <button id="open-register">Parish Register</button>
+      <button id="open-chronicle">Chronicle</button>
+    </div>
+  </header>
+
+  <aside id="town-panel" class="parchment game-ui" hidden>
+    <p class="eyebrow">Your parish</p>
+    <h2 id="town-name"></h2>
+    <p id="town-description" class="small"></p>
+    <dl id="town-metrics"></dl>
+    <div class="population-line"><span>Living population</span><strong id="population-count">200</strong></div>
+  </aside>
+
+  <aside id="visitor-panel" class="parchment game-ui" hidden>
+    <p class="eyebrow" id="location-name"></p>
+    <h2 id="visitor-name"></h2>
+    <p id="visitor-summary"></p>
+    <div class="visitor-facts">
+      <span id="visitor-occupation"></span>
+      <span id="visitor-age"></span>
+      <span id="visitor-mood"></span>
+    </div>
+    <p id="location-description" class="small"></p>
+    <details>
+      <summary>What you know</summary>
+      <p id="visitor-backstory"></p>
+    </details>
+  </aside>
+
+  <section id="dialogue-panel" class="dialogue-panel game-ui" hidden>
+    <div id="dialogue-log" class="dialogue-log" aria-live="polite"></div>
+    <div class="turn-row">
+      <span id="turn-counter">0 / 10 things said</span>
+      <span id="hour-state">The hour has begun.</span>
+    </div>
+    <form id="counsel-form">
+      <textarea id="counsel-input" maxlength="600" rows="2" placeholder="Type what you say to this person..."></textarea>
+      <button id="speak-button" class="primary" type="submit">Speak</button>
+      <button id="next-hour" type="button">End hour</button>
+    </form>
+  </section>
+
+  <section id="sermon-panel" class="sermon-panel parchment game-ui" hidden>
+    <p class="eyebrow">Sunday service</p>
+    <h2>The village gathers</h2>
+    <p><strong id="attendance-count"></strong> people have come into the church. Choose a theme and preach up to 100 words.</p>
+    <label>Theme <select id="sermon-theme"></select></label>
+    <textarea id="sermon-text" rows="5" maxlength="900" placeholder="Write your sermon..."></textarea>
+    <div class="sermon-actions">
+      <span id="sermon-word-count">0 / 100 words</span>
+      <button id="deliver-sermon" class="primary">Deliver sermon</button>
+    </div>
+  </section>
+
+  <div id="busy-overlay" class="busy-overlay" hidden>
+    <div class="parchment">
+      <div class="spinner"></div>
+      <h2 id="busy-title">The village turns...</h2>
+      <p id="busy-message">Gemma is considering what follows.</p>
+    </div>
+  </div>
+
+  <dialog id="prologue-dialog" class="parchment modal">
+    <p class="eyebrow">Monday, first light</p>
+    <h2 id="prologue-title"></h2>
+    <p id="prologue-text"></p>
+    <p>The parish register contains exactly <strong>200 names</strong>. Their personalities and histories will emerge only when counsel or consequence brings them into the story.</p>
+    <button id="begin-monday" class="primary">Receive the first visitor</button>
+  </dialog>
+
+  <dialog id="register-dialog" class="parchment modal wide">
+    <header><div><p class="eyebrow">All named souls</p><h2>Parish Register</h2></div><button data-close="register-dialog">Close</button></header>
+    <input id="register-search" placeholder="Search 200+ names and occupations...">
+    <div id="register-list" class="register-list"></div>
+  </dialog>
+
+  <dialog id="chronicle-dialog" class="parchment modal wide">
+    <header><div><p class="eyebrow">Cause and consequence</p><h2>Village Chronicle</h2></div><button data-close="chronicle-dialog">Close</button></header>
+    <div id="chronicle-list" class="chronicle-list"></div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
