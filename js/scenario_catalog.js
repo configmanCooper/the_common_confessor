@@ -42,13 +42,35 @@ const FAMILIES = [
 ];
 
 const VARIANTS = [
-  "The decision is driven by hunger after the poor harvest.",
-  "A household debt makes the profitable choice difficult to refuse.",
-  "A private promise to a family member complicates the honest course."
+  "The poor harvest and the hunger around us make the choice harder.",
+  "My household debt makes the profitable choice difficult to refuse.",
+  "A private promise I made to my family complicates the honest course."
 ];
 
 function fill(template, context) {
   return template.replace(/\{(\w+)\}/g, (_match, key) => String(context[key] ?? key));
+}
+
+function spokenOpening(template, context) {
+  return fill(
+    template
+      .replace(/\{person\}'s/g, "My")
+      .replace(/\bentrusted \{person\}\b/g, "entrusted me")
+      .replace(/\{person\} is\b/g, "I am")
+      .replace(/\{person\}\s+/g, "I "),
+    context
+  );
+}
+
+function openingLead(kinds) {
+  if (kinds.includes("confession")) return "Father, I need to speak plainly.";
+  if (kinds.some((kind) => ["family counsel", "private counsel", "decision"].includes(kind))) {
+    return "Father, I need your counsel.";
+  }
+  if (kinds.some((kind) => ["grave conscience", "faith"].includes(kind))) {
+    return "Father, this matter weighs on my conscience.";
+  }
+  return "Father, I have come about a trouble in the village.";
 }
 
 export function buildGeneratedScenarioArchetypes(context) {
@@ -56,7 +78,7 @@ export function buildGeneratedScenarioArchetypes(context) {
     VARIANTS.map((motive, index) => ({
       id: `${id}_${index + 1}`,
       kinds,
-      opening: `${fill(premise, context)} ${fill(harm, context)} ${motive}`,
+      opening: `${openingLead(kinds)} ${spokenOpening(premise, context)} ${spokenOpening(harm, context)} ${motive}`,
       facts: [
         fill(premise, context),
         fill(harm, context),

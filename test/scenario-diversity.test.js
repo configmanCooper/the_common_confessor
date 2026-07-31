@@ -1,10 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { beginVisit, createGame } from "../js/simulation.js";
-import { GENERATED_SCENARIO_ARCHETYPE_COUNT } from "../js/scenario_catalog.js";
+import {
+  buildGeneratedScenarioArchetypes,
+  GENERATED_SCENARIO_ARCHETYPE_COUNT
+} from "../js/scenario_catalog.js";
 
 test("scenario catalog contains at least one hundred generated archetypes", () => {
   assert.ok(GENERATED_SCENARIO_ARCHETYPE_COUNT >= 100, GENERATED_SCENARIO_ARCHETYPE_COUNT);
+});
+
+test("generated openings speak in the visitor's voice instead of narrating the visitor", () => {
+  const scenarios = buildGeneratedScenarioArchetypes({
+    person: "Radel Roseham",
+    relation: "Odowyn Oakshaw",
+    victim: "Anias Applecombe",
+    official: "Oswyn Page",
+    resource: "the common field",
+    sum: 8,
+    deadlineDays: 4
+  });
+  for (const scenario of scenarios) {
+    assert.match(scenario.opening, /^Father,/);
+    assert.doesNotMatch(scenario.opening, /\bRadel Roseham\b/);
+  }
+  const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
+  assert.match(grain.opening, /I diverted 8 sacks of grain/i);
+  assert.match(grain.opening, /My household debt/i);
 });
 
 test("consecutive visitors avoid recently used scenario archetypes", () => {
