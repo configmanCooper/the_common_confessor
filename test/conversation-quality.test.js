@@ -271,6 +271,34 @@ test("anything else about the current matter does not invent a new topic", async
   assert.doesNotMatch(response.reply, /neglecting prayer|one other thing/i);
 });
 
+test("help convincing a named person remains within the current dispute", async () => {
+  const { state, visit, person } = groundedDecisionState("convince-current-person");
+  const oswyn = state.residents.find((resident) => resident.id !== person.id);
+  oswyn.firstName = "Oswyn";
+  oswyn.name = "Oswyn Page";
+  visit.scenarioFacts = [
+    {
+      id: "mechanism",
+      text: "Oswyn Page demanded more tax than the written assessment.",
+      anchors: ["oswyn", "tax", "assessment"]
+    },
+    {
+      id: "alternative",
+      text: "Collect copies of receipts and appeal the excess together.",
+      anchors: ["receipts", "appeal", "excess"]
+    }
+  ];
+  const client = repeatingClient();
+  const response = await client.conversation(
+    state,
+    person,
+    "Is there anything else I can do to help convince Oswyn?"
+  );
+  assert.match(response.reply, /Oswyn Page/i);
+  assert.match(response.reply, /evidence|receipts|direct answer/i);
+  assert.doesNotMatch(response.reply, /neglecting prayer|one other thing/i);
+});
+
 test("shared prayer is answered as prayer instead of mistaken for a factual question", async () => {
   const { state, visit, person } = groundedDecisionState("shared-prayer");
   visit.scenarioFacts = [{

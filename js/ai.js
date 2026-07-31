@@ -94,7 +94,11 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
       fallbackReply: `Yes, Father. Speak with ${mentionedPerson.name}, but ask for the facts plainly before naming me as the source. ${supportingFact?.text || "A private meeting may resolve this without widening the dispute."}`
     };
   }
-  const currentMatterHelp = /\b(?:anything else|what else|any other way)\b.*\b(?:help here|help with this|do here|do about this|for this matter)\b/.test(speech);
+  const asksForMoreHelp = /\b(?:anything else|what else|any other way)\b/.test(speech);
+  const currentMatterHelp = asksForMoreHelp && (
+    /\b(?:help here|help with this|do here|do about this|for this matter|help (?:convince|persuade)|deal with|resolve this)\b/.test(speech)
+    || Boolean(mentionedPerson)
+  );
   if (currentMatterHelp) {
     const alternative = (visit.scenarioFacts || []).find((fact) => fact.id === "alternative")?.text;
     return {
@@ -103,8 +107,10 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
       minimumMatches: 1,
       requiredTerms: ["also", "could", "help"],
       responsePattern: /\b(?:you could also|another way|what would help|please|speak with|ask|bring|gather)\b/i,
-      fallbackReply: alternative
-        ? `There is one more way you could help with this matter, Father: ${alternative}`
+      fallbackReply: mentionedPerson
+        ? `Yes, Father. When you approach ${mentionedPerson.name}, bring the evidence and ask for a direct answer rather than relying on persuasion alone. ${alternative || "That would help keep this matter focused on facts instead of fear."}`
+        : alternative
+          ? `There is one more way you could help with this matter, Father: ${alternative}`
         : "There is one more thing you could do here, Father: help me bring the right people and evidence together before the dispute spreads."
     };
   }
