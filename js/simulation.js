@@ -14,6 +14,17 @@ import {
   TRAITS,
   WEEK_DAYS
 } from "./data.js";
+import {
+  appendCommand,
+  appendEvent,
+  createDefaultPriest,
+  createHouseholds,
+  registerReplayVerifier,
+  restoreReplayBase,
+  sealState,
+  STATE_SCHEMA_VERSION
+} from "./state.js";
+import { validateSermonResponse } from "./ai.js";
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -155,19 +166,26 @@ export function createGame(seed = String(Date.now())) {
   const normalizedSeed = String(seed).trim() || String(Date.now());
   const rng = new SeededRng(normalizedSeed);
   const town = makeTown(normalizedSeed, rng);
+  const residents = createResidents(normalizedSeed, rng);
   const state = {
-    version: 1,
+    version: STATE_SCHEMA_VERSION,
+    schemaVersion: STATE_SCHEMA_VERSION,
     seed: normalizedSeed,
     town,
-    residents: createResidents(normalizedSeed, rng),
+    priest: createDefaultPriest(),
+    residents,
+    households: createHouseholds(residents),
+    externalActors: [],
+    eventQueue: [],
     calendar: { absoluteDay: 0, week: 1, dayIndex: 0, slot: 0 },
     currentVisit: null,
-    chronicle: [{
-      day: 0,
-      title: `A new cure begins in ${town.name}`,
-      text: town.description,
-      tone: "neutral"
-    }],
+    chronicle: [],
+    events: [],
+    commandLog: [],
+    aiProposals: [],
+    nextEventSequence: 1,
+    nextCommandSequence: 1,
+    replayBase: null,
     sermons: [],
     conversationHistory: [],
     settings: { aiEnabled: true },
@@ -181,8 +199,13 @@ export function createGame(seed = String(Date.now())) {
       departures: 0
     }
   };
+  addChronicle(state, `A new cure begins in ${town.name}`, town.description, "neutral", {
+    type: "world_started",
+    parentId: null,
+    facts: { population: 200, town: town.name }
+  });
   addChronicle(state, "The parish register opens", "Exactly 200 living villagers are entered by name. Their inward lives remain unknown until events draw them into the parish story.", "faith");
-  return state;
+  return sealState(state);
 }
 
 export function materializeResident(state, personId, revealProfile = false) {
@@ -233,7 +256,7 @@ function issueForPerson(state, person) {
   return issue;
 }
 
-export function beginVisit(state) {
+export function beginVisit(state, { record = true } = {}) {
   if (state.calendar.dayIndex === 6) {
     throw new Error("Sunday is reserved for the parish service");
   }
@@ -256,13 +279,20 @@ export function beginVisit(state) {
   const eventRoll = rng.next();
   person.visitCount += 1;
   person.lastVisitDay = state.calendar.absoluteDay;
+  const originEvent = appendEvent(state, {
+    type: "visit_started",
+    parentId: state.events.at(-1)?.id || null,
+    actorId: person.id,
+    facts: { issueKind: issue.kind, location: issue.location }
+  });
   state.currentVisit = {
+    visitId: `visit-${state.calendar.absoluteDay}-${state.calendar.slot}-${person.id}`,
     personId: person.id,
     issue,
     location: issue.location,
     turnsUsed: 0,
     maxTurns: 10,
-    startedAt: Date.now(),
+    originEventId: originEvent.id,
     history: [{ speaker: "visitor", text: issue.opening }],
     counsel: [],
     mood: issue.gravity >= 4 ? "troubled" : "guarded",
@@ -271,13 +301,19 @@ export function beginVisit(state) {
   if (issue.kind === "confession") {
     state.statistics.confessions += 1;
   }
+  if (record) {
+    appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
+  }
   return state.currentVisit;
 }
 
-export function recordExchange(state, playerText, response) {
+export function recordExchange(state, playerText, response, { record = true } = {}) {
   const visit = state.currentVisit;
   if (!visit) {
     throw new Error("There is no visitor in the church");
+  }
+  if (visit.turnsUsed >= visit.maxTurns) {
+    throw new Error("The hour is already spent");
   }
   const person = materializeResident(state, visit.personId, true);
   const cleanText = String(playerText).trim().slice(0, 600);
@@ -300,6 +336,18 @@ export function recordExchange(state, playerText, response) {
     person.memories = person.memories.slice(-8);
   }
   state.statistics.conversations += 1;
+  if (record) {
+    appendCommand(state, "conversation_exchange", {
+      playerText: cleanText,
+      response: {
+        reply,
+        mood: response.mood || visit.mood,
+        trustDelta: clamp(response.trustDelta, -5, 5),
+        stressDelta: clamp(response.stressDelta, -5, 5),
+        memory: String(response.memory || "").slice(0, 180)
+      }
+    }, response.source || "simulation");
+  }
   return visit;
 }
 
@@ -350,8 +398,16 @@ export function fallbackConversation(state, playerText) {
   };
 }
 
-function addChronicle(state, title, text, tone = "neutral") {
+function addChronicle(state, title, text, tone = "neutral", event = {}) {
+  const storedEvent = appendEvent(state, {
+    type: event.type || "chronicle_event",
+    parentId: event.parentId === undefined ? (state.events.at(-1)?.id || null) : event.parentId,
+    actorId: event.actorId ?? null,
+    targetId: event.targetId ?? null,
+    facts: { title: String(title).slice(0, 120), tone, ...(event.facts || {}) }
+  });
   state.chronicle.unshift({
+    eventId: storedEvent.id,
     day: state.calendar.absoluteDay,
     title: String(title).slice(0, 120),
     text: String(text).slice(0, 700),
@@ -477,8 +533,20 @@ export function applyAction(state, step) {
 
   const description = step.description
     || `${actor.name} chose to ${step.actionType.replaceAll("_", " ")}${target ? ` with ${target.name}` : ""}.`;
-  addChronicle(state, step.title || step.actionType.replaceAll("_", " "), description, Object.values(deltas).some((value) => value < 0) ? "danger" : "change");
-  return { actor, target, description };
+  addChronicle(
+    state,
+    step.title || step.actionType.replaceAll("_", " "),
+    description,
+    Object.values(deltas).some((value) => value < 0) ? "danger" : "change",
+    {
+      type: "person_action",
+      parentId: step.parentEventId ?? state.currentVisit?.originEventId ?? state.events.at(-1)?.id ?? null,
+      actorId: actor.id,
+      targetId: target?.id ?? null,
+      facts: { actionType: step.actionType, intensity }
+    }
+  );
+  return { actor, target, description, eventId: state.chronicle[0].eventId };
 }
 
 export function fallbackDeparturePlan(state) {
@@ -554,7 +622,14 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
   const visit = state.currentVisit;
   if (!visit) return { summary: "", steps: [] };
   const candidateMap = new Map(candidates.filter((person) => person?.active).map((person) => [person.id, person]));
-  const rawSteps = Array.isArray(plan?.steps) ? plan.steps.slice(0, 3) : [];
+  const rawSteps = Array.isArray(plan?.steps) ? plan.steps : [];
+  if (rawSteps.length < 1 || rawSteps.length > 3) {
+    return {
+      summary: `${candidateMap.get(visit.personId)?.name || "The visitor"} acted after the hour's counsel.`,
+      steps: [],
+      complete: false
+    };
+  }
   const steps = [];
   let expectedActorId = visit.personId;
   const maximumIntensity = maximumIntensityForLicense(visit.eventLicense);
@@ -586,17 +661,27 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
   }
   return {
     summary: `${candidateMap.get(visit.personId)?.name || "The visitor"} acted after the hour's counsel.`,
-    steps
+    steps,
+    complete: rawSteps.length > 0 && steps.length === rawSteps.length
   };
 }
 
-export function finishVisit(state, plan) {
+export function finishVisit(state, plan, { record = true } = {}) {
   const visit = state.currentVisit;
   if (!visit) throw new Error("There is no visit to finish");
   const person = materializeResident(state, visit.personId, true);
+  const submittedByAi = plan?.source === "ai";
   let validated = validateDeparturePlan(state, plan);
-  if (!validated.steps.length) validated = validateDeparturePlan(state, fallbackDeparturePlan(state));
-  if (!validated.steps.length) {
+  const acceptedAiProposal = submittedByAi && validated.complete;
+  const rejectedProposal = submittedByAi && !acceptedAiProposal
+    ? {
+      summary: String(plan?.summary || "").slice(0, 400),
+      submittedStepCount: Array.isArray(plan?.steps) ? plan.steps.length : 0,
+      steps: Array.isArray(plan?.steps) ? plan.steps.slice(0, 10) : []
+    }
+    : null;
+  if (!validated.complete) validated = validateDeparturePlan(state, fallbackDeparturePlan(state));
+  if (!validated.complete) {
     validated = validateDeparturePlan(state, {
       summary: `${person.name} left with the matter unresolved.`,
       steps: [{
@@ -607,10 +692,22 @@ export function finishVisit(state, plan) {
       }]
     });
   }
+  let parentEventId = visit.originEventId;
   for (const step of validated.steps) {
-    if (applyAction(state, step)) state.statistics.cascades += 1;
+    const result = applyAction(state, { ...step, parentEventId });
+    if (result) {
+      parentEventId = result.eventId;
+      state.statistics.cascades += 1;
+    }
   }
   person.memories.push(`On ${calendarLabel(state)}, the parish counsel ended: ${String(validated.summary || "The hour left its mark.").slice(0, 180)}`);
+  if (record) {
+    appendCommand(state, "finish_visit", {
+      plan: { summary: validated.summary, steps: validated.steps },
+      rejectedProposal,
+      resolution: acceptedAiProposal ? "accepted_ai" : rejectedProposal ? "fallback_after_rejection" : "fallback"
+    }, acceptedAiProposal ? "ai" : (plan?.source || "simulation") === "ai" ? "fallback" : (plan?.source || "simulation"));
+  }
   state.currentVisit = null;
   state.conversationHistory = [];
   state.calendar.slot += 1;
@@ -661,14 +758,17 @@ export function fallbackSermonOutcome(state, theme, text) {
   };
 }
 
-export function applySermon(state, theme, text, outcome) {
+export function applySermon(state, theme, text, outcome, { record = true } = {}) {
   if (state.calendar.dayIndex !== 6) throw new Error("Sermons are delivered on Sunday");
   if (!SERMON_THEMES.includes(theme)) throw new Error("Unknown sermon theme");
   const wordCount = String(text).trim().split(/\s+/).filter(Boolean).length;
   if (!wordCount || wordCount > 100) throw new Error("The sermon must contain 1 to 100 words");
   const attendees = sundayAttendance(state);
   const attendeeIds = new Set(attendees.map((person) => person.id));
-  const deltas = outcome?.townDeltas || {};
+  const deltas = Object.fromEntries(Object.keys(state.town.metrics).map((metric) => [
+    metric,
+    Math.round(clamp(outcome?.townDeltas?.[metric], -8, 8))
+  ]));
   for (const metric of Object.keys(state.town.metrics)) {
     state.town.metrics[metric] = clamp(state.town.metrics[metric] + clamp(deltas[metric], -8, 8));
   }
@@ -705,7 +805,21 @@ export function applySermon(state, theme, text, outcome) {
     attendance: attendees.length,
     summary: mechanicalSummary
   });
-  addChronicle(state, `A sermon on ${theme}`, `${attendees.length} villagers attended. ${mechanicalSummary}`, "faith");
+  addChronicle(state, `A sermon on ${theme}`, `${attendees.length} villagers attended. ${mechanicalSummary}`, "faith", {
+    type: "sermon_delivered",
+    facts: { theme, attendance: attendees.length, townDeltas: deltas }
+  });
+  if (record) {
+    appendCommand(state, "deliver_sermon", {
+      theme,
+      text,
+      outcome: {
+        townDeltas: { ...deltas },
+        responseTags: [...(outcome?.responseTags || [])],
+        notableEffects: [...(outcome?.notableEffects || [])]
+      }
+    }, outcome?.source || "simulation");
+  }
   state.calendar.absoluteDay += 1;
   state.calendar.dayIndex = state.calendar.absoluteDay % 7;
   state.calendar.week = Math.floor(state.calendar.absoluteDay / 7) + 1;
@@ -725,3 +839,49 @@ export function populationCount(state) {
 export function knownResidents(state) {
   return state.residents.filter((person) => person.profileRevealed);
 }
+
+export function replayGame(seed, commands, replayBase = null) {
+  const state = replayBase ? restoreReplayBase(replayBase) : createGame(seed);
+  for (const command of commands) {
+    if (command.day !== state.calendar.absoluteDay || command.slot !== state.calendar.slot) {
+      throw new Error(`Replay metadata mismatch at command ${command.id}`);
+    }
+    if (command.type === "begin_visit") {
+      const visit = beginVisit(state, { record: false });
+      if (visit.personId !== command.payload.personId || visit.visitId !== command.payload.visitId) {
+        throw new Error(`Replay visitor mismatch at command ${command.id}`);
+      }
+    } else if (command.type === "conversation_exchange") {
+      recordExchange(state, command.payload.playerText, {
+        ...command.payload.response,
+        source: command.source
+      }, { record: false });
+    } else if (command.type === "finish_visit") {
+      finishVisit(state, { ...command.payload.plan, source: command.source }, { record: false });
+    } else if (command.type === "deliver_sermon") {
+      const attendees = sundayAttendance(state);
+      const validatedOutcome = validateSermonResponse(
+        command.payload.outcome,
+        attendees.map((person) => person.id)
+      );
+      applySermon(state, command.payload.theme, command.payload.text, {
+        ...validatedOutcome,
+        source: command.source
+      }, { record: false });
+    } else {
+      throw new Error(`Unknown replay command: ${command.type}`);
+    }
+  }
+  state.commandLog = JSON.parse(JSON.stringify(commands));
+  state.nextCommandSequence = commands.length + 1;
+  state.aiProposals = commands
+    .filter((command) => command.source === "ai")
+    .map((command, index) => ({
+      id: `proposal-${String(index + 1).padStart(6, "0")}`,
+      commandId: command.id
+    }));
+  state.replayBase = replayBase ? JSON.parse(JSON.stringify(replayBase)) : null;
+  return state;
+}
+
+registerReplayVerifier(replayGame);

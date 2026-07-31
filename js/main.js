@@ -17,15 +17,27 @@ import {
   recordExchange,
   sundayAttendance
 } from "./simulation.js";
+import { compactReplayHistory, deserializeState, serializeState } from "./state.js";
+import { queueAutosave, readAutosaves } from "./storage.js";
 
-const SAVE_KEY = "the-common-confessor-save-v1";
+const SAVE_KEY = "the-common-confessor-save-v2";
+const LEGACY_SAVE_KEY = "the-common-confessor-save-v1";
+const LEGACY_AUTOSAVE_KEYS = [
+  "the-common-confessor-autosave-0",
+  "the-common-confessor-autosave-1",
+  "the-common-confessor-autosave-2"
+];
 const elements = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const renderer = new ChurchRenderer(elements["church-canvas"]);
 const ai = new ParishAiClient();
 let state = null;
 let aiReady = false;
 let conversationInFlight = false;
+let departureInFlight = false;
 let sermonInFlight = false;
+let stateGeneration = 0;
+let initializationComplete = false;
+let startActionInFlight = false;
 let toastTimer = null;
 
 function setHidden(element, hidden) {
@@ -45,25 +57,158 @@ function setBusy(busy, title = "The village turns...", message = "Gemma is consi
   elements["busy-message"].textContent = message;
 }
 
-function saveGame(silent = false) {
+function createSaveEnvelope(serialized, savedAt = Date.now()) {
+  return JSON.stringify({
+    format: "the-common-confessor-save",
+    savedAt,
+    data: serialized
+  });
+}
+
+function decodeSaveEnvelope(stored) {
+  try {
+    const envelope = JSON.parse(stored);
+    if (envelope?.format === "the-common-confessor-save"
+      && Number.isFinite(envelope.savedAt)
+      && typeof envelope.data === "string") {
+      return { savedAt: envelope.savedAt, serialized: envelope.data };
+    }
+  } catch {
+    // Legacy and corrupt payloads are handled by the state parser below.
+  }
+  return { savedAt: 0, serialized: stored };
+}
+
+function readLocalStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (error) {
+    console.warn(`localStorage read failed for ${key}:`, error);
+    return null;
+  }
+}
+
+function writeLocalStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn(`localStorage write failed for ${key}:`, error);
+    return false;
+  }
+}
+
+function removeLocalStorage(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.warn(`localStorage removal failed for ${key}:`, error);
+  }
+}
+
+function setStartActionsDisabled(disabled) {
+  elements["new-game"].disabled = disabled;
+  elements["continue-game"].disabled = disabled;
+  elements["start-import-game"].disabled = disabled;
+  elements["import-game"].disabled = disabled;
+}
+
+function setGameplayMutationDisabled(disabled) {
+  elements["speak-button"].disabled = disabled;
+  elements["counsel-input"].disabled = disabled;
+  elements["next-hour"].disabled = disabled;
+  elements["deliver-sermon"].disabled = disabled;
+  elements["sermon-theme"].disabled = disabled;
+  elements["sermon-text"].disabled = disabled;
+}
+
+function restoreGameplayControls() {
+  if (state?.currentVisit) {
+    const hourSpent = state.currentVisit.turnsUsed >= state.currentVisit.maxTurns;
+    const blocked = startActionInFlight || conversationInFlight || departureInFlight;
+    elements["speak-button"].disabled = blocked || hourSpent;
+    elements["counsel-input"].disabled = blocked || hourSpent;
+    elements["next-hour"].disabled = blocked;
+  } else if (state?.calendar.dayIndex === 6) {
+    const blocked = startActionInFlight || sermonInFlight;
+    elements["deliver-sermon"].disabled = blocked;
+    elements["sermon-theme"].disabled = blocked;
+    elements["sermon-text"].disabled = blocked;
+  }
+}
+
+function saveGame(silent = false, automatic = false) {
   if (!state) return;
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+    const serialized = serializeState(state);
+    const envelope = createSaveEnvelope(serialized);
+    const autosavePromise = automatic ? queueAutosave(envelope) : null;
+    autosavePromise?.catch((error) => console.warn("IndexedDB autosave failed:", error));
+    const primarySaved = writeLocalStorage(SAVE_KEY, envelope);
+    if (primarySaved) {
+      removeLocalStorage(LEGACY_SAVE_KEY);
+    } else if (autosavePromise) {
+      autosavePromise.then(() => removeLocalStorage(LEGACY_SAVE_KEY)).catch(() => {});
+    }
+    LEGACY_AUTOSAVE_KEYS.forEach(removeLocalStorage);
+    if (!primarySaved && !automatic) throw new Error("Browser primary storage is unavailable");
     if (!silent) showToast("Parish saved.");
   } catch (error) {
     showToast(`Save failed: ${error.message}`);
   }
 }
 
-function loadSavedGame() {
-  const raw = localStorage.getItem(SAVE_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed?.version === 1 && Array.isArray(parsed.residents) ? parsed : null;
-  } catch {
-    return null;
+async function loadSavedGame() {
+  async function promote(loaded, legacyRaw = null) {
+    const serialized = serializeState(loaded);
+    const envelope = createSaveEnvelope(serialized);
+    if (legacyRaw) removeLocalStorage(LEGACY_SAVE_KEY);
+    if (writeLocalStorage(SAVE_KEY, envelope)) {
+      removeLocalStorage(LEGACY_SAVE_KEY);
+      return loaded;
+    }
+    console.warn("Validated parish could not be promoted to localStorage.");
+    if (legacyRaw) {
+      if (!writeLocalStorage(LEGACY_SAVE_KEY, legacyRaw)) {
+        console.warn("Legacy save rollback failed.");
+      }
+    }
+    try {
+      await queueAutosave(envelope);
+    } catch (autosaveError) {
+      console.warn("Validated parish could not be promoted to IndexedDB:", autosaveError);
+    }
+    return loaded;
   }
+
+  const candidates = [];
+  const primary = readLocalStorage(SAVE_KEY);
+  if (primary) candidates.push({ source: "primary", raw: primary });
+  try {
+    for (const raw of await readAutosaves()) candidates.push({ source: "autosave", raw });
+  } catch (error) {
+    console.warn("IndexedDB autosave recovery is unavailable:", error);
+  }
+  const legacy = readLocalStorage(LEGACY_SAVE_KEY);
+  if (legacy) candidates.push({ source: "legacy", raw: legacy });
+
+  const valid = [];
+  for (const candidate of candidates) {
+    const decoded = decodeSaveEnvelope(candidate.raw);
+    try {
+      valid.push({
+        ...candidate,
+        savedAt: decoded.savedAt,
+        loaded: deserializeState(decoded.serialized)
+      });
+    } catch (error) {
+      console.warn(`${candidate.source} saved parish could not be loaded:`, error);
+    }
+  }
+  if (!valid.length) return null;
+  valid.sort((left, right) => right.savedAt - left.savedAt);
+  const newest = valid[0];
+  return promote(newest.loaded, newest.source === "legacy" ? newest.raw : null);
 }
 
 async function refreshAiStatus() {
@@ -145,7 +290,6 @@ function showVisit() {
   visit.history.forEach((line) => appendDialogue(line.speaker === "visitor" ? "visitor" : "priest", line.text));
   renderCommon();
   renderVisit();
-  saveGame(true);
   setTimeout(() => elements["counsel-input"].focus(), 400);
 }
 
@@ -159,7 +303,6 @@ function showSunday() {
   elements["sermon-text"].value = "";
   elements["sermon-word-count"].textContent = "0 / 100 words";
   renderCommon();
-  saveGame(true);
 }
 
 function proceedToCurrentPeriod() {
@@ -168,21 +311,39 @@ function proceedToCurrentPeriod() {
 }
 
 async function endHour() {
-  if (!state.currentVisit || conversationInFlight) return;
+  if (startActionInFlight || !state.currentVisit || conversationInFlight || departureInFlight) return;
   const person = materializeResident(state, state.currentVisit.personId, true);
+  const requestState = state;
+  const generation = stateGeneration;
+  const visitToken = state.currentVisit.visitId;
   elements["speak-button"].disabled = true;
   elements["next-hour"].disabled = true;
+  departureInFlight = true;
   setBusy(true, `${person.name} leaves the church`, "Their counsel may pass through as many as three lives before the hour is truly over.");
   let plan;
   try {
-    plan = aiReady && state.settings.aiEnabled
-      ? await ai.departure(state, departureCandidates(state))
-      : fallbackDeparturePlan(state);
+    const usedAi = aiReady && state.settings.aiEnabled;
+    plan = usedAi
+      ? { ...(await ai.departure(requestState, departureCandidates(requestState))), source: "ai" }
+      : { ...fallbackDeparturePlan(requestState), source: "fallback" };
   } catch (error) {
-    plan = fallbackDeparturePlan(state);
+    if (generation !== stateGeneration || state !== requestState) {
+      setBusy(false);
+      return;
+    }
+    plan = error.rejectedProposal
+      ? { ...error.rejectedProposal, source: "ai" }
+      : { ...fallbackDeparturePlan(requestState), source: "fallback" };
     showToast(`Gemma unavailable; parish rules resolved the consequence. ${error.message}`);
   }
-  finishVisit(state, plan);
+  if (generation !== stateGeneration || state.currentVisit?.visitId !== visitToken) {
+    setBusy(false);
+    return;
+  }
+  departureInFlight = false;
+  finishVisit(requestState, plan);
+  compactReplayHistory(requestState);
+  saveGame(true, true);
   renderer.clearVisitor();
   setBusy(false);
   elements["next-hour"].disabled = false;
@@ -192,10 +353,13 @@ async function endHour() {
 
 async function submitCounsel(event) {
   event.preventDefault();
+  if (startActionInFlight || conversationInFlight || departureInFlight) return;
   const text = elements["counsel-input"].value.trim();
   if (!text || !state.currentVisit || state.currentVisit.turnsUsed >= 10) return;
   const person = materializeResident(state, state.currentVisit.personId, true);
-  const visitToken = `${state.currentVisit.personId}:${state.currentVisit.startedAt}`;
+  const requestState = state;
+  const visitToken = state.currentVisit.visitId;
+  const generation = stateGeneration;
   appendDialogue("priest", text);
   elements["counsel-input"].value = "";
   elements["speak-button"].disabled = true;
@@ -205,20 +369,22 @@ async function submitCounsel(event) {
   elements["hour-state"].textContent = `${person.firstName} considers your words...`;
   let response;
   try {
-    response = aiReady && state.settings.aiEnabled
-      ? await ai.conversation(state, person, text)
-      : fallbackConversation(state, text);
+    const usedAi = aiReady && state.settings.aiEnabled;
+    response = usedAi
+      ? { ...(await ai.conversation(requestState, person, text)), source: "ai" }
+      : { ...fallbackConversation(requestState, text), source: "fallback" };
   } catch (error) {
-    response = fallbackConversation(state, text);
+    if (generation !== stateGeneration || state !== requestState) return;
+    response = { ...fallbackConversation(requestState, text), source: "fallback" };
     showToast(`Gemma did not answer; the visitor continued locally. ${error.message}`);
   }
+  if (generation !== stateGeneration || state !== requestState) return;
   conversationInFlight = false;
-  const currentToken = state.currentVisit ? `${state.currentVisit.personId}:${state.currentVisit.startedAt}` : "";
-  if (currentToken !== visitToken) return;
-  recordExchange(state, text, response);
+  const currentToken = state.currentVisit?.visitId || "";
+  if (generation !== stateGeneration || currentToken !== visitToken) return;
+  recordExchange(requestState, text, response);
   appendDialogue("visitor", response.reply);
   renderVisit();
-  saveGame(true);
   if (state.currentVisit.turnsUsed >= state.currentVisit.maxTurns) {
     elements["hour-state"].textContent = "Ten things have been said. The hour is spent.";
     elements["next-hour"].disabled = false;
@@ -231,7 +397,7 @@ async function submitCounsel(event) {
 }
 
 async function deliverSermon() {
-  if (sermonInFlight || state.calendar.dayIndex !== 6) return;
+  if (startActionInFlight || sermonInFlight || state.calendar.dayIndex !== 6) return;
   const text = elements["sermon-text"].value.trim();
   const words = text.split(/\s+/).filter(Boolean);
   if (!words.length || words.length > 100) {
@@ -240,7 +406,9 @@ async function deliverSermon() {
   }
   const theme = elements["sermon-theme"].value;
   const attendees = sundayAttendance(state);
+  const requestState = state;
   const sermonToken = `${state.calendar.absoluteDay}:${state.calendar.week}`;
+  const generation = stateGeneration;
   sermonInFlight = true;
   elements["deliver-sermon"].disabled = true;
   elements["sermon-theme"].disabled = true;
@@ -248,20 +416,28 @@ async function deliverSermon() {
   setBusy(true, "The congregation listens", "A whole village takes longer to understand than one troubled soul.");
   let outcome;
   try {
-    outcome = aiReady && state.settings.aiEnabled
-      ? await ai.sermon(state, theme, text, attendees)
-      : fallbackSermonOutcome(state, theme, text);
+    const usedAi = aiReady && state.settings.aiEnabled;
+    outcome = usedAi
+      ? { ...(await ai.sermon(requestState, theme, text, attendees)), source: "ai" }
+      : { ...fallbackSermonOutcome(requestState, theme, text), source: "fallback" };
   } catch (error) {
-    outcome = fallbackSermonOutcome(state, theme, text);
+    if (generation !== stateGeneration || state !== requestState) {
+      setBusy(false);
+      return;
+    }
+    outcome = { ...fallbackSermonOutcome(requestState, theme, text), source: "fallback" };
     showToast(`Gemma unavailable; parish rules interpreted the sermon. ${error.message}`);
   }
+  if (generation !== stateGeneration || state !== requestState) return;
   sermonInFlight = false;
   const currentToken = `${state.calendar.absoluteDay}:${state.calendar.week}`;
-  if (state.calendar.dayIndex !== 6 || currentToken !== sermonToken) {
+  if (generation !== stateGeneration || state.calendar.dayIndex !== 6 || currentToken !== sermonToken) {
     setBusy(false);
     return;
   }
-  const count = applySermon(state, theme, text, outcome);
+  const count = applySermon(requestState, theme, text, outcome);
+  compactReplayHistory(requestState);
+  saveGame(true, true);
   elements["deliver-sermon"].disabled = false;
   elements["sermon-theme"].disabled = false;
   elements["sermon-text"].disabled = false;
@@ -309,6 +485,15 @@ function renderChronicle() {
 }
 
 function startGame(nextState, isNew) {
+  stateGeneration += 1;
+  conversationInFlight = false;
+  departureInFlight = false;
+  sermonInFlight = false;
+  setBusy(false);
+  elements["next-hour"].disabled = false;
+  elements["deliver-sermon"].disabled = false;
+  elements["sermon-theme"].disabled = false;
+  elements["sermon-text"].disabled = false;
   state = nextState;
   setHidden(elements["start-screen"], true);
   document.querySelectorAll(".game-ui").forEach((element) => setHidden(element, false));
@@ -326,12 +511,23 @@ function startGame(nextState, isNew) {
 }
 
 elements["new-game"].addEventListener("click", () => {
+  if (!initializationComplete || startActionInFlight) return;
   const seed = elements["seed-input"].value.trim() || `${Date.now()}`;
   startGame(createGame(seed), true);
 });
-elements["continue-game"].addEventListener("click", () => {
-  const saved = loadSavedGame();
-  if (saved) startGame(saved, false);
+elements["continue-game"].addEventListener("click", async () => {
+  if (!initializationComplete || startActionInFlight) return;
+  startActionInFlight = true;
+  const generation = stateGeneration;
+  setStartActionsDisabled(true);
+  setGameplayMutationDisabled(true);
+  try {
+    const saved = await loadSavedGame();
+    if (saved && generation === stateGeneration) startGame(saved, false);
+  } finally {
+    startActionInFlight = false;
+    setStartActionsDisabled(false);
+  }
 });
 elements["begin-monday"].addEventListener("click", () => {
   elements["prologue-dialog"].close();
@@ -340,6 +536,48 @@ elements["begin-monday"].addEventListener("click", () => {
 elements["counsel-form"].addEventListener("submit", submitCounsel);
 elements["next-hour"].addEventListener("click", endHour);
 elements["save-game"].addEventListener("click", () => saveGame());
+elements["export-game"].addEventListener("click", () => {
+  try {
+    const blob = new Blob([serializeState(state)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${state.town.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-week-${state.calendar.week}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (error) {
+    showToast(`Export failed: ${error.message}`);
+  }
+});
+elements["import-game"].addEventListener("click", () => {
+  if (!startActionInFlight) elements["import-file"].click();
+});
+elements["start-import-game"].addEventListener("click", () => {
+  if (initializationComplete && !startActionInFlight) elements["import-file"].click();
+});
+elements["import-file"].addEventListener("change", async (event) => {
+  if (!initializationComplete || startActionInFlight) return;
+  const file = event.target.files?.[0];
+  if (!file) return;
+  startActionInFlight = true;
+  const generation = stateGeneration;
+  setStartActionsDisabled(true);
+  setGameplayMutationDisabled(true);
+  try {
+    const imported = deserializeState(await file.text());
+    if (generation === stateGeneration) {
+      startGame(imported, false);
+      saveGame(true, true);
+      showToast("Imported parish loaded.");
+    }
+  } catch (error) {
+    showToast(`Import failed: ${error.message}`);
+  } finally {
+    startActionInFlight = false;
+    setStartActionsDisabled(false);
+    restoreGameplayControls();
+    event.target.value = "";
+  }
+});
 elements["deliver-sermon"].addEventListener("click", deliverSermon);
 elements["sermon-text"].addEventListener("input", () => {
   const words = elements["sermon-text"].value.trim().split(/\s+/).filter(Boolean).length;
@@ -366,9 +604,22 @@ SERMON_THEMES.forEach((theme) => {
   elements["sermon-theme"].append(option);
 });
 elements["seed-input"].value = `parish-${new Date().toISOString().slice(0, 10)}`;
-const saved = loadSavedGame();
-setHidden(elements["continue-game"], !saved);
-renderer.load().catch((error) => {
-  elements["start-screen"].querySelector(".small").textContent = `Art failed to load: ${error.message}`;
-});
-refreshAiStatus();
+
+async function initialize() {
+  try {
+    const saved = await loadSavedGame();
+    setHidden(elements["continue-game"], !saved);
+  } catch (error) {
+    console.warn("Save recovery failed during initialization:", error);
+    setHidden(elements["continue-game"], true);
+  } finally {
+    initializationComplete = true;
+    setStartActionsDisabled(false);
+    renderer.load().catch((error) => {
+      elements["start-screen"].querySelector(".small").textContent = `Art failed to load: ${error.message}`;
+    });
+    refreshAiStatus();
+  }
+}
+
+initialize();

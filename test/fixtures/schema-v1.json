@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "seed": "legacy-fixture",
+  "town": {
+    "name": "Old Bell",
+    "description": "A legacy parish fixture.",
+    "seed": "legacy-fixture",
+    "metrics": {
+      "harmony": 50,
+      "faith": 50,
+      "prosperity": 50,
+      "health": 50,
+      "safety": 50,
+      "mercy": 50
+    }
+  },
+  "residents": [
+    {
+      "id": "person-001",
+      "name": "Alice Baker",
+      "firstName": "Alice",
+      "surname": "Baker",
+      "sex": "female",
+      "age": 32,
+      "householdId": "household-1",
+      "occupation": "baker",
+      "sprite": 2,
+      "active": true,
+      "profileRevealed": false,
+      "materialized": false,
+      "visitCount": 0,
+      "lastVisitDay": -999,
+      "attendanceChance": 80,
+      "trustPriest": 50,
+      "faith": 50,
+      "morale": 50,
+      "prosperity": 50,
+      "health": 80,
+      "stress": 30,
+      "reputation": 50,
+      "relationshipIds": [],
+      "memories": [],
+      "flags": []
+    }
+  ],
+  "calendar": {
+    "absoluteDay": 0,
+    "week": 1,
+    "dayIndex": 0,
+    "slot": 0
+  },
+  "currentVisit": null,
+  "chronicle": [
+    {
+      "day": 0,
+      "title": "A legacy parish begins",
+      "text": "One old record survives.",
+      "tone": "neutral"
+    }
+  ],
+  "sermons": [],
+  "conversationHistory": [],
+  "settings": {
+    "aiEnabled": true
+  },
+  "statistics": {
+    "conversations": 0,
+    "confessions": 0,
+    "peopleRevealed": 0,
+    "cascades": 0,
+    "births": 0,
+    "arrivals": 0,
+    "departures": 0
+  }
+}

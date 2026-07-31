@@ -4,6 +4,11 @@ function boundedString(value, maximum) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
 }
 
+const CONVERSATION_MOODS = Object.freeze([
+  "guarded", "troubled", "angry", "ashamed", "relieved", "softened",
+  "resolved", "uncertain", "hopeful", "afraid", "contemplative", "wary"
+]);
+
 function parseContent(payload) {
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === "string") return JSON.parse(content);
@@ -17,21 +22,28 @@ const conversationSchema = {
   required: ["reply", "mood", "trustDelta", "stressDelta", "memory"],
   properties: {
     reply: { type: "string", maxLength: 600 },
-    mood: { type: "string", enum: ["guarded", "troubled", "angry", "ashamed", "relieved", "softened", "resolved", "uncertain", "hopeful", "afraid", "contemplative"] },
+    mood: { type: "string", enum: CONVERSATION_MOODS },
     trustDelta: { type: "integer", minimum: -5, maximum: 5 },
     stressDelta: { type: "integer", minimum: -5, maximum: 5 },
     memory: { type: "string", maxLength: 180 }
   }
 };
 
-function validateConversation(value) {
+export function validateConversation(value) {
   const reply = boundedString(value?.reply, 600);
   if (!reply) throw new Error("The visitor gave no reply");
+  if (!CONVERSATION_MOODS.includes(value.mood)) throw new Error("The visitor returned an invalid mood");
+  const trustDelta = Number(value.trustDelta);
+  const stressDelta = Number(value.stressDelta);
+  if (!Number.isInteger(trustDelta) || trustDelta < -5 || trustDelta > 5
+    || !Number.isInteger(stressDelta) || stressDelta < -5 || stressDelta > 5) {
+    throw new Error("The visitor returned invalid emotional changes");
+  }
   return {
     reply,
-    mood: boundedString(value.mood, 30) || "uncertain",
-    trustDelta: Math.max(-5, Math.min(5, Number(value.trustDelta) || 0)),
-    stressDelta: Math.max(-5, Math.min(5, Number(value.stressDelta) || 0)),
+    mood: value.mood,
+    trustDelta,
+    stressDelta,
     memory: boundedString(value.memory, 180)
   };
 }
@@ -55,6 +67,10 @@ export function validateSermonResponse(value, attendeeIds) {
   }
   if (!Array.isArray(value.responseTags) || value.responseTags.length < 1 || value.responseTags.length > 5) {
     throw new Error("The local model returned invalid sermon response tags");
+  }
+  const responseTags = value.responseTags.map((tag) => boundedString(tag, 30));
+  if (responseTags.some((tag) => !tag)) {
+    throw new Error("The local model returned blank sermon response tags");
   }
   if (!Array.isArray(value.notableEffects) || value.notableEffects.length > 16) {
     throw new Error("The local model returned invalid notable sermon effects");
@@ -87,7 +103,7 @@ export function validateSermonResponse(value, attendeeIds) {
   return {
     summary: boundedString(value.summary, 500),
     townDeltas,
-    responseTags: value.responseTags.map((tag) => boundedString(tag, 30)).filter(Boolean),
+    responseTags,
     notableEffects
   };
 }
@@ -244,9 +260,18 @@ export class ParishAiClient extends EventTarget {
       `CONTEXT_JSON=${JSON.stringify(context)}`
     ].join("\n");
     const result = await this.complete(prompt, schema, "departure_cascade", 650, 90000);
+    if (!Array.isArray(result.steps) || result.steps.length < 1 || result.steps.length > 3) {
+      const error = new Error("The local model returned an invalid departure chain length");
+      error.rejectedProposal = {
+        summary: boundedString(result.summary, 400),
+        submittedStepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+        steps: Array.isArray(result.steps) ? result.steps.slice(0, 10) : []
+      };
+      throw error;
+    }
     return {
       summary: boundedString(result.summary, 400),
-      steps: Array.isArray(result.steps) ? result.steps.slice(0, 3) : []
+      steps: result.steps
     };
   }
 

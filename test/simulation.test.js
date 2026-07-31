@@ -70,6 +70,13 @@ test("a visitor materializes and ten exchanges spend the hour", () => {
     });
   }
   assert.equal(state.currentVisit.turnsUsed, 10);
+  assert.throws(() => recordExchange(state, "One more", {
+    reply: "Too late",
+    mood: "resolved",
+    trustDelta: 0,
+    stressDelta: 0,
+    memory: ""
+  }), /hour is already spent/);
 });
 
 test("four visitors advance the calendar to Tuesday", () => {

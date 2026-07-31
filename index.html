@@ -19,8 +19,9 @@
       <p>You are the priest of a village whose 200 named souls will remember your counsel, act upon it, and change one another.</p>
       <label>World seed <input id="seed-input" maxlength="50"></label>
       <div class="start-actions">
-        <button id="new-game" class="primary">Open the parish register</button>
-        <button id="continue-game" hidden>Continue saved parish</button>
+        <button id="new-game" class="primary" disabled>Open the parish register</button>
+        <button id="continue-game" hidden disabled>Continue saved parish</button>
+        <button id="start-import-game" disabled>Import parish</button>
       </div>
       <p class="small">Uses The Common Crown's local Gemma model when available. Deterministic parish rules remain active offline.</p>
     </div>
@@ -34,6 +35,8 @@
     <div class="top-actions">
       <span id="ai-status" data-state="checking">Gemma: checking...</span>
       <button id="save-game">Save</button>
+      <button id="export-game">Export</button>
+      <button id="import-game">Import</button>
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
     </div>
@@ -116,6 +119,7 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
+  <input id="import-file" type="file" accept=".json,application/json" hidden>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>
