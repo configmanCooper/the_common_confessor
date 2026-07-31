@@ -56,6 +56,22 @@ await page.route("**/local-ai/health", async (route) => {
 await page.route("**/local-ai/v1/chat/completions", async (route) => {
   const payload = JSON.parse(route.request().postData() || "{}");
   const schemaName = payload.response_format?.json_schema?.name;
+  if (schemaName === "parish_opening") {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              opening: "Father, I have rehearsed this twice outside and it sounded easier there. Someone may suffer for a choice I made, and I need to tell you enough of it to know whether I can still put it right."
+            })
+          }
+        }]
+      })
+    });
+    return;
+  }
   if (schemaName === "parish_conversation") {
     await new Promise((resolve) => setTimeout(resolve, 350));
     if (payload.messages?.some((message) => message.content?.includes("FAIL_STALE"))) {
@@ -188,7 +204,10 @@ try {
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
   assert.equal(manualState.schemaVersion, 10);
-  assert.equal(manualState.commandLog.length, 0);
+  assert.equal(manualState.commandLog.length, 1);
+  assert.equal(manualState.commandLog[0].type, "begin_visit");
+  assert.equal(manualState.commandLog[0].source, "ai");
+  assert.match(manualState.commandLog[0].payload.opening, /^Father,/);
   assert.equal(manualState.replayBase.kind, "periodic");
   assert.deepEqual(saveMetadata.legacyAutosaves, [null, null, null]);
   const downloadPromise = page.waitForEvent("download");

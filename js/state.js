@@ -961,6 +961,12 @@ export function validateState(state) {
       if (typeof command.payload.personId !== "string" || typeof command.payload.visitId !== "string") {
         throw new Error("Begin-visit command payload is invalid");
       }
+      if (command.payload.opening != null
+        && (typeof command.payload.opening !== "string"
+          || !command.payload.opening.trim()
+          || command.payload.opening.length > 800)) {
+        throw new Error("Begin-visit opening is invalid");
+      }
       if (!personIds.has(command.payload.personId)) throw new Error("Begin-visit command references a missing person");
       activeVisitPersonId = command.payload.personId;
       activeVisitTurns = 0;

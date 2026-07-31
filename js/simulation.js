@@ -483,7 +483,8 @@ function issueForPerson(state, person) {
               : ["beside the mill road", "behind the alehouse", "at the manor storehouse", "near the common well", "at the edge of the east field"];
     const place = rng.pick(placesByScenario);
     const witness = rng.pick(["No one else heard the whole exchange.", `${victimName} saw part of it.`, `A young apprentice may have overheard.`, `Two households are already whispering about it.`]);
-    issue.opening = `${archetype.opening} The matter came to a head ${timing}, ${place}. ${witness}`;
+    issue.opening = archetype.opening;
+    issue.openingContext = { timing, place, witness };
     issue.scenarioFacts = archetype.facts.map((text, index) => ({
       id: index === 0
         ? archetype.id === "trade_displacement" ? "trade" : "concrete_matter"
@@ -865,6 +866,32 @@ export function beginVisit(state, { record = true } = {}) {
     appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
   }
   return state.currentVisit;
+}
+
+export function applyVisitOpening(state, opening, source = "ai") {
+  const visit = state.currentVisit;
+  const cleanOpening = String(opening || "").trim().slice(0, 800);
+  if (!visit || visit.turnsUsed !== 0 || visit.history.length !== 1 || !cleanOpening) {
+    throw new Error("A generated opening can only be applied before the conversation begins");
+  }
+  visit.issue.opening = cleanOpening;
+  visit.history[0] = { speaker: "visitor", text: cleanOpening };
+  visit.lastVisitorReplies = [cleanOpening];
+  const command = [...state.commandLog].reverse().find((entry) => (
+    entry.type === "begin_visit"
+      && entry.payload.visitId === visit.visitId
+      && entry.payload.personId === visit.personId
+  ));
+  if (!command) throw new Error("The active visit has no begin-visit command");
+  command.payload.opening = cleanOpening;
+  if (source === "ai" && command.source !== "ai") {
+    command.source = "ai";
+    state.aiProposals.push({
+      id: `proposal-${String(state.aiProposals.length + 1).padStart(6, "0")}`,
+      commandId: command.id
+    });
+  }
+  return cleanOpening;
 }
 
 export function recordExchange(state, playerText, response, { record = true } = {}) {
@@ -2230,6 +2257,11 @@ export function replayGame(seed, commands, replayBase = null) {
       const visit = beginVisit(state, { record: false });
       if (visit.personId !== command.payload.personId || visit.visitId !== command.payload.visitId) {
         throw new Error(`Replay visitor mismatch at command ${command.id}`);
+      }
+      if (command.payload.opening) {
+        visit.issue.opening = command.payload.opening;
+        visit.history[0] = { speaker: "visitor", text: command.payload.opening };
+        visit.lastVisitorReplies = [command.payload.opening];
       }
     } else if (command.type === "conversation_exchange") {
       const person = [...state.residents, ...state.externalActors]

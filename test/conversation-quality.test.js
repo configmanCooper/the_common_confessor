@@ -71,6 +71,36 @@ test("repetitive model output is replaced by concrete clarification answers", as
   assert.ok(visit.revealedFactIds.includes("mechanism"));
 });
 
+test("the model writes a natural grounded first line instead of exposing scenario templates", async () => {
+  const { state, visit, person } = groundedDecisionState("generated-opening");
+  visit.issue.opening = "Father, I need your counsel. A factual scenario draft follows.";
+  visit.issue.openingContext = {
+    timing: "before Sunday worship",
+    place: "at the manor storehouse",
+    witness: "Two households are already whispering about it."
+  };
+  const captured = [];
+  const client = new ParishAiClient({
+    fetchImpl: async (_url, options) => {
+      captured.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              opening: "Father, I kept eight sacks aside when the manor called for them. Anias is carrying the blame, and if I speak now my own household may lose the only coin keeping us fed."
+            })
+          }
+        }]
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+  });
+  const response = await client.opening(state, person);
+  assert.match(response.opening, /I kept eight sacks/i);
+  assert.doesNotMatch(response.opening, /matter came to a head|decision is driven by/i);
+  assert.equal(captured[0].response_format.json_schema.name, "parish_opening");
+  assert.match(captured[0].messages[1].content, /Do not mechanically list every supplied fact/i);
+});
+
 test("offers and practical advice receive direct, different answers", async () => {
   const { state, person } = groundedDecisionState("social-quality");
   const client = repeatingClient();

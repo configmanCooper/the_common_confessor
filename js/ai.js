@@ -224,6 +224,27 @@ const conversationSchema = {
   }
 };
 
+const openingSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["opening"],
+  properties: {
+    opening: { type: "string", maxLength: 800 }
+  }
+};
+
+export function validateOpening(value, personName = "") {
+  const opening = boundedString(value?.opening, 800);
+  if (opening.length < 20) throw new Error("The visitor's opening was too short");
+  if (personName && opening.toLowerCase().includes(personName.toLowerCase())) {
+    throw new Error("The visitor narrated their own name instead of speaking naturally");
+  }
+  if (/\b(?:the matter came to a head|the decision is driven by|profitable choice difficult to refuse)\b/i.test(opening)) {
+    throw new Error("The visitor used scenario-template language");
+  }
+  return { opening };
+}
+
 export function validateConversation(value) {
   const reply = boundedString(value?.reply, 600);
   if (!reply) throw new Error("The visitor gave no reply");
@@ -308,6 +329,50 @@ export class ParishAiClient extends EventTarget {
     const payload = await response.json();
     if (payload?.status !== "ok") throw new Error("The Common Crown Gemma model is unavailable");
     return payload;
+  }
+
+  async opening(state, person) {
+    const visit = state.currentVisit;
+    const mayDiscloseMatter = visit.issue.kind !== "confession" || visit.hiddenConcernDisclosed;
+    const context = {
+      town: state.town.name,
+      date: state.calendar,
+      location: visit.location,
+      person: {
+        name: person.name,
+        age: person.age,
+        occupation: person.occupation,
+        personality: person.personality,
+        publicBackstory: person.publicBackstory,
+        faith: person.faith,
+        stress: person.stress,
+        trustPriest: person.trustPriest
+      },
+      meeting: {
+        kind: visit.issue.kind,
+        gravity: visit.issue.gravity,
+        desiredOutcome: visit.intent.desiredOutcome,
+        scene: visit.issue.openingContext || null,
+        factualDraft: visit.issue.opening,
+        permittedFacts: mayDiscloseMatter ? (visit.scenarioFacts || []).map((fact) => fact.text) : [],
+        confessionIsGuarded: visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed
+      }
+    };
+    const prompt = [
+      "Write the visitor's first spoken words upon sitting down with a parish priest in a 16th-century village.",
+      "The simulation supplies the true situation; you supply only natural dialogue. Do not narrate, summarize a scenario, label emotions, or mention being an AI.",
+      "Write in first person. Never refer to the speaker by their own name. Address the priest naturally if appropriate.",
+      "Use two to five varied sentences, usually 35 to 100 words. The visitor may hesitate, pause, begin indirectly, or reveal details in an emotionally believable order.",
+      "Do not mechanically list every supplied fact. Choose the details this person would actually say first, while preserving all names, quantities, relationships, and events you do mention.",
+      "Never use stock design phrases such as 'the matter came to a head', 'the decision is driven by', 'the profitable choice', or 'I need to decide whether'.",
+      "If confessionIsGuarded is true, do not reveal the hidden act or permitted facts yet. Give a specific but guarded opening shaped by the person's occupation, stress, and reason for seeking the priest.",
+      "Return only the opening field required by the schema.",
+      `CONTEXT_JSON=${JSON.stringify(context)}`
+    ].join("\n");
+    return validateOpening(
+      await this.complete(prompt, openingSchema, "parish_opening", 260),
+      person.name
+    );
   }
 
   async complete(prompt, schema, name, maxTokens = 500, timeoutMs = this.timeoutMs) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { beginVisit, createGame } from "../js/simulation.js";
+import { applyVisitOpening, beginVisit, createGame, replayGame } from "../js/simulation.js";
 import {
   buildGeneratedScenarioArchetypes,
   GENERATED_SCENARIO_ARCHETYPE_COUNT
@@ -27,6 +27,18 @@ test("generated openings speak in the visitor's voice instead of narrating the v
   const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
   assert.match(grain.opening, /I diverted 8 sacks of grain/i);
   assert.match(grain.opening, /My household debt/i);
+});
+
+test("AI-written openings persist through canonical replay", () => {
+  const state = createGame("ai-opening-replay");
+  const visit = beginVisit(state);
+  const opening = "Father, I have turned this over all night, and each answer seems to leave someone hungry. I need you to hear what happened before fear makes the choice for me.";
+  applyVisitOpening(state, opening, "ai");
+  assert.equal(visit.history[0].text, opening);
+  const replayed = replayGame(state.seed, state.commandLog, state.replayBase);
+  assert.equal(replayed.currentVisit.history[0].text, opening);
+  assert.equal(replayed.commandLog[0].source, "ai");
+  assert.equal(replayed.aiProposals.length, 1);
 });
 
 test("consecutive visitors avoid recently used scenario archetypes", () => {

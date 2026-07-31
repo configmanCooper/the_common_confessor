@@ -3,6 +3,7 @@ import { SERMON_THEMES, SESSION_LOCATIONS, WEEK_DAYS } from "./data.js";
 import { ChurchRenderer } from "./renderer.js";
 import {
   applySermon,
+  applyVisitOpening,
   beginVisit,
   calendarLabel,
   createGame,
@@ -296,14 +297,38 @@ function renderVisit() {
   elements["next-hour"].textContent = visit.turnsUsed >= visit.maxTurns ? "Continue to next hour" : "End hour";
 }
 
-function showVisit() {
+async function showVisit() {
+  const existingVisit = Boolean(state.currentVisit);
   const visit = beginVisit(state);
   const person = materializeResident(state, visit.personId, true);
+  const requestState = state;
+  const generation = stateGeneration;
+  const visitToken = visit.visitId;
   renderer.beginVisit(visit.location, person.sprite);
   setHidden(elements["visitor-panel"], false);
   setHidden(elements["dialogue-panel"], false);
   setHidden(elements["sermon-panel"], true);
   elements["dialogue-log"].replaceChildren();
+  if (!existingVisit && aiReady && state.settings.aiEnabled) {
+    conversationInFlight = true;
+    setBusy(true, `${person.firstName} gathers their thoughts`, "Gemma is shaping the visitor's first words from the facts of their life.");
+    try {
+      const generated = await ai.opening(requestState, person);
+      if (generation !== stateGeneration || state !== requestState || state.currentVisit?.visitId !== visitToken) return;
+      applyVisitOpening(requestState, generated.opening, "ai");
+      saveGame(true, true);
+    } catch (error) {
+      if (generation === stateGeneration && state === requestState && state.currentVisit?.visitId === visitToken) {
+        showToast(`Gemma could not shape the opening; the visitor spoke from parish rules. ${error.message}`);
+      }
+    } finally {
+      if (generation === stateGeneration && state === requestState) {
+        conversationInFlight = false;
+        setBusy(false);
+      }
+    }
+  }
+  if (generation !== stateGeneration || state !== requestState || state.currentVisit?.visitId !== visitToken) return;
   visit.history.forEach((line) => appendDialogue(line.speaker === "visitor" ? "visitor" : "priest", line.text));
   renderCommon();
   renderVisit();
