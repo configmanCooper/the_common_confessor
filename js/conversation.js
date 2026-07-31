@@ -88,7 +88,9 @@ export function classifyPriestSpeech(text) {
 export function clarificationFacts(visit, text) {
   const speech = String(text).toLowerCase();
   const facts = visit.scenarioFacts || [];
-  if (!visit.hiddenConcernDisclosed && !facts.some((fact) => fact.id === "trade")) return [];
+  if (visit.issue?.kind === "confession"
+    && !visit.hiddenConcernDisclosed
+    && !facts.some((fact) => fact.id === "trade")) return [];
   const scenarioTerms = new Set([
     "trade", "work", "job", "business", "offer", "choice", "harm", "steal",
     "livelihood", "detail",
@@ -99,6 +101,8 @@ export function clarificationFacts(visit, text) {
   let wantedIds = [];
   if (/\bwhat\b.*\b(?:trade|work|job|business)\b|\bwhich trade\b/.test(speech)) {
     wantedIds = ["trade", "mechanism"];
+  } else if (/\b(?:what (?:was|is) your role|what did you do|were you involved|did you (?:take|steal|move|hide|divert)|who took|tell me what happened|what happened)\b/.test(speech)) {
+    wantedIds = ["concrete_matter", "mechanism"];
   } else if ((/\bhow\b|\bwhy\b/.test(speech) && referencesScenario)
     || /\bdo not understand\b|\bexplain (?:the|this|that)\b|\bmore detail/.test(speech)) {
     wantedIds = ["mechanism", "stakes"];

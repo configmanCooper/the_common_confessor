@@ -19,6 +19,8 @@ export class ChurchRenderer {
     this.visitorVisible = false;
     this.walkStart = 0;
     this.walkDuration = 2600;
+    this.visitorRoute = SESSION_LOCATIONS.nave.route;
+    this.priestRoute = null;
     this.sundayCrowd = [];
     this.reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.resize = this.resize.bind(this);
@@ -55,7 +57,26 @@ export class ChurchRenderer {
     this.visitorSprite = sprite;
     this.visitorVisible = true;
     this.sundayCrowd = [];
+    this.visitorRoute = SESSION_LOCATIONS[location].route;
+    this.priestRoute = null;
     this.walkStart = performance.now();
+    this.walkDuration = 2600;
+  }
+
+  moveVisit(location) {
+    if (!SESSION_LOCATIONS[location] || location === this.location) return;
+    const from = SESSION_LOCATIONS[this.location];
+    const to = SESSION_LOCATIONS[location];
+    this.visitorRoute = [...from.route].reverse().concat(to.route.slice(1));
+    this.priestRoute = [
+      from.priest,
+      ...from.route.slice(0, -1).reverse(),
+      ...to.route.slice(1, -1),
+      to.priest
+    ];
+    this.location = location;
+    this.walkStart = performance.now();
+    this.walkDuration = 2200;
   }
 
   clearVisitor() {
@@ -134,9 +155,12 @@ export class ChurchRenderer {
     } else if (this.visitorVisible) {
       const location = SESSION_LOCATIONS[this.location];
       const progress = this.reducedMotion ? 1 : Math.max(0, Math.min(1, (time - this.walkStart) / this.walkDuration));
-      const visitor = this.routePosition(location.route, progress);
+      const visitor = this.routePosition(this.visitorRoute, progress);
+      const priest = this.priestRoute
+        ? this.routePosition(this.priestRoute, progress)
+        : location.priest;
       const bob = progress < 1 ? Math.sin(time / 90) * 2 : 0;
-      this.drawSprite(0, location.priest.x, location.priest.y, 72, 122);
+      this.drawSprite(0, priest.x, priest.y + bob, 72, 122);
       this.drawSprite(this.visitorSprite, visitor.x, visitor.y + bob, 76, 128);
       if (progress < 1) {
         this.context.fillStyle = "rgba(255, 226, 157, .72)";

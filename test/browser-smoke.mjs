@@ -64,7 +64,7 @@ await page.route("**/local-ai/v1/chat/completions", async (route) => {
         choices: [{
           message: {
             content: JSON.stringify({
-              opening: "Father, I have rehearsed this twice outside and it sounded easier there. Someone may suffer for a choice I made, and I need to tell you enough of it to know whether I can still put it right."
+              opening: "Father, I have rehearsed this twice outside and it sounded easier there. Someone may suffer for a choice I made. Tell me plainly: should I confess now, even if my household pays for it?"
             })
           }
         }]
@@ -146,6 +146,8 @@ try {
   assert.equal(await page.locator("#population-count").innerText(), "200");
   const staleImport = createGame("browser-smoke-parish");
   beginVisit(staleImport);
+  staleImport.currentVisit.location = "nave";
+  staleImport.currentVisit.issue.location = "nave";
   staleImport.currentVisit.intent.disclosureThreshold = 0;
   checkpointState(staleImport);
   await page.locator("#counsel-input").fill("Take time before you act.");
@@ -176,6 +178,11 @@ try {
   assert.match(await page.locator("#dialogue-log .visitor").nth(2).innerText(), /There is more:/);
   assert.equal(await page.locator("#next-hour").isDisabled(), false);
   assert.match(await page.locator("#turn-counter").innerText(), /1 \/ 10/);
+  await page.locator("#counsel-input").fill("Let us go talk in private in your office.");
+  await page.locator("#speak-button").click();
+  await page.locator("#dialogue-log .visitor").nth(3).waitFor({ state: "visible" });
+  assert.equal((await page.locator("#location-name").textContent()).trim(), "The Parish Office");
+  assert.match(await page.locator("#turn-counter").innerText(), /2 \/ 10/);
   await page.locator("#next-hour").click();
   await page.locator("#turn-counter").waitFor({ state: "visible" });
   await page.waitForFunction(() => document.querySelector("#turn-counter")?.textContent?.startsWith("0 / 10"));

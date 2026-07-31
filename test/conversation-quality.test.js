@@ -87,7 +87,7 @@ test("the model writes a natural grounded first line instead of exposing scenari
         choices: [{
           message: {
             content: JSON.stringify({
-              opening: "Father, I kept eight sacks aside when the manor called for them. Anias is carrying the blame, and if I speak now my own household may lose the only coin keeping us fed."
+              opening: "Father, I kept eight sacks aside when the manor called for them. Anias is carrying the blame, and if I speak now my own household may lose the only coin keeping us fed. Tell me plainly: should I confess and return them?"
             })
           }
         }]
@@ -99,6 +99,59 @@ test("the model writes a natural grounded first line instead of exposing scenari
   assert.doesNotMatch(response.opening, /matter came to a head|decision is driven by/i);
   assert.equal(captured[0].response_format.json_schema.name, "parish_opening");
   assert.match(captured[0].messages[1].content, /Do not mechanically list every supplied fact/i);
+});
+
+test("a natural opening receives an explicit advice question when Gemma omits one", async () => {
+  const { state, visit, person } = groundedDecisionState("opening-advice-question");
+  visit.intent.desiredOutcome = "guidance";
+  visit.scenarioFacts[3].text = "Return the grain and clear Anias Applecombe of blame.";
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            opening: "Father, I set grain aside when my household had almost nothing. Anias now carries the blame, and I have scarcely slept since."
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.opening(state, person);
+  assert.match(response.opening, /should I return the grain and clear Anias Applecombe of blame\?/i);
+});
+
+test("the model cannot deny a concrete act assigned to the visitor", async () => {
+  const { state, visit, person } = groundedDecisionState("self-action-denial");
+  visit.scenarioFacts[0] = {
+    id: "concrete_matter",
+    text: `${person.name} diverted 8 sacks of grain from the manor reserve.`,
+    anchors: ["diverted", "grain", "reserve"]
+  };
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            reply: "I did not take the grain myself, Father. I only heard whispers.",
+            memory: "The visitor denied involvement."
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.conversation(state, person, "Please continue.");
+  assert.match(response.reply, /I diverted 8 sacks of grain/i);
+  assert.doesNotMatch(response.reply, /did not take/i);
+});
+
+test("requests for help state the concrete advice the visitor wants", async () => {
+  const { state, visit, person } = groundedDecisionState("explicit-help-request");
+  visit.scenarioFacts[3].text = "Refuse Thomas's offer and ask Hemlock to form an honest partnership.";
+  const client = repeatingClient();
+  const response = await client.conversation(state, person, "So how can I help?");
+  assert.match(response.reply, /I need your advice|should I/i);
+  assert.match(response.reply, /refuse Thomas|Hemlock|partnership/i);
+  assert.doesNotMatch(response.reply, /prefer to discuss this in private/i);
 });
 
 test("offers and practical advice receive direct, different answers", async () => {

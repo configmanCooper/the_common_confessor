@@ -55,6 +55,42 @@ test("disclosure thresholds reveal hidden concerns organically", () => {
   assert.ok(visit.history.some((line) => line.text.includes(visit.intent.hiddenConcern)));
 });
 
+test("agreeing to privacy moves the active conversation into the parish office", () => {
+  const state = createGame("private-location-change");
+  const visit = beginVisit(state);
+  visit.location = "nave";
+  visit.issue.location = "nave";
+  visit.history[0].text = "I would prefer to discuss this in private, if that is possible.";
+  visit.lastVisitorReplies = [visit.history[0].text];
+  recordExchange(state, "Ok, let us go talk in private.", {
+    reply: "Thank you, Father. I can speak more freely there.",
+    memory: "The priest agreed to move somewhere private."
+  });
+  assert.equal(visit.location, "office");
+  assert.equal(visit.issue.location, "office");
+  const replayed = replayGame(state.seed, state.commandLog, state.replayBase);
+  assert.equal(replayed.currentVisit.location, "office");
+});
+
+test("explicit destinations move conversations to the confessional, shrine, or nave", () => {
+  const cases = [
+    ["Let us go to the confession box so I may hear your confession.", "confessional"],
+    ["We shall continue this before the shrine.", "shrine"],
+    ["Let us return to the main nave.", "nave"]
+  ];
+  for (const [speech, expected] of cases) {
+    const state = createGame(`location-${expected}`);
+    const visit = beginVisit(state);
+    visit.location = expected === "nave" ? "office" : "nave";
+    visit.issue.location = visit.location;
+    recordExchange(state, speech, {
+      reply: "Yes, Father. I will follow you.",
+      memory: "The conversation moved within the church."
+    });
+    assert.equal(visit.location, expected);
+  }
+});
+
 test("candid opening confessions immediately create canonical secret memory", () => {
   let found = null;
   for (let index = 0; index < 300 && !found; index += 1) {

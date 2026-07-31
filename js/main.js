@@ -442,7 +442,12 @@ async function submitCounsel(event) {
   const currentToken = state.currentVisit?.visitId || "";
   if (generation !== stateGeneration || currentToken !== visitToken) return;
   const previousHistoryLength = state.currentVisit.history.length;
+  const previousLocation = state.currentVisit.location;
   recordExchange(requestState, text, response);
+  if (state.currentVisit.location !== previousLocation) {
+    renderer.moveVisit(state.currentVisit.location);
+    showToast(`You continue the conversation in ${SESSION_LOCATIONS[state.currentVisit.location].name}.`);
+  }
   state.currentVisit.history
     .slice(previousHistoryLength)
     .filter((line) => line.speaker === "visitor")

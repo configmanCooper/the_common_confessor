@@ -894,6 +894,26 @@ export function applyVisitOpening(state, opening, source = "ai") {
   return cleanOpening;
 }
 
+function requestedConversationLocation(text) {
+  const speech = String(text || "").toLowerCase();
+  if (/\b(?:confessional|confession box|hear (?:my|your) confession)\b/.test(speech)) return "confessional";
+  if (/\b(?:parish office|your office|your study|private room|private chamber|somewhere private|speak in private|talk in private|discuss this in private)\b/.test(speech)) return "office";
+  if (/\b(?:before the shrine|near the shrine|at the shrine|before the altar|near the altar|at the altar)\b/.test(speech)) return "shrine";
+  if (/\b(?:main nave|the nave|among the pews|main auditorium)\b/.test(speech)) return "nave";
+  return null;
+}
+
+function conversationLocationChange(visit, priestText) {
+  const previousVisitorLine = [...visit.history].reverse()
+    .find((line) => line.speaker === "visitor")?.text || "";
+  const requestedByPriest = requestedConversationLocation(priestText);
+  const priestProposesMovement = /\b(?:let us|let's|we can|we shall|we will|we'll|come with me|go with me|move to|continue (?:this|our talk)|speak there|talk there)\b/i.test(priestText);
+  if (requestedByPriest && priestProposesMovement) return requestedByPriest;
+  const requestedByVisitor = requestedConversationLocation(previousVisitorLine);
+  const priestAgrees = /^(?:ok|okay|yes|certainly|very well|of course)\b|\b(?:let us|let's|we can|we shall|we will|we'll|come with me)\b/i.test(priestText);
+  return requestedByVisitor && priestAgrees ? requestedByVisitor : null;
+}
+
 export function recordExchange(state, playerText, response, { record = true } = {}) {
   const visit = state.currentVisit;
   if (!visit) {
@@ -913,6 +933,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
   }
   const resolution = resolvePriestSpeech(state, person, visit, cleanText);
   const clarifiedFacts = clarificationFacts(visit, cleanText);
+  const nextLocation = conversationLocationChange(visit, cleanText);
   for (const fact of clarifiedFacts) {
     if (!visit.revealedFactIds.includes(fact.id)) visit.revealedFactIds.push(fact.id);
   }
@@ -923,6 +944,10 @@ export function recordExchange(state, playerText, response, { record = true } = 
   visit.lastVisitorReplies = visit.lastVisitorReplies.slice(-8);
   visit.stagnationCount = Math.max(0, Number(response.stagnationCount) || 0);
   visit.counsel.push(cleanText);
+  if (nextLocation && nextLocation !== visit.location) {
+    visit.location = nextLocation;
+    visit.issue.location = nextLocation;
+  }
   visit.mood = resolution.mood;
   visit.disclosure = resolution.disclosure;
   if (resolution.disclosed) {

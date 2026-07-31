@@ -12,6 +12,35 @@ function parseContent(payload) {
   throw new Error("The local model returned no usable content");
 }
 
+function spokenScenarioFact(text, person) {
+  const name = String(person?.name || "").trim();
+  if (!name) return String(text || "");
+  return String(text || "")
+    .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'s\\b`, "gi"), "my")
+    .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+is\\b`, "gi"), "I am")
+    .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+`, "gi"), "I ");
+}
+
+function adviceQuestion(visit) {
+  const alternative = (visit.scenarioFacts || []).find((fact) => fact.id === "alternative")?.text;
+  if (!alternative) return "I need you to tell me what honest course I should take.";
+  const course = alternative.replace(/[.!?]+$/, "").replace(/^([A-Z])/, (letter) => letter.toLowerCase());
+  return `I need your advice on the choice itself, Father: should I ${course}?`;
+}
+
+function selfActionFact(visit, person) {
+  const name = String(person?.name || "").toLowerCase();
+  return (visit.scenarioFacts || []).find((fact) => (
+    fact.id === "concrete_matter"
+    && name
+    && String(fact.text || "").toLowerCase().startsWith(`${name} `)
+  )) || null;
+}
+
+function deniesKnownSelfAction(text) {
+  return /\b(?:i (?:did not|didn't|never) (?:take|steal|divert|move|hide|conceal|cause|use|help|poach)|i (?:do not|don't) know who|i have no idea who)\b/i.test(text);
+}
+
 function directSocialRequirement(state, person, visit, playerText, mode) {
   const speech = String(playerText).toLowerCase();
   const farewell = /\b(?:goodbye|farewell|go with god|god go with you|god be with you|peace be with you|you may go|that will be all)\b/.test(speech);
@@ -61,6 +90,17 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
         ? /\b(?:no|nothing else|that is all|all i wished)\b/i
         : /\b(?:yes|there is|one other|another matter|another concern)\b/i,
       fallbackReply
+    };
+  }
+  const asksHowToHelp = /\b(?:so )?(?:how can i help|what help do you need|what do you need from me|what advice do you want|what are you asking me to advise|what do you want me to tell you)\b/.test(speech);
+  if (asksHowToHelp) {
+    return {
+      type: "help_request",
+      requireAll: false,
+      minimumMatches: 1,
+      requiredTerms: ["advice", "should", "help", "need"],
+      responsePattern: /\b(?:should i|do you advise me to|help me decide whether|tell me whether)\b/i,
+      fallbackReply: adviceQuestion(visit)
     };
   }
   const offer = speech.match(/\b(?:would you like|do you want|may i offer|can i offer)\b.*\b(cheese|bread|food|ale|water|coin)\b/);
@@ -233,7 +273,10 @@ const openingSchema = {
   }
 };
 
-export function validateOpening(value, personName = "") {
+export function validateOpening(value, personName = "", {
+  requireExplicitAdvice = false,
+  forbidSelfDenial = false
+} = {}) {
   const opening = boundedString(value?.opening, 800);
   if (opening.length < 20) throw new Error("The visitor's opening was too short");
   if (personName && opening.toLowerCase().includes(personName.toLowerCase())) {
@@ -241,6 +284,13 @@ export function validateOpening(value, personName = "") {
   }
   if (/\b(?:the matter came to a head|the decision is driven by|profitable choice difficult to refuse)\b/i.test(opening)) {
     throw new Error("The visitor used scenario-template language");
+  }
+  if (requireExplicitAdvice
+    && !/\?|(?:tell me|help me decide|i need your advice|i need your counsel|what should i|how should i|should i)\b/i.test(opening)) {
+    throw new Error("The visitor did not clearly ask what advice they wanted");
+  }
+  if (forbidSelfDenial && deniesKnownSelfAction(opening)) {
+    throw new Error("The visitor contradicted their established role in the scenario");
   }
   return { opening };
 }
@@ -334,6 +384,7 @@ export class ParishAiClient extends EventTarget {
   async opening(state, person) {
     const visit = state.currentVisit;
     const mayDiscloseMatter = visit.issue.kind !== "confession" || visit.hiddenConcernDisclosed;
+    const establishedSelfAction = mayDiscloseMatter ? selfActionFact(visit, person) : null;
     const context = {
       town: state.town.name,
       date: state.calendar,
@@ -364,15 +415,26 @@ export class ParishAiClient extends EventTarget {
       "Write in first person. Never refer to the speaker by their own name. Address the priest naturally if appropriate.",
       "Use two to five varied sentences, usually 35 to 100 words. The visitor may hesitate, pause, begin indirectly, or reveal details in an emotionally believable order.",
       "Do not mechanically list every supplied fact. Choose the details this person would actually say first, while preserving all names, quantities, relationships, and events you do mention.",
+      "Never turn a supplied fact into an unsupported rumor, uncertainty, or denial. If a permitted fact says the visitor committed or witnessed an act, the visitor must not claim ignorance or innocence.",
+      "End by explicitly stating the choice, question, or practical advice the visitor wants from the priest. Make it clear what the priest is being asked to decide or counsel.",
       "Never use stock design phrases such as 'the matter came to a head', 'the decision is driven by', 'the profitable choice', or 'I need to decide whether'.",
       "If confessionIsGuarded is true, do not reveal the hidden act or permitted facts yet. Give a specific but guarded opening shaped by the person's occupation, stress, and reason for seeking the priest.",
       "Return only the opening field required by the schema.",
       `CONTEXT_JSON=${JSON.stringify(context)}`
     ].join("\n");
-    return validateOpening(
+    const generated = validateOpening(
       await this.complete(prompt, openingSchema, "parish_opening", 260),
-      person.name
+      person.name,
+      { forbidSelfDenial: Boolean(establishedSelfAction) }
     );
+    if (visit.intent.desiredOutcome === "guidance"
+      && !/\?|(?:tell me|help me decide|i need your advice|i need your counsel|what should i|how should i|should i)\b/i.test(generated.opening)) {
+      generated.opening = `${generated.opening} ${adviceQuestion(visit)}`.slice(0, 800);
+    }
+    return validateOpening(generated, person.name, {
+      requireExplicitAdvice: visit.intent.desiredOutcome === "guidance",
+      forbidSelfDenial: Boolean(establishedSelfAction)
+    });
   }
 
   async complete(prompt, schema, name, maxTokens = 500, timeoutMs = this.timeoutMs) {
@@ -462,7 +524,7 @@ export class ParishAiClient extends EventTarget {
       knownScenarioFacts: (visit.scenarioFacts || [])
         .filter((fact) => visit.revealedFactIds.includes(fact.id))
         .map((fact) => fact.text),
-      directAnswerRequired: requiredFacts.map((fact) => fact.text),
+      directAnswerRequired: requiredFacts.map((fact) => spokenScenarioFact(fact.text, person)),
       latestSpeechAct: socialRequirement
         ? socialRequirement.type === "offer"
           ? `The priest offered ${socialRequirement.item}. Answer the offer directly before discussing anything else.`
@@ -470,6 +532,8 @@ export class ParishAiClient extends EventTarget {
             ? "The priest ended the meeting with a blessing. Reply with a brief farewell and leave; do not reopen the prior dilemma."
           : socialRequirement.type === "open_invitation"
             ? "The priest asked whether there is anything else to discuss. Either introduce one concrete new concern or clearly say the meeting can end. Do not return to the resolved dilemma."
+          : socialRequirement.type === "help_request"
+            ? "The priest asked exactly what help or advice is wanted. State the concrete choice as a direct question or request. Do not answer vaguely or merely request privacy."
           : `The priest advised: ${socialRequirement.proposedAction || socialRequirement.type}. Evaluate that exact advice before discussing anything else.`
         : "Respond directly to the priest's newest words before returning to the larger concern.",
       responseMode: mode,
@@ -489,8 +553,13 @@ export class ParishAiClient extends EventTarget {
     ].join("\n");
     const result = validateConversation(await this.complete(prompt, conversationSchema, "parish_conversation", 260));
     const rawModelReply = result.reply;
+    const establishedSelfAction = selfActionFact(visit, person);
+    if (establishedSelfAction && deniesKnownSelfAction(result.reply)) {
+      result.reply = spokenScenarioFact(establishedSelfAction.text, person);
+      result.groundedFallback = true;
+    }
     if (requiredFacts.length) {
-      result.reply = requiredFacts.map((fact) => fact.text).join(" ").slice(0, 600);
+      result.reply = requiredFacts.map((fact) => spokenScenarioFact(fact.text, person)).join(" ").slice(0, 600);
       result.groundedFallback = true;
     }
     if (socialRequirement) {
@@ -510,7 +579,7 @@ export class ParishAiClient extends EventTarget {
     if (maximumRepetition >= 0.62) {
       const stagnationCount = (visit.stagnationCount || 0) + 1;
       result.reply = requiredFacts.length
-        ? requiredFacts.map((fact) => fact.text).join(" ").slice(0, 600)
+        ? requiredFacts.map((fact) => spokenScenarioFact(fact.text, person)).join(" ").slice(0, 600)
         : socialRequirement?.fallbackReply || progressiveStagnationReply(visit, person, stagnationCount);
       result.groundedFallback = true;
       result.stagnationCount = stagnationCount;
