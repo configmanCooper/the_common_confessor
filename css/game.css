@@ -97,6 +97,9 @@ p { margin: .45rem 0; }
 #town-metrics dt::after, #priest-metrics dt::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(84,55,30,.18); }
 #town-metrics dt span, #priest-metrics dt span { position: absolute; left: 0; bottom: 0; height: 4px; background: #7f272a; }
 #town-metrics dd, #priest-metrics dd { margin: 0; text-align: right; font-weight: 600; }
+#church-resources { display: grid; grid-template-columns: 1fr auto; gap: .18rem .5rem; margin: .45rem 0 .8rem; font-size: .78rem; }
+#church-resources dt { text-transform: capitalize; }
+#church-resources dd { margin: 0; text-align: right; font-weight: 600; white-space: nowrap; }
 .population-line { display: flex; justify-content: space-between; border-top: 1px solid rgba(74,44,21,.3); padding-top: .55rem; }
 
 #visitor-panel { top: 5.6rem; right: 1rem; width: min(315px, 27vw); padding: 1rem; max-height: calc(100vh - 17rem); overflow: auto; }

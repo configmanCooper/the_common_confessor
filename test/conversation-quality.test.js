@@ -154,6 +154,63 @@ test("requests for help state the concrete advice the visitor wants", async () =
   assert.doesNotMatch(response.reply, /prefer to discuss this in private/i);
 });
 
+test("compound counsel answers the newest debt question instead of repeating the theft", async () => {
+  const { state, visit, person } = groundedDecisionState("debt-question");
+  visit.scenarioFacts = [
+    {
+      id: "concrete_matter",
+      text: `${person.name} diverted 8 sacks of grain from the manor reserve.`,
+      anchors: ["diverted", "grain", "reserve"]
+    },
+    {
+      id: "mechanism",
+      text: "Anias Applecombe is blamed for the missing grain.",
+      anchors: ["anias", "blamed", "grain"]
+    },
+    {
+      id: "stakes",
+      text: `${person.name}'s household owes 14 silver pennies to Edwin Price.`,
+      anchors: ["debt", "pennies", "edwin"]
+    },
+    {
+      id: "alternative",
+      text: "Return the grain and clear the accusation.",
+      anchors: ["return", "clear", "accusation"]
+    }
+  ];
+  const client = repeatingClient();
+  const response = await client.conversation(
+    state,
+    person,
+    "Yes, return the grain, my child. Who are your debts to?"
+  );
+  assert.match(response.reply, /^My household owes 14 silver pennies to Edwin Price/i);
+  assert.doesNotMatch(response.reply, /I diverted 8 sacks/i);
+});
+
+test("church aid receives an exact grounded acknowledgment without invented people", async () => {
+  const { state, person } = groundedDecisionState("church-aid-dialogue");
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            reply: "I am grateful, though Leonce may object.",
+            memory: "The visitor mentioned Leonce."
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.conversation(
+    state,
+    person,
+    "The church will give you 2 loaves of bread."
+  );
+  assert.match(response.reply, /2 loaves.*church.*immediate relief/i);
+  assert.doesNotMatch(response.reply, /Leonce/i);
+});
+
 test("offers and practical advice receive direct, different answers", async () => {
   const { state, person } = groundedDecisionState("social-quality");
   const client = repeatingClient();

@@ -42,9 +42,18 @@ const FAMILIES = [
 ];
 
 const VARIANTS = [
-  "The poor harvest and the hunger around us make the choice harder.",
-  "My household debt makes the profitable choice difficult to refuse.",
-  "A private promise I made to my family complicates the honest course."
+  {
+    opening: "The poor harvest and the hunger around us make the choice harder.",
+    fact: "Hunger after the poor harvest is adding pressure to the decision."
+  },
+  {
+    opening: "My household owes {debtSum} silver pennies to {creditor}, making the profitable choice difficult to refuse.",
+    fact: "{person}'s household owes {debtSum} silver pennies to {creditor}."
+  },
+  {
+    opening: "A private promise I made to my family complicates the honest course.",
+    fact: "{person} made a private promise to protect the household from this loss."
+  }
 ];
 
 function fill(template, context) {
@@ -75,14 +84,14 @@ function openingLead(kinds) {
 
 export function buildGeneratedScenarioArchetypes(context) {
   return FAMILIES.flatMap(([id, kinds, premise, harm, alternative]) => (
-    VARIANTS.map((motive, index) => ({
+    VARIANTS.map((variant, index) => ({
       id: `${id}_${index + 1}`,
       kinds,
-      opening: `${openingLead(kinds)} ${spokenOpening(premise, context)} ${spokenOpening(harm, context)} ${motive}`,
+      opening: `${openingLead(kinds)} ${spokenOpening(premise, context)} ${spokenOpening(harm, context)} ${spokenOpening(variant.opening, context)}`,
       facts: [
         fill(premise, context),
         fill(harm, context),
-        `${motive} A decision is expected within ${context.deadlineDays} days.`,
+        `${fill(variant.fact, context)} A decision is expected within ${context.deadlineDays} days.`,
         fill(alternative, context)
       ]
     }))

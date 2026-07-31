@@ -1,4 +1,5 @@
 import { ParishAiClient } from "./ai.js";
+import { churchResourceRows } from "./church.js";
 import { SERMON_THEMES, SESSION_LOCATIONS, WEEK_DAYS } from "./data.js";
 import { ChurchRenderer } from "./renderer.js";
 import {
@@ -265,6 +266,13 @@ function updateMetrics() {
     scandal: state.priest.scandal,
     health: state.priest.health
   }));
+  elements["church-resources"].replaceChildren(...churchResourceRows(state.churchResources).flatMap((resource) => {
+    const term = document.createElement("dt");
+    const amount = document.createElement("dd");
+    term.textContent = resource.label;
+    amount.textContent = `${resource.amount} ${resource.unit}`;
+    return [term, amount];
+  }));
   elements["population-count"].textContent = populationCount(state);
 }
 
@@ -444,6 +452,7 @@ async function submitCounsel(event) {
   const previousHistoryLength = state.currentVisit.history.length;
   const previousLocation = state.currentVisit.location;
   recordExchange(requestState, text, response);
+  renderCommon();
   if (state.currentVisit.location !== previousLocation) {
     renderer.moveVisit(state.currentVisit.location);
     showToast(`You continue the conversation in ${SESSION_LOCATIONS[state.currentVisit.location].name}.`);

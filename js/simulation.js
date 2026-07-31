@@ -54,6 +54,13 @@ import {
   upgradeParishState
 } from "./parish.js";
 import { buildGeneratedScenarioArchetypes } from "./scenario_catalog.js";
+import {
+  applyChurchAid,
+  applyChurchDonation,
+  churchDonationCapacity,
+  parseChurchDonationDetail,
+  parseChurchTransferIntent
+} from "./church.js";
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -415,6 +422,12 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
       facts: [`The hidden grain is enough for about ${rng.int(3, 8)} weeks.`, `The household has already received two distributions.`, `A sick child in the same home still needs broth.`, `Aid could be limited to the child while requiring an honest inventory.`]
     }
   ];
+  const creditor = rng.pick(state.residents.filter((candidate) => (
+    candidate.id !== person.id
+    && candidate.id !== relation?.id
+    && candidate.id !== victim?.id
+    && candidate.active
+  )));
   return archetypes.concat(buildGeneratedScenarioArchetypes({
     person: person.name,
     relation: relationName,
@@ -422,6 +435,8 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
     official: official?.name || relationName,
     resource,
     sum,
+    creditor: creditor?.name || official?.name || relationName,
+    debtSum: rng.int(6, 30),
     deadlineDays: rng.int(1, 12)
   }));
 }
@@ -950,6 +965,19 @@ export function recordExchange(state, playerText, response, { record = true } = 
   }
   visit.mood = resolution.mood;
   visit.disclosure = resolution.disclosure;
+  const churchAid = applyChurchAid(state, person, cleanText);
+  if (churchAid) {
+    appendEvent(state, {
+      type: "church_aid_given",
+      parentId: visit.originEventId,
+      actorId: "priest",
+      targetId: person.id,
+      facts: {
+        resource: churchAid.resource,
+        amount: churchAid.amount
+      }
+    });
+  }
   if (resolution.disclosed) {
     visit.hiddenConcernDisclosed = true;
     visit.history.push({ speaker: "visitor", text: `There is more: ${visit.intent.hiddenConcern}.` });
@@ -1189,10 +1217,15 @@ export function applyAction(state, step) {
   if (step.actionType === "lend_money"
     && (!sourceHousehold || !targetHousehold || !occupiedHouseholds.includes(targetHousehold)
       || sourceHousehold.id === targetHousehold.id || sourceHousehold.wealth < intensity * 2)) return null;
-  if (step.actionType === "donate"
-    && (!sourceHousehold || sourceHousehold.wealth < intensity * 2
+  if (step.actionType === "donate") {
+    if (targetIsPriest) {
+      const donation = parseChurchDonationDetail(step.detail, intensity * 2);
+      const available = churchDonationCapacity(state, actor, donation.resource);
+      if (!sourceHousehold || available < donation.amount) return null;
+    } else if (!sourceHousehold || sourceHousehold.wealth < intensity * 2
       || (targetHousehold && (!occupiedHouseholds.includes(targetHousehold) || targetHousehold.id === sourceHousehold.id))
-      || !(targetHousehold || occupiedHouseholds.some((household) => household.id !== sourceHousehold.id)))) return null;
+      || !(targetHousehold || occupiedHouseholds.some((household) => household.id !== sourceHousehold.id))) return null;
+  }
   if (step.actionType === "lower_prices" && (!sourceHousehold || sourceHousehold.wealth < intensity)) return null;
   if (step.actionType === "organize_aid"
     && (!sourceHousehold || (sourceHousehold.food < intensity * 2 && sourceHousehold.wealth < intensity)
@@ -1268,6 +1301,10 @@ export function applyAction(state, step) {
   }
     if (step.actionType === "donate") {
       const source = sourceHousehold;
+      if (targetIsPriest) {
+        const donation = parseChurchDonationDetail(step.detail, intensity * 2);
+        applyChurchDonation(state, actor, donation.resource, donation.amount);
+      } else {
       const destination = target
         ? targetHousehold
         : occupiedHouseholds.filter((household) => household.id !== actor.householdId).sort((a, b) => a.wealth - b.wealth)[0];
@@ -1275,6 +1312,7 @@ export function applyAction(state, step) {
       if (source && destination && amount > 0) {
         source.wealth = clamp(source.wealth - amount);
         destination.wealth = clamp(destination.wealth + amount);
+      }
       }
   }
     if (step.actionType === "lower_prices") {
@@ -1513,7 +1551,15 @@ export function fallbackDeparturePlan(state) {
     return Boolean(latest && classifyPriestSpeech(latest).includes(intent));
   };
   let actionType = "keep_silence";
-  if (latestIntent("apology", /\b(?:apologize|make amends|say sorry)\b/)) actionType = "apologize";
+  const donationCounsel = [...visit.counsel].reverse().find((entry) => (
+    parseChurchTransferIntent(entry)?.direction === "incoming"
+  ));
+  const donationIntent = donationCounsel ? parseChurchTransferIntent(donationCounsel) : null;
+  const visitorAcceptedDonation = [...visit.history].reverse()
+    .find((entry) => entry.speaker === "visitor")?.text
+    .match(/\b(?:yes|i will|i can|gladly|bring|give|donate|contribute)\b/i);
+  if (donationIntent && visitorAcceptedDonation) actionType = "donate";
+  else if (latestIntent("apology", /\b(?:apologize|make amends|say sorry)\b/)) actionType = "apologize";
   else if (latestIntent("forgiveness", /\b(?:forgiv\w*|pardon|mercy|make amends)\b/)) actionType = "forgive";
   else if (latestIntent("truth", /\b(?:truth|confess|admit|honest)\b/)) actionType = "seek_absolution";
   else if (latestIntent("work", /\b(?:work|job|trade|labor|duty)\b/)) actionType = "work_harder";
@@ -1521,7 +1567,9 @@ export function fallbackDeparturePlan(state) {
   else if (latestIntent("report", /\b(?:report|reeve|justice)\b/)) actionType = "report_crime";
   else if (latestIntent("charity", /\b(?:help|charity|give|share|food|alms)\b/)) actionType = "share_food";
   const relationIds = person.relationshipIds.filter((id) => state.residents.some((resident) => resident.id === id && resident.active));
-  const targetId = TARGET_REQUIRED_ACTIONS.has(actionType) ? (relationIds[0] || null) : null;
+  const targetId = actionType === "donate" && donationIntent
+    ? "priest"
+    : TARGET_REQUIRED_ACTIONS.has(actionType) ? (relationIds[0] || null) : null;
   const steps = [{
     depth: 1,
     actorId: person.id,
@@ -1529,7 +1577,12 @@ export function fallbackDeparturePlan(state) {
     actionType,
     intensity: Math.min(visit.issue.gravity, maximumIntensityForLicense(visit.eventLicense)),
     title: `${person.name} acts on the priest's counsel`,
-    description: `${person.name} leaves the church and chooses to ${actionType.replaceAll("_", " ")}${targetId ? ` in dealing with ${state.residents.find((resident) => resident.id === targetId).name}` : ""}.`
+    description: actionType === "donate" && targetId === "priest"
+      ? `${person.name} brings a donation to the church.`
+      : `${person.name} leaves the church and chooses to ${actionType.replaceAll("_", " ")}${targetId ? ` in dealing with ${state.residents.find((resident) => resident.id === targetId).name}` : ""}.`,
+    detail: actionType === "donate" && donationIntent
+      ? `${donationIntent.resource}:${donationIntent.amount}`
+      : ""
   }];
   if (targetId && ["forgive", "apologize", "share_food", "report_crime"].includes(actionType)) {
     const target = materializeResident(state, targetId, false);
@@ -1574,6 +1627,7 @@ const HEALING_OCCUPATIONS = new Set(["healer", "herbalist", "midwife"]);
 const BUILDING_OCCUPATIONS = new Set(["blacksmith", "carpenter", "mason", "thatcher", "laborer"]);
 const HIRING_OCCUPATIONS = new Set(["reeve", "bailiff", "merchant", "innkeeper", "miller", "farmer"]);
 const PRIEST_TARGET_ACTIONS = new Set([
+  "donate",
   "flirt_with_priest", "proposition_priest", "attempt_seduction", "blackmail_priest",
   "report_priest_to_bishop", "praise_priest_to_bishop", "attack_priest", "poison_priest",
   "kill_priest", "defend_priest", "challenge_priest"
@@ -1951,11 +2005,11 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
     }
     if (!AI_ALLOWED_ACTIONS.includes(raw.actionType)) break;
     if (target?.id === "priest" && !PRIEST_TARGET_ACTIONS.has(raw.actionType)) break;
-    if (target?.id !== "priest" && PRIEST_TARGET_ACTIONS.has(raw.actionType)) break;
+    if (target?.id !== "priest" && PRIEST_TARGET_ACTIONS.has(raw.actionType) && raw.actionType !== "donate") break;
     if (raw.targetId != null && (!target || target.id === actor.id)) break;
     if (target && target.id !== "priest" && !actor.relationshipIds.includes(target.id)) break;
     if (TARGET_REQUIRED_ACTIONS.has(raw.actionType) && !target) break;
-    if (!TARGET_REQUIRED_ACTIONS.has(raw.actionType) && target) break;
+    if (!TARGET_REQUIRED_ACTIONS.has(raw.actionType) && target && raw.actionType !== "donate") break;
     if (!hasPhaseZeroCapability(actor, raw.actionType)) break;
     const detail = String(
       raw.detail || (["change_job", "offer_work"].includes(raw.actionType) ? "laborer" : "")
@@ -1985,6 +2039,11 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
         && (!source || !destination || !occupied.includes(destination)
           || source.id === destination.id || source.wealth < requestedIntensity * 2)) break;
       if (raw.actionType === "donate"
+        && target?.id === "priest") {
+        const donation = parseChurchDonationDetail(detail, requestedIntensity * 2);
+        const available = churchDonationCapacity(state, actor, donation.resource);
+        if (!source || available < donation.amount) break;
+      } else if (raw.actionType === "donate"
         && (!source || source.wealth < requestedIntensity * 2
           || (destination && (!occupied.includes(destination) || destination.id === source.id))
           || !(destination || occupied.some((household) => household.id !== source.id)))) break;
@@ -2001,7 +2060,7 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       intensity: requestedIntensity,
       title: raw.actionType.replaceAll("_", " "),
       description: `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`,
-      detail: ["change_job", "offer_work"].includes(raw.actionType) ? detail : "",
+      detail: ["change_job", "offer_work", "donate"].includes(raw.actionType) ? detail : "",
       decisionScore: resolvedDecisionScore,
       expectedCreatedResidentId: typeof raw.createdResidentId === "string" ? raw.createdResidentId : null
     });

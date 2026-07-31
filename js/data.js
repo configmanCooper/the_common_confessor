@@ -2,6 +2,18 @@ export const WEEK_DAYS = Object.freeze([
   "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
 ]);
 
+export const CHURCH_RESOURCE_DEFINITIONS = Object.freeze({
+  coin: { label: "Silver pennies", unit: "pennies", initial: 24, householdValue: 1 },
+  grain: { label: "Grain", unit: "sacks", initial: 14, householdValue: 4 },
+  bread: { label: "Bread", unit: "loaves", initial: 18, householdValue: 2 },
+  beans: { label: "Dried beans", unit: "measures", initial: 12, householdValue: 2 },
+  onions: { label: "Onions", unit: "bundles", initial: 16, householdValue: 1 },
+  saltedFish: { label: "Salted fish", unit: "fish", initial: 8, householdValue: 2 },
+  cheese: { label: "Hard cheese", unit: "wheels", initial: 6, householdValue: 2 },
+  firewood: { label: "Firewood", unit: "bundles", initial: 20, householdValue: 1 },
+  medicine: { label: "Medicinal herbs", unit: "doses", initial: 5, householdValue: 2 }
+});
+
 export const SESSION_LOCATIONS = Object.freeze({
   confessional: {
     name: "The Confessional",

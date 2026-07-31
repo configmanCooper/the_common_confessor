@@ -99,7 +99,9 @@ export function clarificationFacts(visit, text) {
   const referencesScenario = [...scenarioTerms].some((term) => term && speech.includes(term));
   if (/\b(?:why|how)\s+not\b/.test(speech)) return [];
   let wantedIds = [];
-  if (/\bwhat\b.*\b(?:trade|work|job|business)\b|\bwhich trade\b/.test(speech)) {
+  if (/\b(?:who|whom)\b.*\b(?:debt|debts|owe|owed)\b|\b(?:debt|debts|owe|owed)\b.*\b(?:who|whom)\b/.test(speech)) {
+    wantedIds = ["stakes"];
+  } else if (/\bwhat\b.*\b(?:trade|work|job|business)\b|\bwhich trade\b/.test(speech)) {
     wantedIds = ["trade", "mechanism"];
   } else if (/\b(?:what (?:was|is) your role|what did you do|were you involved|did you (?:take|steal|move|hide|divert)|who took|tell me what happened|what happened)\b/.test(speech)) {
     wantedIds = ["concrete_matter", "mechanism"];

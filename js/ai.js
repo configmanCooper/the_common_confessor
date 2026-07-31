@@ -1,5 +1,10 @@
 import { AI_ALLOWED_ACTIONS } from "./data.js";
 import { clarificationFacts } from "./conversation.js";
+import {
+  churchDonationCapacity,
+  churchResourceRows,
+  parseChurchTransferIntent
+} from "./church.js";
 
 function boundedString(value, maximum) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
@@ -15,8 +20,9 @@ function parseContent(payload) {
 function spokenScenarioFact(text, person) {
   const name = String(person?.name || "").trim();
   if (!name) return String(text || "");
+  const possessive = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'s\\b`, "gi");
   return String(text || "")
-    .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'s\\b`, "gi"), "my")
+    .replace(possessive, (_match, offset) => offset === 0 ? "My" : "my")
     .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+is\\b`, "gi"), "I am")
     .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+`, "gi"), "I ");
 }
@@ -101,6 +107,33 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
       requiredTerms: ["advice", "should", "help", "need"],
       responsePattern: /\b(?:should i|do you advise me to|help me decide whether|tell me whether)\b/i,
       fallbackReply: adviceQuestion(visit)
+    };
+  }
+  const churchTransfer = parseChurchTransferIntent(playerText);
+  if (churchTransfer) {
+    const resource = churchResourceRows(state.churchResources)
+      .find((entry) => entry.key === churchTransfer.resource);
+    const household = state.households.find((entry) => entry.id === person.householdId);
+    const canGive = churchTransfer.direction === "outgoing"
+      ? (resource?.amount || 0) >= churchTransfer.amount
+      : churchTransfer.resource === "coin"
+        ? (household?.wealth || 0) >= churchTransfer.amount
+        : churchDonationCapacity(state, person, churchTransfer.resource) >= churchTransfer.amount;
+    return {
+      type: churchTransfer.direction === "outgoing" ? "church_aid" : "church_donation",
+      requireAll: false,
+      minimumMatches: 1,
+      requiredTerms: [churchTransfer.resource, canGive ? "thank" : "cannot"],
+      responsePattern: canGive
+        ? /\b(?:thank|yes|i will|i can|gladly|grateful)\b/i
+        : /\b(?:cannot|not enough|unable|have none|do not have)\b/i,
+      fallbackReply: canGive
+        ? churchTransfer.direction === "outgoing"
+          ? `Thank you, Father. ${churchTransfer.amount} ${resource?.unit || churchTransfer.resource} from the church will give my household immediate relief.`
+          : `Yes, Father. I can give ${churchTransfer.amount} ${resource?.unit || churchTransfer.resource} to the church for those in greater need.`
+        : churchTransfer.direction === "outgoing"
+          ? `Father, the church does not have enough ${resource?.label.toLowerCase() || churchTransfer.resource} remaining to give that amount.`
+          : `I cannot honestly promise that donation; my household does not have enough to spare.`
     };
   }
   const offer = speech.match(/\b(?:would you like|do you want|may i offer|can i offer)\b.*\b(cheese|bread|food|ale|water|coin)\b/);
@@ -534,9 +567,14 @@ export class ParishAiClient extends EventTarget {
             ? "The priest asked whether there is anything else to discuss. Either introduce one concrete new concern or clearly say the meeting can end. Do not return to the resolved dilemma."
           : socialRequirement.type === "help_request"
             ? "The priest asked exactly what help or advice is wanted. State the concrete choice as a direct question or request. Do not answer vaguely or merely request privacy."
+          : socialRequirement.type === "church_aid"
+            ? "The priest committed church resources to the visitor. Acknowledge the exact aid directly and explain briefly what immediate need it addresses."
+          : socialRequirement.type === "church_donation"
+            ? "The priest asked the visitor to donate a specific resource to the church. Accept only if the household can spare it; otherwise refuse plainly."
           : `The priest advised: ${socialRequirement.proposedAction || socialRequirement.type}. Evaluate that exact advice before discussing anything else.`
         : "Respond directly to the priest's newest words before returning to the larger concern.",
       responseMode: mode,
+      churchResources: churchResourceRows(state.churchResources),
       conversation: visit.history.slice(-12),
       priestSpeech: boundedString(playerText, 600)
     };
@@ -563,6 +601,10 @@ export class ParishAiClient extends EventTarget {
       result.groundedFallback = true;
     }
     if (socialRequirement) {
+      if (["church_aid", "church_donation"].includes(socialRequirement.type)) {
+        result.reply = socialRequirement.fallbackReply;
+        result.groundedFallback = true;
+      }
       const direct = result.reply.toLowerCase();
       const matchCount = socialRequirement.requiredTerms.filter((term) => direct.includes(term)).length;
       const relevant = socialRequirement.responsePattern
@@ -655,6 +697,7 @@ export class ParishAiClient extends EventTarget {
         publicScandal: band(state.priest.scandal),
         visibleHealth: band(state.priest.health)
       },
+      churchResources: churchResourceRows(state.churchResources),
       visitor: {
         id: person.id,
         name: person.name,
@@ -732,6 +775,7 @@ export class ParishAiClient extends EventTarget {
       "Simulate what happens after a 16th-century villager leaves counsel with the parish priest.",
       "Produce a causal chain of one to three actions. Step 1 must be performed by the visitor. A later step should respond to the prior interaction and may involve one further person.",
       "Choose only listed IDs and allowed action types. Consequences may be helpful, harmful, mixed, mundane, or life-changing, but must follow from personality, circumstances, and the priest's actual words.",
+      "A visitor may donate to the church only by using actionType donate with targetId priest. Put the donated resource key and amount in detail, for example 'grain:2' or 'coin:4'. Church aid promised by the priest has already been transferred during the conversation and must not be transferred again.",
       `The event license is ${visit.eventLicense}. Ordinary means no farce or extraordinary behavior. Comic permits only a plausible minor misunderstanding. Outrageous permits consideration of an unusual response, but the current safe action list still governs.`,
       "Do not force births, marriages, violence, migration, or divorce without strong context. Write concrete chronicle descriptions without mentioning prompts or game mechanics.",
       `CONTEXT_JSON=${JSON.stringify(context)}`

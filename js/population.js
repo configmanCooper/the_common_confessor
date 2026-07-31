@@ -1,4 +1,5 @@
 import { buildFirstNameBank, buildSurnameBank, OCCUPATIONS } from "./data.js";
+import { upgradeChurchResources } from "./church.js";
 
 export const ADULT_AGE = 18;
 
@@ -121,6 +122,7 @@ export function upgradePopulationState(state) {
     crime: 25,
     infrastructure: 50
   };
+  upgradeChurchResources(state);
   const shouldSeedFamilies = state.householdFamiliesSeeded !== true;
   for (const command of state.commandLog || []) {
     if (command.type === "finish_visit") {

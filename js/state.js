@@ -1,9 +1,10 @@
 import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
+import { upgradeChurchResources } from "./church.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 10;
+export const STATE_SCHEMA_VERSION = 11;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -443,6 +444,19 @@ export function migrateState(rawState) {
     state.replayBase = { kind: "migration", sourceSchemaVersion: 9, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
+  if (detectedVersion === 10) {
+    verifyIntegrity(state);
+    upgradeChurchResources(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 10, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
   state.schemaVersion = STATE_SCHEMA_VERSION;
   state.version = STATE_SCHEMA_VERSION;
   return state;
@@ -536,6 +550,16 @@ export function validateState(state) {
   requireArray(state.parishFactions, "Parish factions");
   requireArray(state.sermonReactions, "Sermon reactions");
   requireArray(state.scenarioHistory, "Scenario history");
+  requireObject(state.churchResources, "Church resources");
+  const churchResourceKeys = ["coin", "grain", "bread", "beans", "onions", "saltedFish", "cheese", "firewood", "medicine"];
+  if (Object.keys(state.churchResources).sort().join(",") !== [...churchResourceKeys].sort().join(",")) {
+    throw new Error("Church resources have invalid keys");
+  }
+  for (const field of churchResourceKeys) {
+    if (!Number.isInteger(state.churchResources[field]) || state.churchResources[field] < 0 || state.churchResources[field] > 9999) {
+      throw new Error(`Church resource ${field} is invalid`);
+    }
+  }
   requireObject(state.material, "Material village state");
   for (const field of ["foodSecurity", "grainPrice", "diseasePressure", "crime", "infrastructure"]) {
     requireFinite(state.material[field], `Material ${field}`, 0, 100);
@@ -607,7 +631,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }

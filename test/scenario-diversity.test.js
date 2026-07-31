@@ -18,6 +18,8 @@ test("generated openings speak in the visitor's voice instead of narrating the v
     official: "Oswyn Page",
     resource: "the common field",
     sum: 8,
+    creditor: "Edwin Price",
+    debtSum: 14,
     deadlineDays: 4
   });
   for (const scenario of scenarios) {
@@ -26,7 +28,23 @@ test("generated openings speak in the visitor's voice instead of narrating the v
   }
   const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
   assert.match(grain.opening, /I diverted 8 sacks of grain/i);
-  assert.match(grain.opening, /My household debt/i);
+  assert.match(grain.opening, /My household owes 14 silver pennies to Edwin Price/i);
+});
+
+test("debt variants identify a concrete creditor", () => {
+  const scenarios = buildGeneratedScenarioArchetypes({
+    person: "Radel Roseham",
+    relation: "Odowyn Oakshaw",
+    victim: "Anias Applecombe",
+    official: "Oswyn Page",
+    resource: "the common field",
+    sum: 8,
+    creditor: "Edwin Price",
+    debtSum: 14,
+    deadlineDays: 10
+  });
+  const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
+  assert.match(grain.facts[2], /Radel Roseham's household owes 14 silver pennies to Edwin Price/i);
 });
 
 test("AI-written openings persist through canonical replay", () => {

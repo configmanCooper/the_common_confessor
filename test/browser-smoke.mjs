@@ -210,7 +210,8 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 10);
+  assert.equal(manualState.schemaVersion, 11);
+  assert.match(await page.locator("#church-resources").innerText(), /Bread/i);
   assert.equal(manualState.commandLog.length, 1);
   assert.equal(manualState.commandLog[0].type, "begin_visit");
   assert.equal(manualState.commandLog[0].source, "ai");
