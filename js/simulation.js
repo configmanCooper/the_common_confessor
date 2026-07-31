@@ -4,6 +4,7 @@ import {
   BACKSTORY_PARTS,
   buildFirstNameBank,
   buildSurnameBank,
+  EXTERNAL_ROLES,
   ISSUE_TEMPLATES,
   OCCUPATIONS,
   SERMON_THEMES,
@@ -198,6 +199,20 @@ export function createGame(seed = String(Date.now())) {
     households: createHouseholds(residents),
     externalActors: [],
     eventQueue: [],
+    outsideAttention: { church: 0, rome: 0, crown: 0, legal: 0 },
+    authorityStages: {
+      archdeaconCompleted: false,
+      bishopCompleted: false,
+      examinerCompleted: false,
+      sheriffCompleted: false,
+      papalLegateCompleted: false,
+      royalCommissionerCompleted: false,
+      nobleCompleted: false,
+      kingRollAttempted: false,
+      popeRollAttempted: false
+    },
+    nextExternalSequence: 1,
+    nextQueueSequence: 1,
     calendar: { absoluteDay: 0, week: 1, dayIndex: 0, slot: 0 },
     currentVisit: null,
     chronicle: [],
@@ -257,7 +272,7 @@ function deriveResidentProfile(state, person) {
 }
 
 export function materializeResident(state, personId, revealProfile = false) {
-  const person = state.residents.find((resident) => resident.id === personId);
+  const person = [...state.residents, ...state.externalActors].find((resident) => resident.id === personId);
   if (!person) {
     throw new Error(`Unknown resident: ${personId}`);
   }
@@ -297,12 +312,191 @@ function issueForPerson(state, person) {
   return issue;
 }
 
+function scheduleExternalVisit(state, role, reason, delayDays, sourcePersonId = null, sourceEventId = null) {
+  if (state.eventQueue.some((event) => event.type === "external_visit" && event.role === role)) return null;
+  const event = {
+    id: `queue-${String(state.nextQueueSequence++).padStart(6, "0")}`,
+    type: "external_visit",
+    role,
+    reason: String(reason).slice(0, 220),
+    dueDay: state.calendar.absoluteDay + delayDays,
+    sourcePersonId,
+    sourceEventId,
+    actorId: null,
+    targetId: "priest",
+    payload: {}
+  };
+  state.eventQueue.push(event);
+  return event;
+}
+
+function escalateAuthority(state, actionType, actor, sourceEventId) {
+  const rng = new SeededRng(`${state.seed}:authority:${state.calendar.absoluteDay}:${actionType}:${actor.id}`);
+  const nextChurchRole = () => (
+    !state.authorityStages.archdeaconCompleted
+      ? "archdeacon"
+      : !state.authorityStages.bishopCompleted
+        ? "bishop"
+        : !state.authorityStages.examinerCompleted
+          ? "inquisitor"
+          : "papal_legate"
+  );
+  if (["report_priest_to_bishop", "petition_bishop"].includes(actionType)) {
+    state.outsideAttention.church = clamp(state.outsideAttention.church + 18);
+    const role = nextChurchRole();
+    scheduleExternalVisit(
+      state,
+      role,
+      `${actor.name} sent a complaint concerning the priest.`,
+      rng.int(2, 6),
+      actor.id,
+      sourceEventId
+    );
+  }
+  if (["attack_priest", "poison_priest", "kill_priest"].includes(actionType)) {
+    state.outsideAttention.legal = clamp(state.outsideAttention.legal + 30);
+    scheduleExternalVisit(state, "sheriff", `Violence was committed against the parish priest.`, 1, actor.id, sourceEventId);
+    if (state.priest.alive) scheduleExternalVisit(state, "physician", `The priest was injured.`, 1, actor.id, sourceEventId);
+  }
+  if (["claim_miracle", "fake_miracle", "claim_prophecy"].includes(actionType)) {
+    state.outsideAttention.church = clamp(state.outsideAttention.church + 15);
+    state.outsideAttention.rome = clamp(state.outsideAttention.rome + (actionType === "fake_miracle" ? 12 : 6));
+    scheduleExternalVisit(state, nextChurchRole(), `Extraordinary religious claims spread from ${state.town.name}.`, rng.int(4, 10), actor.id, sourceEventId);
+  }
+  if (actionType === "appeal_to_rome") {
+    state.outsideAttention.rome = clamp(state.outsideAttention.rome + 25);
+    if (state.authorityStages.examinerCompleted) {
+      scheduleExternalVisit(state, "papal_legate", `${actor.name} appealed beyond the diocese.`, rng.int(14, 35), actor.id, sourceEventId);
+    } else if (state.authorityStages.bishopCompleted) {
+      scheduleExternalVisit(state, "inquisitor", `${actor.name}'s appeal requires formal examination.`, rng.int(7, 18), actor.id, sourceEventId);
+    } else {
+      scheduleExternalVisit(
+        state,
+        state.authorityStages.archdeaconCompleted ? "bishop" : "archdeacon",
+        `${actor.name}'s appeal must first pass diocesan inquiry.`,
+        rng.int(4, 12),
+        actor.id,
+        sourceEventId
+      );
+    }
+  }
+  if (actionType === "petition_crown") {
+    state.outsideAttention.crown = clamp(state.outsideAttention.crown + 25);
+    const role = !state.authorityStages.sheriffCompleted
+      ? "sheriff"
+      : !state.authorityStages.royalCommissionerCompleted
+        ? "royal_commissioner"
+        : "noble";
+    scheduleExternalVisit(state, role, `${actor.name} petitioned the Crown.`, rng.int(7, 21), actor.id, sourceEventId);
+  }
+  if (state.outsideAttention.rome >= 95 && state.calendar.week >= 12
+    && state.authorityStages.bishopCompleted
+    && state.authorityStages.examinerCompleted
+    && state.authorityStages.papalLegateCompleted
+    && !state.authorityStages.popeRollAttempted) {
+    state.authorityStages.popeRollAttempted = true;
+    if (rng.next() < 0.002) scheduleExternalVisit(state, "pope", `Rome's attention has become extraordinary.`, rng.int(30, 90), actor.id, sourceEventId);
+  }
+  if (state.outsideAttention.crown >= 95 && state.calendar.week >= 8
+    && state.authorityStages.sheriffCompleted
+    && state.authorityStages.royalCommissionerCompleted
+    && state.authorityStages.nobleCompleted
+    && !state.authorityStages.kingRollAttempted) {
+    state.authorityStages.kingRollAttempted = true;
+    if (rng.next() < 0.002) scheduleExternalVisit(state, "king", `The Crown's attention has become extraordinary.`, rng.int(20, 70), actor.id, sourceEventId);
+  }
+}
+
+function createExternalVisitor(state, queued) {
+  const definition = EXTERNAL_ROLES[queued.role];
+  if (!definition) throw new Error(`Unknown external role: ${queued.role}`);
+  const rng = new SeededRng(`${state.seed}:external:${queued.id}:${queued.role}`);
+  const person = {
+    id: `external-${String(state.nextExternalSequence++).padStart(4, "0")}`,
+    name: rng.pick(definition.names),
+    firstName: definition.names[0].split(" ")[0],
+    surname: "Outside",
+    role: queued.role,
+    occupation: definition.title,
+    age: rng.int(35, 72),
+    sprite: definition.sprite,
+    active: true,
+    alive: true,
+    materialized: true,
+    profileRevealed: true,
+    relationshipIds: queued.sourcePersonId ? [queued.sourcePersonId] : [],
+    memories: [],
+    personality: {
+      traits: ["authoritative", queued.role.includes("papal") || queued.role === "pope" ? "devout" : "watchful"],
+      candor: rng.int(45, 85),
+      empathy: rng.int(25, 70),
+      boldness: rng.int(65, 95),
+      piety: rng.int(45, 95)
+    },
+    publicBackstory: `${definition.title} visiting from beyond the parish.`,
+    backstory: `${definition.title} visiting because ${queued.reason}.`,
+    privatePressure: queued.reason,
+    trustPriest: 50,
+    stress: 25,
+    faith: 65,
+    morale: 60,
+    prosperity: 70,
+    health: 75,
+    reputation: 75
+  };
+  state.externalActors.push(person);
+  return { person, definition };
+}
+
 export function beginVisit(state, { record = true } = {}) {
   if (!state.priest.alive) throw new Error("The priest is dead; no further appointments can begin");
   if (state.calendar.dayIndex === 6) {
     throw new Error("Sunday is reserved for the parish service");
   }
   if (state.currentVisit) {
+    return state.currentVisit;
+  }
+  const queuedIndex = state.eventQueue.findIndex((event) => (
+    event.type === "external_visit" && event.dueDay <= state.calendar.absoluteDay
+  ));
+  if (queuedIndex >= 0) {
+    const queued = state.eventQueue.splice(queuedIndex, 1)[0];
+    const { person, definition } = createExternalVisitor(state, queued);
+    const issue = {
+      kind: "outside authority",
+      location: definition.location,
+      gravity: 5,
+      opening: definition.opening,
+      detail: queued.reason,
+      relatedPersonId: queued.sourcePersonId,
+      relatedName: queued.sourcePersonId
+        ? state.residents.find((resident) => resident.id === queued.sourcePersonId)?.name
+        : null
+    };
+    const originEvent = appendEvent(state, {
+      type: "external_visit_started",
+      parentId: queued.sourceEventId || state.events.at(-1)?.id || null,
+      actorId: person.id,
+      targetId: "priest",
+      facts: { role: queued.role, reason: queued.reason }
+    });
+    state.currentVisit = {
+      visitId: `visit-${state.calendar.absoluteDay}-${state.calendar.slot}-${person.id}`,
+      personId: person.id,
+      issue,
+      intent: createVisitIntent(state, person, issue),
+      location: issue.location,
+      turnsUsed: 0,
+      maxTurns: 10,
+      originEventId: originEvent.id,
+      history: [{ speaker: "visitor", text: issue.opening }],
+      counsel: [],
+      mood: "guarded",
+      disclosure: 20,
+      hiddenConcernDisclosed: false,
+      eventLicense: "ordinary"
+    };
+    if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
   }
   const candidates = counselEligibleResidents(state)
@@ -757,6 +951,7 @@ export function applyAction(state, step) {
     }
   );
   const eventId = state.chronicle[0].eventId;
+  escalateAuthority(state, step.actionType, actor, eventId);
   let consequenceEventId = eventId;
   if (createdResident) {
     addChronicle(
@@ -857,9 +1052,10 @@ export function fallbackDeparturePlan(state) {
 
 export function departureCandidates(state) {
   const person = materializeResident(state, state.currentVisit.personId, true);
-  const first = person.relationshipIds.map((id) => state.residents.find((resident) => resident.id === id)).filter((resident) => resident?.active);
+  const people = [...state.residents, ...state.externalActors];
+  const first = person.relationshipIds.map((id) => people.find((resident) => resident.id === id)).filter((resident) => resident?.active);
   const second = first.flatMap((resident) => resident.relationshipIds)
-    .map((id) => state.residents.find((resident) => resident.id === id))
+    .map((id) => people.find((resident) => resident.id === id))
     .filter((resident) => resident?.active);
   return [...new Map([person, ...first, ...second].map((resident) => [resident.id, resident])).values()].slice(0, 18);
 }
@@ -893,6 +1089,24 @@ function hasPhaseZeroCapability(actor, actionType) {
 function hasLifeCourseEligibility(state, visit, actor, target, actionType, detail) {
   const counsel = visit.counsel.join(". ").toLowerCase();
   const household = state.households.find((entry) => entry.id === actor.householdId);
+  const authorityPatterns = {
+    petition_bishop: /^(?:please\s+)?(?:petition|write to|report to|contact)\s+(?:the\s+)?bishop[.!]?$/,
+    appeal_to_rome: /^(?:please\s+)?(?:appeal|write|send word)\s+(?:to\s+)?(?:rome|the pope|papal authority)[.!]?$/,
+    petition_crown: /^(?:please\s+)?(?:petition|write to|appeal to)\s+(?:the\s+)?(?:crown|king|royal court)[.!]?$/,
+    report_priest_to_bishop: /^(?:please\s+)?report\s+(?:the\s+)?priest\s+to\s+(?:the\s+)?bishop[.!]?$/,
+    claim_miracle: /^(?:please\s+)?(?:claim|declare)\s+(?:this\s+)?(?:a\s+)?miracle[.!]?$/,
+    fake_miracle: /^(?:please\s+)?(?:stage|fake)\s+(?:a\s+)?(?:false\s+)?miracle[.!]?$/,
+    claim_prophecy: /^(?:please\s+)?(?:claim|declare)\s+(?:a\s+)?prophecy[.!]?$/
+  };
+  if (authorityPatterns[actionType]) {
+    if (actor.age < ADULT_AGE) return false;
+    if (["claim_miracle", "fake_miracle", "claim_prophecy"].includes(actionType)
+      && visit.eventLicense !== "outrageous") return false;
+    const counsel = visit.counsel.map((entry) => entry.trim().toLowerCase());
+    const commandIndex = counsel.findIndex((entry) => authorityPatterns[actionType].test(entry));
+    if (commandIndex < 0) return false;
+    return !counsel.slice(commandIndex + 1).some((entry) => /\b(?:retract|take that back|do not|don't|not|never)\b/.test(entry));
+  }
   const comicActions = new Set(["play_prank", "ring_bells_at_midnight"]);
   const outrageousActions = new Set([
     "release_livestock_in_church", "fake_miracle", "claim_prophecy", "claim_miracle",
@@ -1156,6 +1370,57 @@ function requiredDecisionScore(actionType) {
   return 25;
 }
 
+function resolveExternalJudgment(state, person, parentEventId) {
+  const role = person.role;
+  let title = `${person.name} concludes the visit`;
+  let text = `${person.name} leaves after recording the parish's condition.`;
+  if (["archdeacon", "bishop", "inquisitor"].includes(role)) {
+    const favorable = state.priest.scandal < 35 && state.priest.moralAuthority >= 45;
+    state.priest.bishopFavor = clamp(state.priest.bishopFavor + (favorable ? 8 : -12));
+    state.priest.moralAuthority = clamp(state.priest.moralAuthority + (favorable ? 4 : -6));
+    if (role === "archdeacon") state.authorityStages.archdeaconCompleted = true;
+    if (role === "bishop") state.authorityStages.bishopCompleted = true;
+    if (role === "inquisitor") state.authorityStages.examinerCompleted = true;
+    title = favorable ? "The church inquiry favors the priest" : "The church inquiry censures the priest";
+    text = favorable
+      ? `${person.name} finds no cause for severe sanction.`
+      : `${person.name} issues a formal warning and damages the priest's standing.`;
+  } else if (role === "papal_legate") {
+    state.authorityStages.papalLegateCompleted = true;
+    state.priest.bishopFavor = clamp(state.priest.bishopFavor + (state.priest.scandal < 45 ? 10 : -15));
+    title = "The papal legate issues a ruling";
+    text = state.priest.scandal < 45 ? "Rome leaves the parish under ordinary oversight." : "Rome places the parish under strict examination.";
+  } else if (role === "sheriff") {
+    state.authorityStages.sheriffCompleted = true;
+    state.town.metrics.safety = clamp(state.town.metrics.safety + 6);
+    const accused = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
+    if (accused) accused.flags.push("under_arrest");
+    title = "The sheriff concludes an investigation";
+    text = accused ? `${accused.name} is taken into custody for questioning.` : "The sheriff orders a stronger watch around the church.";
+  } else if (role === "physician") {
+    state.priest.health = clamp(state.priest.health + 25);
+    title = "The physician treats Father Benedict";
+    text = "The priest receives skilled treatment for his injuries.";
+  } else if (["royal_commissioner", "noble", "king"].includes(role)) {
+    if (role === "royal_commissioner") state.authorityStages.royalCommissionerCompleted = true;
+    if (role === "noble") state.authorityStages.nobleCompleted = true;
+    state.priest.royalNotice = clamp(state.priest.royalNotice + (state.priest.scandal < 40 ? 8 : -5));
+    title = "Royal authority issues a judgment";
+    text = state.priest.scandal < 40 ? "The Crown finds the parish broadly orderly." : "The Crown warns the parish against further disorder.";
+  } else if (role === "pope") {
+    title = "The Holy Father pronounces on the parish";
+    text = state.priest.scandal < 35 ? "The parish receives a rare blessing." : "The priest receives a grave personal rebuke.";
+  }
+  addChronicle(state, title, text, "change", {
+    type: "authority_judgment",
+    parentId: parentEventId,
+    actorId: person.id,
+    targetId: "priest",
+    facts: { role }
+  });
+  return state.chronicle[0].eventId;
+}
+
 export function validateDeparturePlan(state, plan, candidates = departureCandidates(state)) {
   const visit = state.currentVisit;
   if (!visit) return { summary: "", steps: [] };
@@ -1271,6 +1536,9 @@ export function finishVisit(state, plan, { record = true } = {}) {
       state.statistics.cascades += 1;
     }
   }
+  if (person.id.startsWith("external-")) {
+    parentEventId = resolveExternalJudgment(state, person, parentEventId);
+  }
   addStructuredMemory(state, person, {
     type: "outcome",
     summary: `On ${calendarLabel(state)}, ${String(validated.summary || "the hour left its mark").slice(0, 170)}`,
@@ -1286,6 +1554,7 @@ export function finishVisit(state, plan, { record = true } = {}) {
       resolution: acceptedAiProposal ? "accepted_ai" : rejectedProposal ? "fallback_after_rejection" : "fallback"
     }, acceptedAiProposal ? "ai" : (plan?.source || "simulation") === "ai" ? "fallback" : (plan?.source || "simulation"));
   }
+  if (person.id.startsWith("external-")) person.active = false;
   state.currentVisit = null;
   state.conversationHistory = [];
   state.calendar.slot += 1;
@@ -1444,7 +1713,8 @@ export function replayGame(seed, commands, replayBase = null) {
         throw new Error(`Replay visitor mismatch at command ${command.id}`);
       }
     } else if (command.type === "conversation_exchange") {
-      const person = state.residents.find((resident) => resident.id === state.currentVisit?.personId);
+      const person = [...state.residents, ...state.externalActors]
+        .find((resident) => resident.id === state.currentVisit?.personId);
       const resolution = resolvePriestSpeech(state, person, state.currentVisit, command.payload.playerText);
       if (command.payload.response.trustDelta !== resolution.trustDelta
         || command.payload.response.stressDelta !== resolution.stressDelta

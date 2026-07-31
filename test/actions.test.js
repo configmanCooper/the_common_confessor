@@ -82,6 +82,7 @@ test("reports, praise, defense, and scandal mechanically affect the priest", () 
   reporter.ageDays = 35 * 365;
   reporter.trustPriest = 0;
   report.priest.scandal = 50;
+  reportVisit.counsel.push("Report the priest to the bishop.");
   const favor = report.priest.bishopFavor;
   finishVisit(report, {
     source: "ai",
@@ -166,6 +167,7 @@ test("comic and outrageous actions obey deterministic event licenses", () => {
   visit.eventLicense = "outrageous";
   assert.equal(validateDeparturePlan(state, livestock, departureCandidates(state)).steps.length, 1);
   for (const actionType of ["ring_bells_at_midnight", "claim_miracle"]) {
+    visit.counsel = actionType === "claim_miracle" ? ["Claim this a miracle."] : [];
     visit.eventLicense = "comic";
     assert.equal(validateDeparturePlan(state, {
       steps: [{ actorId: actor.id, targetId: null, actionType, intensity: 3 }]

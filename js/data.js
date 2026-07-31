@@ -247,10 +247,15 @@ export const PHASE_FOUR_PRIEST_ACTIONS = Object.freeze([
   "return_church_relic", "claim_miracle", "fake_miracle", "claim_prophecy"
 ]);
 
+export const PHASE_FIVE_AUTHORITY_ACTIONS = Object.freeze([
+  "petition_bishop", "appeal_to_rome", "petition_crown", "claim_miracle", "fake_miracle"
+]);
+
 export const AI_ALLOWED_ACTIONS = Object.freeze([
   ...PHASE_ZERO_SAFE_ACTIONS,
   ...PHASE_TWO_LIFE_ACTIONS,
-  ...PHASE_FOUR_PRIEST_ACTIONS
+  ...PHASE_FOUR_PRIEST_ACTIONS,
+  ...PHASE_FIVE_AUTHORITY_ACTIONS
 ]);
 
 export const EXTERNAL_ROLES = Object.freeze({

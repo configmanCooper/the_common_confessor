@@ -91,8 +91,8 @@ test("state validation rejects malformed visits, causal references, and counters
     memories: []
   });
   beginVisit(externalVisit);
-  externalVisit.currentVisit.personId = "external-001";
-  assert.throws(() => serializeState(externalVisit), /must reference a resident/);
+  externalVisit.currentVisit.personId = "external-missing";
+  assert.throws(() => serializeState(externalVisit), /known person/);
 
   const cycle = createGame("event-cycle-seed");
   cycle.events[0].parentId = cycle.events[1].id;

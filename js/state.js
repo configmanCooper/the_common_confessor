@@ -2,13 +2,35 @@ import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
 
-export const STATE_SCHEMA_VERSION = 5;
+export const STATE_SCHEMA_VERSION = 6;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
 
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function upgradeAuthorityState(state) {
+  state.outsideAttention ||= { church: 0, rome: 0, crown: 0, legal: 0 };
+  state.authorityStages ||= {
+    archdeaconCompleted: false,
+    bishopCompleted: false,
+    examinerCompleted: false,
+    sheriffCompleted: false,
+    papalLegateCompleted: false,
+    royalCommissionerCompleted: false,
+    nobleCompleted: false,
+    kingRollAttempted: false,
+    popeRollAttempted: false
+  };
+  state.authorityStages.archdeaconCompleted ??= false;
+  state.authorityStages.examinerCompleted ??= false;
+  state.authorityStages.sheriffCompleted ??= false;
+  state.authorityStages.nobleCompleted ??= false;
+  state.nextExternalSequence ||= state.externalActors.length + 1;
+  state.nextQueueSequence ||= state.eventQueue.length + 1;
+  return state;
 }
 
 function stableStringify(value) {
@@ -20,7 +42,6 @@ function stableStringify(value) {
     .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
     .join(",")}}`;
 }
-
 export function computeIntegrityHash(state) {
   const text = stableStringify(state);
   let hash = 2166136261;
@@ -142,6 +163,7 @@ function upgradeConversationState(state) {
   ));
   state.priest.positions ||= [];
   state.priest.relicStolenById ??= null;
+  upgradeAuthorityState(state);
   for (const position of state.priest.positions) {
     position.personId ||= state.currentVisit?.personId || state.residents?.[0]?.id || "priest";
   }
@@ -221,6 +243,7 @@ export function migrateState(rawState) {
     }
     upgradePopulationState(state);
     upgradeConversationState(state);
+    upgradeAuthorityState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const replaySnapshot = {
@@ -242,6 +265,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 2) {
     upgradePopulationState(state);
     upgradeConversationState(state);
+    upgradeAuthorityState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -266,6 +290,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 3) {
     verifyIntegrity(state);
     upgradeConversationState(state);
+    upgradeAuthorityState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -287,9 +312,28 @@ export function migrateState(rawState) {
     };
     sealState(state);
   }
+  if (detectedVersion === 5) {
+    verifyIntegrity(state);
+    upgradeAuthorityState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 5,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
   if (detectedVersion === 4) {
     verifyIntegrity(state);
     state.priest.relicStolenById ??= null;
+    upgradeAuthorityState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -403,6 +447,18 @@ export function validateState(state) {
   if (typeof state.householdFamiliesSeeded !== "boolean") throw new Error("Household family seed state is invalid");
   requireArray(state.externalActors, "External actors");
   requireArray(state.eventQueue, "Event queue");
+  requireObject(state.outsideAttention, "Outside attention");
+  requireObject(state.authorityStages, "Authority stages");
+  for (const field of [
+    "archdeaconCompleted", "bishopCompleted", "examinerCompleted", "sheriffCompleted",
+    "papalLegateCompleted", "royalCommissionerCompleted", "nobleCompleted",
+    "kingRollAttempted", "popeRollAttempted"
+  ]) {
+    if (typeof state.authorityStages[field] !== "boolean") throw new Error(`Authority stage ${field} is invalid`);
+  }
+  for (const field of ["church", "rome", "crown", "legal"]) {
+    requireFinite(state.outsideAttention[field], `Outside attention ${field}`, 0, 100);
+  }
   requireArray(state.commandLog, "Command log");
   requireArray(state.aiProposals, "AI proposals");
   requireArray(state.events, "Events");
@@ -442,7 +498,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -556,6 +612,18 @@ export function validateState(state) {
       }
       requireArray(person.relationshipIds, `Relationships for ${person.id}`);
       requireArray(person.memories, `Memories for ${person.id}`);
+      for (const memory of person.memories) {
+        requireObject(memory, `Memory for ${person.id}`);
+        if (typeof memory.id !== "string" || typeof memory.type !== "string"
+          || typeof memory.subjectId !== "string" || typeof memory.summary !== "string"
+          || typeof memory.emotion !== "string" || typeof memory.privateMemory !== "boolean"
+          || !Number.isInteger(memory.day)) {
+          throw new Error(`External actor ${person.id} has invalid memory`);
+        }
+        requireFinite(memory.confidence, `Memory confidence for ${person.id}`, 0, 100);
+        if (memoryIds.has(memory.id)) throw new Error(`Duplicate memory ID: ${memory.id}`);
+        memoryIds.add(memory.id);
+      }
     }
   }
 
@@ -688,7 +756,7 @@ export function validateState(state) {
     }
     priorEventIds.add(event.id);
   }
-  for (const person of state.residents) {
+  for (const person of [...state.residents, ...state.externalActors]) {
     for (const memory of person.memories) {
       if (memory.sourceEventId != null && !eventIds.has(memory.sourceEventId)) {
         throw new Error(`Memory ${memory.id} has missing source event`);
@@ -717,7 +785,7 @@ export function validateState(state) {
   }
   if (state.currentVisit) {
     requireObject(state.currentVisit, "Current visit");
-    if (!residentIds.has(state.currentVisit.personId)) throw new Error("Current visit must reference a resident");
+    if (!personIds.has(state.currentVisit.personId)) throw new Error("Current visit must reference a known person");
     if (typeof state.currentVisit.visitId !== "string" || !state.currentVisit.visitId) throw new Error("Current visit has no stable ID");
     requireObject(state.currentVisit.issue, "Current visit issue");
     if (typeof state.currentVisit.issue.kind !== "string" || typeof state.currentVisit.issue.opening !== "string") {
@@ -778,7 +846,7 @@ export function validateState(state) {
       if (typeof command.payload.personId !== "string" || typeof command.payload.visitId !== "string") {
         throw new Error("Begin-visit command payload is invalid");
       }
-      if (!residentIds.has(command.payload.personId)) throw new Error("Begin-visit command references a missing resident");
+      if (!personIds.has(command.payload.personId)) throw new Error("Begin-visit command references a missing person");
       activeVisitPersonId = command.payload.personId;
       activeVisitTurns = 0;
     } else if (command.type === "conversation_exchange") {
@@ -815,10 +883,10 @@ export function validateState(state) {
       for (let stepIndex = 0; stepIndex < command.payload.plan.steps.length; stepIndex += 1) {
         const step = command.payload.plan.steps[stepIndex];
         requireObject(step, "Finish command step");
-        if (step.depth !== stepIndex + 1 || step.actorId !== expectedActorId || !residentIds.has(step.actorId)) {
+        if (step.depth !== stepIndex + 1 || step.actorId !== expectedActorId || !personIds.has(step.actorId)) {
           throw new Error("Finish command causal actor is invalid");
         }
-        if (step.targetId != null && step.targetId !== "priest" && !residentIds.has(step.targetId)) {
+        if (step.targetId != null && step.targetId !== "priest" && !personIds.has(step.targetId)) {
           throw new Error("Finish command target is invalid");
         }
         if (!AI_ALLOWED_ACTIONS.includes(step.actionType)) throw new Error("Finish command action is invalid");
@@ -886,13 +954,21 @@ export function validateState(state) {
   for (const queued of state.eventQueue) {
     requireObject(queued, "Queued event");
     if (typeof queued.id !== "string" || typeof queued.type !== "string"
-      || !Number.isInteger(queued.dueDay) || queued.dueDay < state.calendar.absoluteDay) {
+      || !Number.isInteger(queued.dueDay) || queued.dueDay < 0) {
       throw new Error("Queued event has invalid identity or due day");
+    }
+    const queueIds = new Set();
+    for (const queued of state.eventQueue) {
+      if (queueIds.has(queued.id)) throw new Error(`Duplicate queue ID: ${queued.id}`);
+      queueIds.add(queued.id);
     }
     requireObject(queued.payload, `Payload for queued event ${queued.id}`);
     for (const field of ["actorId", "targetId", "sourcePersonId"]) {
       if (queued[field] != null && queued[field] !== "priest" && !personIds.has(queued[field])) {
         throw new Error(`Queued event references missing person ${queued[field]}`);
+      }
+      if (queued.sourceEventId != null && !eventIds.has(queued.sourceEventId)) {
+        throw new Error(`Queued event ${queued.id} has missing source event`);
       }
     }
   }
@@ -919,7 +995,7 @@ export function validateState(state) {
     const match = /^rumor-(\d+)$/.exec(rumor.id);
     return Math.max(maximum, match ? Number(match[1]) : 0);
   }, 0);
-  const maximumMemorySequence = state.residents.flatMap((person) => person.memories).reduce((maximum, memory) => {
+  const maximumMemorySequence = [...state.residents, ...state.externalActors].flatMap((person) => person.memories).reduce((maximum, memory) => {
     const match = /^memory-(\d+)$/.exec(memory.id);
     return Math.max(maximum, match ? Number(match[1]) : 0);
   }, 0);
@@ -944,6 +1020,20 @@ export function validateState(state) {
   }
   if (!Number.isInteger(state.lastInvitedMigrationDay)) {
     throw new Error("Invited migration cooldown is invalid");
+  }
+  const maximumExternalSequence = state.externalActors.reduce((maximum, actor) => {
+    const match = /^external-(\d+)$/.exec(actor.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
+  const maximumQueueSequence = state.eventQueue.reduce((maximum, event) => {
+    const match = /^queue-(\d+)$/.exec(event.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
+  if (!Number.isInteger(state.nextExternalSequence) || state.nextExternalSequence <= maximumExternalSequence) {
+    throw new Error("External actor sequence is invalid");
+  }
+  if (!Number.isInteger(state.nextQueueSequence) || state.nextQueueSequence <= maximumQueueSequence) {
+    throw new Error("Queue sequence is invalid");
   }
   return state;
 }
@@ -1040,7 +1130,8 @@ export function compactReplayHistory(state) {
     ...state.chronicle.map((entry) => entry.eventId),
     ...state.knowledge.map((entry) => entry.sourceEventId),
     ...state.rumors.map((rumor) => rumor.sourceEventId),
-    ...state.residents.flatMap((person) => person.memories.map((memory) => memory.sourceEventId))
+    ...[...state.residents, ...state.externalActors].flatMap((person) => person.memories.map((memory) => memory.sourceEventId)),
+    ...state.eventQueue.map((event) => event.sourceEventId)
   ].filter(Boolean));
   const eventsById = new Map(state.events.map((event) => [event.id, event]));
   const frontier = [...retainedEventIds];

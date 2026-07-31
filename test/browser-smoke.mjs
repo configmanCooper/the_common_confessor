@@ -187,7 +187,7 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 5);
+  assert.equal(manualState.schemaVersion, 6);
   assert.equal(manualState.commandLog.length, 0);
   assert.equal(manualState.replayBase.kind, "periodic");
   assert.deepEqual(saveMetadata.legacyAutosaves, [null, null, null]);
