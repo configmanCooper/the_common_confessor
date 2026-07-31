@@ -252,7 +252,12 @@ function updateMetrics() {
     return row;
     });
   }
-  elements["town-metrics"].replaceChildren(...metricRows(state.town.metrics));
+  elements["town-metrics"].replaceChildren(...metricRows({
+    ...state.town.metrics,
+    food: state.material.foodSecurity,
+    infrastructure: state.material.infrastructure,
+    crime: 100 - state.material.crime
+  }));
   elements["priest-metrics"].replaceChildren(...metricRows({
     trust: state.priest.localTrust,
     authority: state.priest.moralAuthority,

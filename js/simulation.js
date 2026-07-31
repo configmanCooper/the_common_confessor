@@ -812,6 +812,30 @@ export function applyAction(state, step) {
       state.priest.alive = false;
     }
   };
+  const occupiedHouseholds = state.households.filter((household) => household.memberIds.some((id) => {
+    const person = state.residents.find((resident) => resident.id === id);
+    return person?.active && person.alive;
+  }));
+  const sourceHousehold = state.households.find((household) => household.id === actor.householdId);
+  const targetHousehold = target && !targetIsPriest
+    ? state.households.find((household) => household.id === target.householdId)
+    : null;
+  if (["repair", "build"].includes(step.actionType)
+    && (!sourceHousehold || sourceHousehold.wealth < intensity * 2 || sourceHousehold.food < intensity)) return null;
+  if (step.actionType === "share_food"
+    && (!sourceHousehold || !targetHousehold || !occupiedHouseholds.includes(targetHousehold)
+      || sourceHousehold.id === targetHousehold.id || sourceHousehold.food < intensity * 2)) return null;
+  if (step.actionType === "lend_money"
+    && (!sourceHousehold || !targetHousehold || !occupiedHouseholds.includes(targetHousehold)
+      || sourceHousehold.id === targetHousehold.id || sourceHousehold.wealth < intensity * 2)) return null;
+  if (step.actionType === "donate"
+    && (!sourceHousehold || sourceHousehold.wealth < intensity * 2
+      || (targetHousehold && (!occupiedHouseholds.includes(targetHousehold) || targetHousehold.id === sourceHousehold.id))
+      || !(targetHousehold || occupiedHouseholds.some((household) => household.id !== sourceHousehold.id)))) return null;
+  if (step.actionType === "lower_prices" && (!sourceHousehold || sourceHousehold.wealth < intensity)) return null;
+  if (step.actionType === "organize_aid"
+    && (!sourceHousehold || (sourceHousehold.food < intensity * 2 && sourceHousehold.wealth < intensity)
+      || !occupiedHouseholds.some((household) => household.id !== sourceHousehold.id))) return null;
   const deltas = metricDeltaForAction(step.actionType);
   for (const [metric, delta] of Object.entries(deltas)) {
     state.town.metrics[metric] = clamp(state.town.metrics[metric] + delta * (intensity / 2));
@@ -849,6 +873,67 @@ export function applyAction(state, step) {
   if (step.actionType === "offer_work" && target) {
     target.occupation = step.detail?.slice(0, 40) || "laborer";
     target.prosperity = clamp(target.prosperity + 4);
+  }
+  if (step.actionType === "repair" || step.actionType === "build") {
+    const household = state.households.find((entry) => entry.id === actor.householdId);
+    const wealthCost = intensity * 2;
+    const foodCost = intensity;
+    if (household && household.wealth >= wealthCost && household.food >= foodCost) {
+      household.wealth = clamp(household.wealth - wealthCost);
+      household.food = clamp(household.food - foodCost);
+      state.material.infrastructure = clamp(state.material.infrastructure + intensity * 3);
+    }
+  }
+  if (step.actionType === "report_crime" || step.actionType === "testify") {
+    state.material.crime = clamp(state.material.crime - intensity * 3);
+    state.town.metrics.safety = clamp(state.town.metrics.safety + intensity * 2);
+  }
+  if (step.actionType === "share_food" && target) {
+    if (sourceHousehold && targetHousehold) {
+      const amount = Math.min(sourceHousehold.food, intensity * 2);
+      sourceHousehold.food = clamp(sourceHousehold.food - amount);
+      targetHousehold.food = clamp(targetHousehold.food + amount);
+    }
+  }
+  if (step.actionType === "lend_money" && target) {
+      const source = sourceHousehold;
+      const destination = targetHousehold;
+      const amount = Math.min(source?.wealth || 0, intensity * 2);
+      if (source && destination && amount > 0) {
+        source.wealth = clamp(source.wealth - amount);
+        destination.wealth = clamp(destination.wealth + amount);
+        destination.debt += amount;
+      }
+  }
+    if (step.actionType === "donate") {
+      const source = sourceHousehold;
+      const destination = target
+        ? targetHousehold
+        : occupiedHouseholds.filter((household) => household.id !== actor.householdId).sort((a, b) => a.wealth - b.wealth)[0];
+      const amount = Math.min(source?.wealth || 0, intensity * 2);
+      if (source && destination && amount > 0) {
+        source.wealth = clamp(source.wealth - amount);
+        destination.wealth = clamp(destination.wealth + amount);
+      }
+  }
+    if (step.actionType === "lower_prices") {
+      const source = sourceHousehold;
+      if (source?.wealth >= intensity) {
+        source.wealth = clamp(source.wealth - intensity);
+        state.material.grainPrice = clamp(state.material.grainPrice - intensity * 3);
+      }
+  }
+    if (step.actionType === "organize_aid") {
+      const source = sourceHousehold;
+      const destination = occupiedHouseholds.filter((household) => household.id !== actor.householdId).sort((a, b) => a.food - b.food)[0];
+      const food = Math.min(source?.food || 0, intensity * 2);
+      const wealth = Math.min(source?.wealth || 0, intensity);
+      if (source && destination && (food > 0 || wealth > 0)) {
+        source.food = clamp(source.food - food);
+        source.wealth = clamp(source.wealth - wealth);
+        destination.food = clamp(destination.food + food);
+        destination.wealth = clamp(destination.wealth + wealth);
+      }
   }
   if (step.actionType === "flirt_with_priest") {
     state.priest.scandal = clamp(state.priest.scandal + 1);
@@ -1519,6 +1604,34 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
     const resolvedDecisionScore = decisionScore(state, visit, actor, target, raw.actionType);
     if (resolvedDecisionScore < requiredDecisionScore(raw.actionType)) break;
     if (!Number.isInteger(requestedIntensity) || requestedIntensity < 1 || requestedIntensity > maximumIntensity) break;
+    if (["repair", "build"].includes(raw.actionType)) {
+      const household = state.households.find((entry) => entry.id === actor.householdId);
+      if (!household || household.wealth < requestedIntensity * 2 || household.food < requestedIntensity) break;
+    }
+    if (["share_food", "lend_money", "donate", "lower_prices", "organize_aid"].includes(raw.actionType)) {
+      const occupied = state.households.filter((household) => household.memberIds.some((id) => {
+        const person = state.residents.find((resident) => resident.id === id);
+        return person?.active && person.alive;
+      }));
+      const source = state.households.find((household) => household.id === actor.householdId);
+      const destination = target && target.id !== "priest"
+        ? state.households.find((household) => household.id === target.householdId)
+        : null;
+      if (raw.actionType === "share_food"
+        && (!source || !destination || !occupied.includes(destination)
+          || source.id === destination.id || source.food < requestedIntensity * 2)) break;
+      if (raw.actionType === "lend_money"
+        && (!source || !destination || !occupied.includes(destination)
+          || source.id === destination.id || source.wealth < requestedIntensity * 2)) break;
+      if (raw.actionType === "donate"
+        && (!source || source.wealth < requestedIntensity * 2
+          || (destination && (!occupied.includes(destination) || destination.id === source.id))
+          || !(destination || occupied.some((household) => household.id !== source.id)))) break;
+      if (raw.actionType === "lower_prices" && (!source || source.wealth < requestedIntensity)) break;
+      if (raw.actionType === "organize_aid"
+        && (!source || (source.food < requestedIntensity * 2 && source.wealth < requestedIntensity)
+          || !occupied.some((household) => household.id !== source.id))) break;
+    }
     steps.push({
       depth: index + 1,
       actorId: actor.id,

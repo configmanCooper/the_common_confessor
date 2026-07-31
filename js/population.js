@@ -112,6 +112,15 @@ export function upgradePopulationState(state) {
   state.nextKnowledgeSequence ||= state.knowledge.length + 1;
   state.nextRumorSequence ||= state.rumors.length + 1;
   state.lastInvitedMigrationDay ??= -999;
+  state.material ||= {
+    season: "Spring",
+    weather: "mild",
+    foodSecurity: 60,
+    grainPrice: 50,
+    diseasePressure: 20,
+    crime: 25,
+    infrastructure: 50
+  };
   const shouldSeedFamilies = state.householdFamiliesSeeded !== true;
   for (const command of state.commandLog || []) {
     if (command.type === "finish_visit") {
@@ -436,11 +445,33 @@ function processHouseholds(state, day, events) {
       .map((id) => state.residents.find((person) => person.id === id))
       .filter((person) => person?.alive && person.active);
     const workers = members.filter((person) => person.age >= 14 && person.occupation !== "unemployed" && person.occupation !== "infant");
-    const production = workers.reduce((total, worker) => total + Math.max(0.2, worker.prosperity / 55), 0);
-    const consumption = members.reduce((total, member) => total + (member.age < 10 ? 0.55 : 1), 0);
+    const harvestFactor = {
+      Spring: 0.9,
+      Summer: 1.25,
+      Autumn: 1.4,
+      Winter: 0.55
+    }[state.material.season];
+    const weatherFactor = ["storm", "frost", "snow"].includes(state.material.weather) ? 0.75 : state.material.weather === "sun" ? 1.12 : 1;
+    const production = workers.reduce((total, worker) => {
+      const base = Math.max(0.25, worker.prosperity / 50);
+      return total + base * (["farmer", "shepherd", "miller"].includes(worker.occupation) ? harvestFactor * weatherFactor : 1);
+    }, 0);
+    const consumption = members.reduce((total, member) => (
+      total + (member.age < 10 ? 0.5 : 0.85) * (state.material.season === "Winter" ? 1.1 : 1)
+    ), 0);
+    const shortage = Math.max(0, consumption - production);
+    const surplus = Math.max(0, production - consumption);
+    const marketCost = shortage * (state.material.grainPrice / 50) * 0.15;
+    const marketIncome = surplus * (state.material.grainPrice / 50) * 0.16;
     household.dailyProduction = production;
     household.food = clamp(household.food + production - consumption, 0, 100);
-    household.wealth = clamp(household.wealth + production * 0.35 - consumption * 0.22 - household.debt * 0.002, 0, 100);
+    household.wealth = clamp(
+      household.wealth + production * 0.24 + marketIncome - consumption * 0.15 - marketCost - household.debt * 0.002,
+      0,
+      100
+    );
+    household.food = clamp(household.food - Math.max(0, household.food - 75) * 0.03);
+    household.wealth = clamp(household.wealth - Math.max(0, household.wealth - 80) * 0.02);
     household.debt = Math.max(0, household.debt + (household.food < 15 ? 0.8 : -0.15));
     household.lastBalanceDay = day;
     if (household.food < 8 && members.length) {
@@ -520,7 +551,8 @@ function processHealthAndAging(state, day, events) {
     }
     const household = householdFor(state, person);
     const rng = new PopulationRng(`${state.seed}:health:${person.id}:${day}`);
-    if (!person.illness && rng.next() < (person.health < 35 ? 0.0008 : 0.00015)) {
+    const diseaseMultiplier = 1 + (state.material?.diseasePressure || 20) / 300;
+    if (!person.illness && rng.next() < (person.health < 35 ? 0.0008 : 0.00015) * diseaseMultiplier) {
       person.illness = rng.next() < 0.7 ? "fever" : "lung sickness";
       person.illnessDays = 1;
       person.health = clamp(person.health - rng.int(4, 10));
@@ -760,10 +792,65 @@ export function advancePopulationDay(state) {
   upgradePopulationState(state);
   const day = state.calendar.absoluteDay;
   const events = [];
+  const seasons = ["Spring", "Summer", "Autumn", "Winter"];
+  state.material.season = seasons[Math.floor((day % 364) / 91)];
+  const weatherRng = new PopulationRng(`${state.seed}:weather:${day}`);
+  const weatherBySeason = {
+    Spring: ["rain", "mild", "wind"],
+    Summer: ["sun", "heat", "storm"],
+    Autumn: ["rain", "wind", "mild"],
+    Winter: ["frost", "snow", "cold"]
+  };
+  state.material.weather = weatherRng.pick(weatherBySeason[state.material.season]);
   processHouseholds(state, day, events);
   processHealthAndAging(state, day, events);
   processFamilyAndWork(state, day, events);
   processMigration(state, day, events);
   spreadRumors(state, day, events);
+  const occupiedHouseholds = state.households.filter((household) => household.memberIds.some((id) => {
+    const person = state.residents.find((resident) => resident.id === id);
+    return person?.active && person.alive;
+  }));
+  const averageFood = occupiedHouseholds.reduce((sum, household) => sum + household.food, 0) / Math.max(1, occupiedHouseholds.length);
+  const averageWealth = occupiedHouseholds.reduce((sum, household) => sum + household.wealth, 0) / Math.max(1, occupiedHouseholds.length);
+  state.material.foodSecurity = clamp(averageFood);
+  state.material.grainPrice = clamp(100 - averageFood + (state.material.season === "Winter" ? 15 : 0));
+  state.material.diseasePressure = clamp(
+    20 + (100 - averageFood) * 0.2 + (["cold", "snow", "rain"].includes(state.material.weather) ? 10 : 0)
+  );
+  state.material.crime = clamp(
+    20 + (100 - averageWealth) * 0.35 + (state.town.metrics.harmony < 40 ? 15 : 0) - state.town.metrics.safety * 0.2
+  );
+  const maintenance = averageWealth * 0.0008 + state.residents.filter((person) => (
+    person.active && person.alive && ["carpenter", "mason", "thatcher", "laborer"].includes(person.occupation)
+  )).length * 0.0008;
+  state.material.infrastructure = clamp(
+    state.material.infrastructure + maintenance - (state.material.weather === "storm" ? 0.5 : 0.08)
+  );
+  if (state.material.crime > 65 && weatherRng.next() < 0.02) {
+    const possibleVictims = state.residents.filter((person) => person.active && person.alive);
+    if (possibleVictims.length) {
+      const victim = weatherRng.pick(possibleVictims);
+      victim.prosperity = clamp(victim.prosperity - 5);
+      events.push({
+        type: "material_crime",
+        actorId: victim.id,
+        title: `${victim.name} suffers a theft`,
+        text: `Hard conditions and weak order lead to theft from ${victim.name}.`,
+        tone: "danger"
+      });
+    }
+  }
+  state.town.metrics.prosperity = clamp(state.town.metrics.prosperity + (averageWealth - 50) * 0.002);
+  state.town.metrics.health = clamp(
+    state.town.metrics.health
+      + (55 - state.town.metrics.health) * 0.002
+      - state.material.diseasePressure * 0.00035
+  );
+  state.town.metrics.safety = clamp(
+    state.town.metrics.safety
+      + (55 - state.town.metrics.safety) * 0.002
+      - state.material.crime * 0.00035
+  );
   return events;
 }

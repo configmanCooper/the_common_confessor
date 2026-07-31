@@ -3,7 +3,7 @@ import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 7;
+export const STATE_SCHEMA_VERSION = 8;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -11,7 +11,6 @@ let replayVerifier = null;
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
-
 function upgradeAuthorityState(state) {
   state.outsideAttention ||= { church: 0, rome: 0, crown: 0, legal: 0 };
   state.authorityStages ||= {
@@ -294,6 +293,7 @@ export function migrateState(rawState) {
   }
   if (detectedVersion === 3) {
     verifyIntegrity(state);
+    upgradePopulationState(state);
     upgradeConversationState(state);
     upgradeAuthorityState(state);
     upgradeParishState(state);
@@ -320,6 +320,7 @@ export function migrateState(rawState) {
   }
   if (detectedVersion === 5) {
     verifyIntegrity(state);
+    upgradePopulationState(state);
     upgradeConversationState(state);
     upgradeAuthorityState(state);
     upgradeParishState(state);
@@ -340,6 +341,7 @@ export function migrateState(rawState) {
   }
   if (detectedVersion === 6) {
     verifyIntegrity(state);
+    upgradePopulationState(state);
     upgradeConversationState(state);
     upgradeParishState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -354,6 +356,7 @@ export function migrateState(rawState) {
   }
   if (detectedVersion === 4) {
     verifyIntegrity(state);
+    upgradePopulationState(state);
     upgradeConversationState(state);
     state.priest.relicStolenById ??= null;
     upgradeAuthorityState(state);
@@ -377,6 +380,19 @@ export function migrateState(rawState) {
       source: cloneJson(rawState),
       snapshot: migrationSnapshot
     };
+    sealState(state);
+  }
+  if (detectedVersion === 7) {
+    verifyIntegrity(state);
+    upgradePopulationState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 7, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -471,6 +487,13 @@ export function validateState(state) {
   requireArray(state.rumors, "Rumors");
   requireArray(state.parishFactions, "Parish factions");
   requireArray(state.sermonReactions, "Sermon reactions");
+  requireObject(state.material, "Material village state");
+  for (const field of ["foodSecurity", "grainPrice", "diseasePressure", "crime", "infrastructure"]) {
+    requireFinite(state.material[field], `Material ${field}`, 0, 100);
+  }
+  if (typeof state.material.season !== "string" || typeof state.material.weather !== "string") {
+    throw new Error("Material season or weather is invalid");
+  }
   const requiredFactionIds = ["traditionalists", "reformers", "brotherhood"];
   if (state.parishFactions.length !== requiredFactionIds.length
     || requiredFactionIds.some((id) => !state.parishFactions.some((faction) => faction.id === id))) {
@@ -535,7 +558,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }

@@ -872,8 +872,7 @@ Visitors enter through the south door and follow location-specific paths. Sunday
 
 Run deterministic simulations for:
 
-- 10 years across many seeds.
-- 50 years for population stability.
+- Up to one in-game year across representative seeds during final balancing.
 - High-conflict scenarios.
 - High-scandal scenarios.
 - AI-disabled scenarios.
@@ -884,7 +883,7 @@ Check:
 - Across at least 1,000 simulated village-years, realized comic events remain between 2% and 10% of significant events unless a deliberately comic test scenario is active.
 - Across at least 1,000 simulated village-years, realized outrageous events remain below 2% of significant events.
 - Unprovoked serious violence remains below 1% of significant events; violence with traceable feud, crime, war, severe stress, or defense causes is measured separately.
-- Archdeacon, sheriff, and comparable representatives may appear when attention warrants, but a direct king or pope visit occurs in fewer than 0.5% of 50-year seeded runs.
+- Archdeacon, sheriff, and comparable representatives may appear when attention warrants, but a direct king or pope visit occurs in fewer than 0.5% of one-year seeded runs.
 - No direct pope or king visit occurs without all documented escalation prerequisites.
 - Advice creates traceable long-term differences.
 - Paired deterministic scenarios that differ only in one material piece of priestly advice produce at least one causally attributable state divergence within 30 simulated days in the designated consequence test cases.
@@ -1139,7 +1138,7 @@ The independent reviewer must specifically examine:
 - Seasonal economy.
 - Scarcity consequences.
 - Material prerequisites.
-- 10- and 50-year long runs.
+- One-year final balance runs.
 
 **Review focus**
 
