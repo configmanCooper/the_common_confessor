@@ -239,9 +239,18 @@ export const PHASE_TWO_LIFE_ACTIONS = Object.freeze([
   "invite_migrant", "leave_village", "change_job"
 ]);
 
+export const PHASE_FOUR_PRIEST_ACTIONS = Object.freeze([
+  "flirt_with_priest", "proposition_priest", "attempt_seduction", "blackmail_priest",
+  "report_priest_to_bishop", "praise_priest_to_bishop", "attack_priest", "poison_priest",
+  "kill_priest", "defend_priest", "challenge_priest", "play_prank",
+  "release_livestock_in_church", "ring_bells_at_midnight", "steal_church_relic",
+  "return_church_relic", "claim_miracle", "fake_miracle", "claim_prophecy"
+]);
+
 export const AI_ALLOWED_ACTIONS = Object.freeze([
   ...PHASE_ZERO_SAFE_ACTIONS,
-  ...PHASE_TWO_LIFE_ACTIONS
+  ...PHASE_TWO_LIFE_ACTIONS,
+  ...PHASE_FOUR_PRIEST_ACTIONS
 ]);
 
 export const EXTERNAL_ROLES = Object.freeze({

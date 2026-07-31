@@ -205,15 +205,16 @@ export class ParishAiClient extends EventTarget {
   async departure(state, candidates) {
     const visit = state.currentVisit;
     const person = candidates.find((candidate) => candidate.id === visit.personId);
-    const candidateIds = candidates.map((candidate) => candidate.id);
+    const actorIds = candidates.map((candidate) => candidate.id);
+    const targetIds = [...actorIds, "priest"];
     const stepSchema = {
       type: "object",
       additionalProperties: false,
       required: ["depth", "actorId", "targetId", "actionType", "intensity", "title", "description"],
       properties: {
         depth: { type: "integer", minimum: 1, maximum: 3 },
-        actorId: { type: "string", enum: candidateIds },
-        targetId: { type: ["string", "null"], enum: [...candidateIds, null] },
+        actorId: { type: "string", enum: actorIds },
+        targetId: { type: ["string", "null"], enum: [...targetIds, null] },
         actionType: { type: "string", enum: AI_ALLOWED_ACTIONS },
         intensity: { type: "integer", minimum: 1, maximum: 5 },
         title: { type: "string", maxLength: 100 },
@@ -317,7 +318,16 @@ export class ParishAiClient extends EventTarget {
             resentment: band(relationship.resentment)
           };
         })()
-      }))
+      })).concat([{
+        id: "priest",
+        name: state.priest.name,
+        role: "parish priest",
+        publicReputation: {
+          trust: band(state.priest.localTrust),
+          authority: band(state.priest.moralAuthority),
+          scandal: band(state.priest.scandal)
+        }
+      }])
     };
     const prompt = [
       "Simulate what happens after a 16th-century villager leaves counsel with the parish priest.",

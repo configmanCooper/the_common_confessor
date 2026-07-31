@@ -2,7 +2,7 @@ import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
 
-export const STATE_SCHEMA_VERSION = 4;
+export const STATE_SCHEMA_VERSION = 5;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -91,6 +91,7 @@ function defaultPriest() {
     bishopFavor: 50,
     royalNotice: 0,
     romanAttention: 0,
+    relicStolenById: null,
     alive: true,
     promises: [],
     positions: [],
@@ -140,6 +141,7 @@ function upgradeConversationState(state) {
       }
   ));
   state.priest.positions ||= [];
+  state.priest.relicStolenById ??= null;
   for (const position of state.priest.positions) {
     position.personId ||= state.currentVisit?.personId || state.residents?.[0]?.id || "priest";
   }
@@ -285,6 +287,30 @@ export function migrateState(rawState) {
     };
     sealState(state);
   }
+  if (detectedVersion === 4) {
+    verifyIntegrity(state);
+    state.priest.relicStolenById ??= null;
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 4,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
   state.schemaVersion = STATE_SCHEMA_VERSION;
   state.version = STATE_SCHEMA_VERSION;
   return state;
@@ -335,6 +361,9 @@ export function validateState(state) {
     requireFinite(state.priest[field], `Priest ${field}`, 0, 100);
   }
   if (typeof state.priest.alive !== "boolean") throw new Error("Priest alive state is invalid");
+  if (state.priest.relicStolenById != null && typeof state.priest.relicStolenById !== "string") {
+    throw new Error("Priest relic state is invalid");
+  }
   for (const field of ["supporters", "enemies", "accusations"]) {
     requireArray(state.priest[field], `Priest ${field}`);
     if (state.priest[field].some((entry) => typeof entry !== "string")) throw new Error(`Priest ${field} is invalid`);
@@ -413,7 +442,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -789,7 +818,9 @@ export function validateState(state) {
         if (step.depth !== stepIndex + 1 || step.actorId !== expectedActorId || !residentIds.has(step.actorId)) {
           throw new Error("Finish command causal actor is invalid");
         }
-        if (step.targetId != null && !residentIds.has(step.targetId)) throw new Error("Finish command target is invalid");
+        if (step.targetId != null && step.targetId !== "priest" && !residentIds.has(step.targetId)) {
+          throw new Error("Finish command target is invalid");
+        }
         if (!AI_ALLOWED_ACTIONS.includes(step.actionType)) throw new Error("Finish command action is invalid");
         if (!Number.isInteger(step.intensity) || step.intensity < 1 || step.intensity > 5) {
           throw new Error("Finish command intensity is invalid");

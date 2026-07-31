@@ -298,6 +298,7 @@ function issueForPerson(state, person) {
 }
 
 export function beginVisit(state, { record = true } = {}) {
+  if (!state.priest.alive) throw new Error("The priest is dead; no further appointments can begin");
   if (state.calendar.dayIndex === 6) {
     throw new Error("Sunday is reserved for the parish service");
   }
@@ -547,17 +548,29 @@ export function applyAction(state, step) {
     return null;
   }
   const actor = materializeResident(state, step.actorId, false);
-  const target = step.targetId ? materializeResident(state, step.targetId, false) : null;
+  const target = step.targetId === "priest"
+    ? state.priest
+    : step.targetId
+      ? materializeResident(state, step.targetId, false)
+      : null;
+  const targetIsPriest = target?.id === "priest";
   const intensity = clamp(step.intensity || 2, 1, 5);
   let createdResident = null;
   let createdResidentType = null;
+  const damagePriest = (amount) => {
+    state.priest.health = clamp(state.priest.health - amount);
+    if (state.priest.health <= 0) {
+      state.priest.health = 0;
+      state.priest.alive = false;
+    }
+  };
   const deltas = metricDeltaForAction(step.actionType);
   for (const [metric, delta] of Object.entries(deltas)) {
     state.town.metrics[metric] = clamp(state.town.metrics[metric] + delta * (intensity / 2));
   }
   actor.morale = clamp(actor.morale + (deltas.harmony || deltas.mercy || 0));
   actor.stress = clamp(actor.stress - (deltas.mercy || 0) + Math.max(0, -(deltas.harmony || 0)));
-  if (target) {
+  if (target && !targetIsPriest) {
     target.morale = clamp(target.morale + (deltas.mercy || deltas.harmony || 0));
     if (!actor.relationshipIds.includes(target.id)) actor.relationshipIds.push(target.id);
     if (!target.relationshipIds.includes(actor.id)) target.relationshipIds.push(actor.id);
@@ -588,6 +601,59 @@ export function applyAction(state, step) {
   if (step.actionType === "offer_work" && target) {
     target.occupation = step.detail?.slice(0, 40) || "laborer";
     target.prosperity = clamp(target.prosperity + 4);
+  }
+  if (step.actionType === "flirt_with_priest") {
+    state.priest.scandal = clamp(state.priest.scandal + 1);
+    actor.trustPriest = clamp(actor.trustPriest + 1);
+  }
+  if (step.actionType === "proposition_priest" || step.actionType === "attempt_seduction") {
+    state.priest.scandal = clamp(state.priest.scandal + (step.actionType === "attempt_seduction" ? 6 : 3));
+    state.priest.moralAuthority = clamp(state.priest.moralAuthority - 2);
+  }
+  if (step.actionType === "blackmail_priest") {
+    state.priest.scandal = clamp(state.priest.scandal + 5);
+    state.priest.safety = clamp(state.priest.safety - 8);
+  }
+  if (step.actionType === "report_priest_to_bishop") {
+    state.priest.bishopFavor = clamp(state.priest.bishopFavor - intensity * 3);
+    state.priest.scandal = clamp(state.priest.scandal + intensity);
+  }
+  if (step.actionType === "praise_priest_to_bishop") {
+    state.priest.bishopFavor = clamp(state.priest.bishopFavor + intensity * 3);
+  }
+  if (step.actionType === "attack_priest") {
+    damagePriest(intensity * 8);
+    state.priest.safety = clamp(state.priest.safety - intensity * 5);
+  }
+  if (step.actionType === "poison_priest") {
+    damagePriest(intensity * 12);
+    state.priest.safety = clamp(state.priest.safety - intensity * 3);
+  }
+  if (step.actionType === "kill_priest") {
+    state.priest.health = 0;
+    state.priest.alive = false;
+  }
+  if (step.actionType === "defend_priest") state.priest.safety = clamp(state.priest.safety + intensity * 5);
+  if (step.actionType === "challenge_priest") state.priest.moralAuthority = clamp(state.priest.moralAuthority - intensity * 2);
+  if (step.actionType === "play_prank") state.town.metrics.harmony = clamp(state.town.metrics.harmony + 1);
+  if (step.actionType === "release_livestock_in_church") {
+    state.town.metrics.harmony = clamp(state.town.metrics.harmony - 2);
+    state.priest.scandal = clamp(state.priest.scandal + 1);
+  }
+  if (step.actionType === "ring_bells_at_midnight") state.town.metrics.harmony = clamp(state.town.metrics.harmony - 1);
+  if (step.actionType === "steal_church_relic") {
+    state.priest.relicStolenById = actor.id;
+    state.town.metrics.faith = clamp(state.town.metrics.faith - 3);
+    state.town.metrics.safety = clamp(state.town.metrics.safety - 2);
+  }
+  if (step.actionType === "return_church_relic") {
+    state.priest.relicStolenById = null;
+    state.town.metrics.faith = clamp(state.town.metrics.faith + 2);
+    state.town.metrics.mercy = clamp(state.town.metrics.mercy + 2);
+  }
+  if (["claim_miracle", "fake_miracle", "claim_prophecy"].includes(step.actionType)) {
+    state.town.metrics.faith = clamp(state.town.metrics.faith + (step.actionType === "fake_miracle" ? -2 : 2));
+    state.priest.scandal = clamp(state.priest.scandal + (step.actionType === "fake_miracle" ? 4 : 1));
   }
   if (step.actionType === "heal" && target) {
     target.health = clamp(target.health + intensity * 6);
@@ -722,7 +788,7 @@ export function applyAction(state, step) {
       sourceEventId: eventId
     });
   }
-  if (target) {
+  if (target && !targetIsPriest) {
     addKnowledge(state, {
       holderId: actor.id,
       subjectId: target.id,
@@ -803,12 +869,19 @@ const TARGET_REQUIRED_ACTIONS = new Set([
   "lend_money", "shelter", "teach", "heal", "nurse", "hire", "accuse", "gossip",
   "reveal_secret", "return_stolen_goods", "report_crime", "make_peace", "testify",
   "visit", "write_letter", "protect", "offer_work", "refuse_work", "court", "marry",
-  "separate", "conceive_child", "adopt_child"
+  "separate", "conceive_child", "adopt_child", "flirt_with_priest", "proposition_priest",
+  "attempt_seduction", "blackmail_priest", "report_priest_to_bishop", "praise_priest_to_bishop",
+  "attack_priest", "poison_priest", "kill_priest", "defend_priest", "challenge_priest"
 ]);
 
 const HEALING_OCCUPATIONS = new Set(["healer", "herbalist", "midwife"]);
 const BUILDING_OCCUPATIONS = new Set(["blacksmith", "carpenter", "mason", "thatcher", "laborer"]);
 const HIRING_OCCUPATIONS = new Set(["reeve", "bailiff", "merchant", "innkeeper", "miller", "farmer"]);
+const PRIEST_TARGET_ACTIONS = new Set([
+  "flirt_with_priest", "proposition_priest", "attempt_seduction", "blackmail_priest",
+  "report_priest_to_bishop", "praise_priest_to_bishop", "attack_priest", "poison_priest",
+  "kill_priest", "defend_priest", "challenge_priest"
+]);
 
 function hasPhaseZeroCapability(actor, actionType) {
   if (actionType === "heal") return HEALING_OCCUPATIONS.has(actor.occupation);
@@ -820,6 +893,31 @@ function hasPhaseZeroCapability(actor, actionType) {
 function hasLifeCourseEligibility(state, visit, actor, target, actionType, detail) {
   const counsel = visit.counsel.join(". ").toLowerCase();
   const household = state.households.find((entry) => entry.id === actor.householdId);
+  const comicActions = new Set(["play_prank", "ring_bells_at_midnight"]);
+  const outrageousActions = new Set([
+    "release_livestock_in_church", "fake_miracle", "claim_prophecy", "claim_miracle",
+    "ring_bells_at_midnight",
+    "attack_priest", "poison_priest", "kill_priest", "attempt_seduction", "steal_church_relic"
+  ]);
+  if (comicActions.has(actionType) && visit.eventLicense === "ordinary") return false;
+  if (outrageousActions.has(actionType) && visit.eventLicense !== "outrageous") return false;
+  if (PRIEST_TARGET_ACTIONS.has(actionType)) {
+    if (target?.id !== "priest" || !state.priest.alive || actor.age < ADULT_AGE) return false;
+    const personality = actor.personality || deriveResidentProfile(state, actor).personality;
+    if (["flirt_with_priest", "proposition_priest", "attempt_seduction"].includes(actionType)) {
+      return actor.trustPriest >= 35 && personality.boldness >= 45;
+    }
+    if (actionType === "report_priest_to_bishop") return actor.trustPriest <= 45 || state.priest.scandal >= 35;
+    if (actionType === "praise_priest_to_bishop") return actor.trustPriest >= 65;
+    if (actionType === "blackmail_priest") return state.priest.scandal >= 20 && personality.boldness >= 55;
+    if (["attack_priest", "poison_priest", "kill_priest"].includes(actionType)) {
+      if (visit.eventLicense !== "outrageous") return false;
+      return actor.trustPriest <= 15 && actor.stress >= 65 && personality.boldness >= 60;
+    }
+    return true;
+  }
+  if (actionType === "steal_church_relic") return state.priest.relicStolenById == null && actor.age >= ADULT_AGE;
+  if (actionType === "return_church_relic") return state.priest.relicStolenById === actor.id;
   const isNegated = (keywords) => {
     const keywordPattern = new RegExp(`\\b(?:${keywords})\\b`);
     const latestRelevant = [...visit.counsel].reverse().find((entry) => keywordPattern.test(entry.toLowerCase()));
@@ -1024,6 +1122,20 @@ function decisionScore(state, visit, actor, target, actionType) {
     if (target.illness) score += 8;
     score += (personality.empathy - 50) * 0.18;
   }
+  if (["attack_priest", "poison_priest", "kill_priest", "blackmail_priest"].includes(actionType)) {
+    score += (50 - actor.trustPriest) * 0.45;
+    score += Math.max(0, actor.stress - 50) * 0.35;
+    score += (personality.boldness - 50) * 0.25;
+  }
+  if (actionType === "praise_priest_to_bishop") score += (actor.trustPriest - 50) * 0.4;
+  if (actionType === "report_priest_to_bishop") {
+    score += (50 - actor.trustPriest) * 0.35;
+    score += state.priest.scandal * 0.2;
+  }
+  if (["flirt_with_priest", "proposition_priest", "attempt_seduction"].includes(actionType)) {
+    score += (personality.boldness - 50) * 0.3;
+    score += (actor.trustPriest - 50) * 0.15;
+  }
   const relevantRumors = state.rumors.filter((rumor) => (
     rumor.active && rumor.heardByIds.includes(actor.id) && (!target || rumor.subjectId === target.id)
   ));
@@ -1036,6 +1148,9 @@ function decisionScore(state, visit, actor, target, actionType) {
 }
 
 function requiredDecisionScore(actionType) {
+  if (["kill_priest", "poison_priest"].includes(actionType)) return 85;
+  if (["attack_priest", "blackmail_priest", "attempt_seduction"].includes(actionType)) return 70;
+  if (["report_priest_to_bishop", "proposition_priest"].includes(actionType)) return 55;
   if (["marry", "conceive_child", "adopt_child", "leave_village"].includes(actionType)) return 55;
   if (["court", "separate", "change_job", "invite_migrant"].includes(actionType)) return 45;
   return 25;
@@ -1045,6 +1160,7 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
   const visit = state.currentVisit;
   if (!visit) return { summary: "", steps: [] };
   const candidateMap = new Map(candidates.filter((person) => person?.active).map((person) => [person.id, person]));
+  candidateMap.set("priest", state.priest);
   const rawSteps = Array.isArray(plan?.steps) ? plan.steps : [];
   if (rawSteps.length < 1 || rawSteps.length > 3) {
     return {
@@ -1069,8 +1185,10 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       break;
     }
     if (!AI_ALLOWED_ACTIONS.includes(raw.actionType)) break;
+    if (target?.id === "priest" && !PRIEST_TARGET_ACTIONS.has(raw.actionType)) break;
+    if (target?.id !== "priest" && PRIEST_TARGET_ACTIONS.has(raw.actionType)) break;
     if (raw.targetId != null && (!target || target.id === actor.id)) break;
-    if (target && !actor.relationshipIds.includes(target.id)) break;
+    if (target && target.id !== "priest" && !actor.relationshipIds.includes(target.id)) break;
     if (TARGET_REQUIRED_ACTIONS.has(raw.actionType) && !target) break;
     if (!TARGET_REQUIRED_ACTIONS.has(raw.actionType) && target) break;
     if (!hasPhaseZeroCapability(actor, raw.actionType)) break;

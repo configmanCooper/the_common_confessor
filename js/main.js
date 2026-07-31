@@ -317,6 +317,11 @@ function showSunday() {
 }
 
 function proceedToCurrentPeriod() {
+  if (!state.priest.alive) {
+    elements["ending-text"].textContent = "Father Benedict is dead. The parish chronicle has ended.";
+    elements["ending-dialog"].showModal();
+    return;
+  }
   if (state.calendar.dayIndex === 6) showSunday();
   else showVisit();
 }
@@ -355,6 +360,12 @@ async function endHour() {
   finishVisit(requestState, plan);
   compactReplayHistory(requestState);
   saveGame(true, true);
+  if (!requestState.priest.alive) {
+    setBusy(false);
+    elements["ending-text"].textContent = `${person.name}'s actions ended Father Benedict's life. The village chronicle remains as the record of his counsel.`;
+    elements["ending-dialog"].showModal();
+    return;
+  }
   renderer.clearVisitor();
   setBusy(false);
   elements["next-hour"].disabled = false;
@@ -596,6 +607,7 @@ elements["import-file"].addEventListener("change", async (event) => {
   }
 });
 elements["deliver-sermon"].addEventListener("click", deliverSermon);
+elements["close-ending"].addEventListener("click", () => elements["ending-dialog"].close());
 elements["sermon-text"].addEventListener("input", () => {
   const words = elements["sermon-text"].value.trim().split(/\s+/).filter(Boolean).length;
   elements["sermon-word-count"].textContent = `${words} / 100 words`;
