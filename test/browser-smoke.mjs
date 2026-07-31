@@ -6,7 +6,7 @@ import {
   fallbackDeparturePlan,
   finishVisit
 } from "../js/simulation.js";
-import { serializeState } from "../js/state.js";
+import { sealState, serializeState } from "../js/state.js";
 
 function asLegacySave(state) {
   const legacy = JSON.parse(JSON.stringify(state));
@@ -18,7 +18,30 @@ function asLegacySave(state) {
   ]) {
     delete legacy[field];
   }
+
   return legacy;
+}
+
+function checkpointState(state) {
+  const snapshot = JSON.parse(JSON.stringify({
+    ...state,
+    commandLog: [],
+    aiProposals: [],
+    nextCommandSequence: 1,
+    replayBase: null
+  }));
+  sealState(snapshot);
+  state.commandLog = [];
+  state.aiProposals = [];
+  state.nextCommandSequence = 1;
+  state.replayBase = {
+    kind: "periodic",
+    checkpointDay: state.calendar.absoluteDay,
+    checkpointSlot: state.calendar.slot,
+    snapshot
+  };
+  sealState(state);
+  return state;
 }
 
 const browser = await chromium.launch({
@@ -107,6 +130,8 @@ try {
   assert.equal(await page.locator("#population-count").innerText(), "200");
   const staleImport = createGame("browser-smoke-parish");
   beginVisit(staleImport);
+  staleImport.currentVisit.intent.disclosureThreshold = 0;
+  checkpointState(staleImport);
   await page.locator("#counsel-input").fill("Take time before you act.");
   await page.locator("#speak-button").click();
   assert.equal(await page.locator("#next-hour").isDisabled(), true);
@@ -131,6 +156,8 @@ try {
   await page.locator("#counsel-input").fill("Take time before you act.");
   await page.locator("#speak-button").click();
   await page.locator("#dialogue-log .visitor").nth(1).waitFor({ state: "visible" });
+  await page.locator("#dialogue-log .visitor").nth(2).waitFor({ state: "visible" });
+  assert.match(await page.locator("#dialogue-log .visitor").nth(2).innerText(), /There is more:/);
   assert.equal(await page.locator("#next-hour").isDisabled(), false);
   assert.match(await page.locator("#turn-counter").innerText(), /1 \/ 10/);
   await page.locator("#next-hour").click();
@@ -160,7 +187,7 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 3);
+  assert.equal(manualState.schemaVersion, 4);
   assert.equal(manualState.commandLog.length, 0);
   assert.equal(manualState.replayBase.kind, "periodic");
   assert.deepEqual(saveMetadata.legacyAutosaves, [null, null, null]);

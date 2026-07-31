@@ -26,6 +26,15 @@ import {
 } from "./state.js";
 import { validateSermonResponse } from "./ai.js";
 import {
+  addStructuredMemory,
+  classifyPriestSpeech,
+  createVisitIntent,
+  detectConfidentialityBreach,
+  recordPriestPosition,
+  recordPromise,
+  resolvePriestSpeech
+} from "./conversation.js";
+import {
   ADULT_AGE,
   addKnowledge,
   adjustRelationship,
@@ -197,6 +206,8 @@ export function createGame(seed = String(Date.now())) {
     aiProposals: [],
     nextEventSequence: 1,
     nextCommandSequence: 1,
+    nextMemorySequence: 1,
+    nextPositionSequence: 1,
     replayBase: null,
     sermons: [],
     conversationHistory: [],
@@ -212,6 +223,8 @@ export function createGame(seed = String(Date.now())) {
     }
   };
   upgradePopulationState(state);
+  state.priest.positions = [];
+  state.priest.confidentialityBreaches = [];
   addChronicle(state, `A new cure begins in ${town.name}`, town.description, "neutral", {
     type: "world_started",
     parentId: null,
@@ -237,6 +250,7 @@ function deriveResidentProfile(state, person) {
       boldness: rng.int(20, 90),
       piety: rng.int(20, 90)
     },
+    publicBackstory: `${person.firstName} ${origin}.`,
     backstory: `${person.firstName} ${origin}, ${turn}, and now ${pressure}. ${person.firstName} ${texture}.`,
     privatePressure: pressure
   };
@@ -250,6 +264,7 @@ export function materializeResident(state, personId, revealProfile = false) {
   if (!person.materialized) {
     const profile = deriveResidentProfile(state, person);
     person.personality = profile.personality;
+    person.publicBackstory = profile.publicBackstory;
     person.backstory = profile.backstory;
     person.privatePressure = profile.privatePressure;
     person.materialized = true;
@@ -315,6 +330,7 @@ export function beginVisit(state, { record = true } = {}) {
     visitId: `visit-${state.calendar.absoluteDay}-${state.calendar.slot}-${person.id}`,
     personId: person.id,
     issue,
+    intent: createVisitIntent(state, person, issue),
     location: issue.location,
     turnsUsed: 0,
     maxTurns: 10,
@@ -322,6 +338,8 @@ export function beginVisit(state, { record = true } = {}) {
     history: [{ speaker: "visitor", text: issue.opening }],
     counsel: [],
     mood: issue.gravity >= 4 ? "troubled" : "guarded",
+    disclosure: 10,
+    hiddenConcernDisclosed: false,
     eventLicense: eventRoll < 0.01 ? "outrageous" : eventRoll < 0.08 ? "comic" : "ordinary"
   };
   if (issue.kind === "confession") {
@@ -350,16 +368,48 @@ export function recordExchange(state, playerText, response, { record = true } = 
   if (!reply) {
     throw new Error("The visitor gave no response");
   }
+  const resolution = resolvePriestSpeech(state, person, visit, cleanText);
   visit.turnsUsed += 1;
   visit.history.push({ speaker: "priest", text: cleanText });
   visit.history.push({ speaker: "visitor", text: reply });
   visit.counsel.push(cleanText);
-  visit.mood = response.mood || visit.mood;
-  person.trustPriest = clamp(person.trustPriest + clamp(response.trustDelta, -5, 5), 0, 100);
-  person.stress = clamp(person.stress + clamp(response.stressDelta, -5, 5), 0, 100);
-  if (response.memory) {
-    person.memories.push(String(response.memory).slice(0, 180));
-    person.memories = person.memories.slice(-8);
+  visit.mood = resolution.mood;
+  visit.disclosure = resolution.disclosure;
+  if (resolution.disclosed) {
+    visit.hiddenConcernDisclosed = true;
+    visit.history.push({ speaker: "visitor", text: `There is more: ${visit.intent.hiddenConcern}.` });
+    addStructuredMemory(state, person, {
+      type: "disclosed_secret",
+      summary: visit.intent.hiddenConcern,
+      emotion: "ashamed",
+      confidence: 100,
+      privateMemory: true,
+      sourceEventId: visit.originEventId
+    });
+  }
+  person.trustPriest = clamp(person.trustPriest + resolution.trustDelta, 0, 100);
+  person.stress = clamp(person.stress + resolution.stressDelta, 0, 100);
+  addStructuredMemory(state, person, {
+    summary: response.memory || `The priest said: ${cleanText.slice(0, 130)}`,
+    emotion: resolution.mood,
+    confidence: 75,
+    privateMemory: ["confessional", "office"].includes(visit.location)
+      || visit.hiddenConcernDisclosed
+      || resolution.disclosed,
+    sourceEventId: visit.originEventId
+  });
+  if (resolution.intents.includes("promise")) recordPromise(state, person.id, cleanText);
+  recordPriestPosition(state, person.id, resolution.intents, cleanText);
+  const breachSubject = detectConfidentialityBreach(state, person.id, cleanText);
+  if (breachSubject) {
+    state.priest.confidentialityBreaches.push({
+      id: `breach-${String(state.priest.confidentialityBreaches.length + 1).padStart(5, "0")}`,
+      subjectId: breachSubject.id,
+      listenerId: person.id,
+      day: state.calendar.absoluteDay
+    });
+    state.priest.scandal = clamp(state.priest.scandal + 4);
+    person.trustPriest = clamp(person.trustPriest - 4);
   }
   state.statistics.conversations += 1;
   if (record) {
@@ -367,10 +417,13 @@ export function recordExchange(state, playerText, response, { record = true } = 
       playerText: cleanText,
       response: {
         reply,
-        mood: response.mood || visit.mood,
-        trustDelta: clamp(response.trustDelta, -5, 5),
-        stressDelta: clamp(response.stressDelta, -5, 5),
-        memory: String(response.memory || "").slice(0, 180)
+        mood: resolution.mood,
+        trustDelta: resolution.trustDelta,
+        stressDelta: resolution.stressDelta,
+        memory: String(response.memory || "").slice(0, 180),
+        intents: resolution.intents,
+        disclosure: resolution.disclosure,
+        contradictionId: resolution.contradictionId
       }
     }, response.source || "simulation");
   }
@@ -380,33 +433,33 @@ export function recordExchange(state, playerText, response, { record = true } = 
 export function fallbackConversation(state, playerText) {
   const visit = state.currentVisit;
   const person = materializeResident(state, visit.personId, true);
-  const text = playerText.toLowerCase();
+  const intents = classifyPriestSpeech(playerText);
   let reply;
   let mood = "uncertain";
   let trustDelta = 0;
   let stressDelta = 0;
-  if (/\b(forgive|mercy|grace|pardon)\b/.test(text)) {
+  if (intents.includes("forgiveness")) {
     reply = `"Mercy is easier to ask for than to give. Yet I think I understand what you are asking of me, Father."`;
     mood = "softened";
     trustDelta = 2;
     stressDelta = -2;
-  } else if (/\b(confess|truth|honest|admit)\b/.test(text)) {
+  } else if (intents.includes("truth")) {
     reply = `"Then I must tell the truth, though it may cost me. I hoped you would offer an easier road."`;
     mood = "resolved";
     trustDelta = 2;
     stressDelta = 1;
-  } else if (/\b(pray|god|faith|scripture)\b/.test(text)) {
+  } else if (intents.includes("prayer")) {
     reply = person.personality.piety > 55
       ? `"I will pray on it. The words feel less empty when another person believes I may still be heard."`
       : `"I will try, Father, though prayer has not answered me as plainly as people claim."`;
     mood = "contemplative";
     trustDelta = 1;
     stressDelta = -1;
-  } else if (/\b(leave|flee|go away|depart)\b/.test(text)) {
+  } else if (intents.includes("departure")) {
     reply = `"To leave would end one trouble and begin five more. Still, perhaps I have been too afraid to count that path."`;
     mood = "wary";
     stressDelta = 1;
-  } else if (/\b(sorry|hear you|listen|understand)\b/.test(text)) {
+  } else if (intents.includes("comfort")) {
     reply = `"Thank you for hearing me without rushing to judgment. That alone is more kindness than I expected."`;
     mood = "relieved";
     trustDelta = 3;
@@ -693,15 +746,19 @@ export function applyAction(state, step) {
 export function fallbackDeparturePlan(state) {
   const visit = state.currentVisit;
   const person = materializeResident(state, visit.personId, true);
-  const combined = visit.counsel.join(" ").toLowerCase();
+  const combined = visit.counsel.join(". ").toLowerCase();
+  const latestIntent = (intent, pattern) => {
+    const latest = [...visit.counsel].reverse().find((entry) => pattern.test(entry.toLowerCase()));
+    return Boolean(latest && classifyPriestSpeech(latest).includes(intent));
+  };
   let actionType = "keep_silence";
-  if (/\bforgiv|mercy|pardon\b/.test(combined)) actionType = "forgive";
-  else if (/\bapolog|make amends|say sorry\b/.test(combined)) actionType = "apologize";
-  else if (/\btruth|confess|admit|honest\b/.test(combined)) actionType = "seek_absolution";
-  else if (/\bhelp|charity|give|share\b/.test(combined)) actionType = "share_food";
-  else if (/\bwork|duty|labor\b/.test(combined)) actionType = "work_harder";
-  else if (/\bpray|faith|god\b/.test(combined)) actionType = "pray_with";
-  else if (/\breport|reeve|justice\b/.test(combined)) actionType = "report_crime";
+  if (latestIntent("apology", /\b(?:apologize|make amends|say sorry)\b/)) actionType = "apologize";
+  else if (latestIntent("forgiveness", /\b(?:forgiv\w*|pardon|mercy|make amends)\b/)) actionType = "forgive";
+  else if (latestIntent("truth", /\b(?:truth|confess|admit|honest)\b/)) actionType = "seek_absolution";
+  else if (latestIntent("work", /\b(?:work|job|trade|labor|duty)\b/)) actionType = "work_harder";
+  else if (latestIntent("prayer", /\b(?:pray\w*|faith|scripture|grace)\b/)) actionType = "pray_with";
+  else if (latestIntent("report", /\b(?:report|reeve|justice)\b/)) actionType = "report_crime";
+  else if (latestIntent("charity", /\b(?:help|charity|give|share|food|alms)\b/)) actionType = "share_food";
   const relationIds = person.relationshipIds.filter((id) => state.residents.some((resident) => resident.id === id && resident.active));
   const targetId = TARGET_REQUIRED_ACTIONS.has(actionType) ? (relationIds[0] || null) : null;
   const steps = [{
@@ -761,11 +818,15 @@ function hasPhaseZeroCapability(actor, actionType) {
 }
 
 function hasLifeCourseEligibility(state, visit, actor, target, actionType, detail) {
-  const counsel = visit.counsel.join(" ").toLowerCase();
+  const counsel = visit.counsel.join(". ").toLowerCase();
   const household = state.households.find((entry) => entry.id === actor.householdId);
-  const isNegated = (keywords) => new RegExp(
-    `\\b(?:do not|don't|must not|never|should not|shouldn't|avoid|refuse to|retract|not)\\b.{0,70}\\b(?:${keywords})\\b`
-  ).test(counsel);
+  const isNegated = (keywords) => {
+    const keywordPattern = new RegExp(`\\b(?:${keywords})\\b`);
+    const latestRelevant = [...visit.counsel].reverse().find((entry) => keywordPattern.test(entry.toLowerCase()));
+    return Boolean(latestRelevant && new RegExp(
+      `\\b(?:do not|don't|must not|never|should not|shouldn't|avoid|refuse to|retract|not)\\b.*\\b(?:${keywords})\\b`
+    ).test(latestRelevant.toLowerCase()));
+  };
   const negationKeywords = {
     change_job: "work|job|trade|craft|employment|labor|change",
     offer_work: "offer|hire|work|employment",
@@ -783,6 +844,7 @@ function hasLifeCourseEligibility(state, visit, actor, target, actionType, detai
     const independentPressure = actor.occupation === "healer" && Boolean(target?.illness) && target.health < 45;
     return Boolean(target && (target.illness || target.health < 90) && (conversationSupport || independentPressure));
   }
+
   if (["work_harder", "shirk_work", "quit_job"].includes(actionType) && actor.age < ADULT_AGE) return false;
   if (["hire", "offer_work"].includes(actionType) && actor.age < ADULT_AGE) return false;
   if (actionType === "hire" && (!target || target.age < ADULT_AGE)) return false;
@@ -872,33 +934,59 @@ function hasLifeCourseEligibility(state, visit, actor, target, actionType, detai
   }
   if (actionType === "leave_village") {
     if (actor.age < 18) return false;
-    const counsel = visit.counsel.join(" ").toLowerCase();
-    const directivePattern = /\b(?:you should|you must|you need to|you ought to|i advise you to)\s+(?:leave|flee|depart from)\s+(?:(?:this|the|our)\s+)?(?:village|town|parish|settlement)\b/g;
-    const directives = [...counsel.matchAll(directivePattern)];
-    const explicit = directives.length > 0;
-    const mentionsDeparture = /\b(?:leave|flee|depart)\b/.test(counsel);
-    const lastDirective = directives.at(-1);
-    const directiveStart = lastDirective?.index ?? -1;
-    const beforeDirective = directiveStart >= 0 ? counsel.slice(Math.max(0, directiveStart - 25), directiveStart) : counsel;
-    const afterDirective = directiveStart >= 0
-      ? counsel.slice(directiveStart + lastDirective[0].length, directiveStart + lastDirective[0].length + 35)
-      : "";
-    const negated = /\b(?:do not|don't|never|should not|shouldn't|must not|retract)\b/.test(beforeDirective)
-      || /^\s*(?:[,;:-]\s*)?(?:not\b|no\b|stay\b|remain\b|i retract\b|do not go\b|don't go\b|shouldn't you\b|should you\b)/.test(afterDirective)
-      || /^\s*\?\s*(?:shouldn't you\b|should you\b|not\b|no\b)/.test(afterDirective)
-      || /^\s*\.\s*(?:not\b|no\b|stay\b|remain\b|i retract\b|do not go\b|don't go\b)/.test(afterDirective)
-      || /^\s*\?/.test(afterDirective)
-      || lastDirective?.[0].includes("?");
-    if (negated) return false;
-    if (mentionsDeparture && !explicit) return false;
-    if (actor.stress >= 75 && actor.morale <= 25) return true;
-    return explicit && !negated;
+    if (!visit.counsel.length) return actor.stress >= 75 && actor.morale <= 25;
+    const normalizedCounsel = visit.counsel.join(". ").toLowerCase()
+      .replace(/\s*,?\s*\b(?:but|however)\b\s*,?\s*/g, ". ");
+    const counselClauses = normalizedCounsel.match(/[^.!?;—]+[.!?;—]?/g) || [];
+    const counsel = [...counselClauses].reverse()
+      .find((entry) => (
+        /\b(?:leave|flee|depart|stay|remain|retract)\b/.test(entry)
+        || /^\s*(?:not|no|do not go|don't go)\b/.test(entry)
+      ))
+      ?.trim() || "";
+    if (!counsel || !classifyPriestSpeech(counsel).includes("departure")) return false;
+    if (/\b(?:stay|remain)\b/.test(counsel)
+      && !/\b(?:do not|don't|not|never)\b.*\b(?:stay|remain)\b/.test(counsel)) {
+      return false;
+    }
+    return /\b(?:village|town|parish|settlement)\b/.test(counsel);
   }
   return true;
 }
 
+function counselContradictsAction(visit, actionType) {
+  const intentByAction = {
+    apologize: "apology",
+    forgive: "forgiveness",
+    reconcile: "forgiveness",
+    pray_with: "prayer",
+    seek_absolution: "truth",
+    confess_publicly: "truth",
+    work_harder: "work",
+    change_job: "work",
+    share_food: "charity",
+    leave_village: "departure",
+    report_crime: "report"
+  };
+  const keywords = {
+    forgiveness: /\bforgiv\w*|pardon|mercy\b/,
+    prayer: /\bpray\w*|faith|scripture\b/,
+    truth: /\btruth|confess|admit|honest\b/,
+    work: /\bwork|job|trade|labor|duty\b/,
+    departure: /\bleave|flee|depart\b/,
+    apology: /\bapologize|make amends|say sorry\b/,
+    report: /\breport|reeve|justice\b/,
+    charity: /\bhelp|charity|give|share|food|alms\b/
+  };
+  const intent = intentByAction[actionType];
+  if (!intent) return false;
+  const latestRelevant = [...visit.counsel].reverse().find((entry) => keywords[intent].test(entry.toLowerCase()));
+  if (!latestRelevant) return false;
+  return !classifyPriestSpeech(latestRelevant).includes(intent);
+}
+
 function decisionScore(state, visit, actor, target, actionType) {
-  const counsel = visit.counsel.join(" ").toLowerCase();
+  const counsel = visit.counsel.join(". ").toLowerCase();
   const household = state.households.find((entry) => entry.id === actor.householdId);
   const personality = actor.personality || deriveResidentProfile(state, actor).personality;
   let score = 35;
@@ -907,7 +995,7 @@ function decisionScore(state, visit, actor, target, actionType) {
   score += (state.priest.localTrust - 50) * 0.1;
   score -= state.priest.scandal * 0.16;
   score += visit.issue.gravity * 3;
-  score += Math.min(8, visit.counsel.join(" ").split(/\s+/).filter(Boolean).length / 10);
+  score += Math.min(8, visit.counsel.join(". ").split(/\s+/).filter(Boolean).length / 10);
   if (household?.food < 20 || household?.wealth < 20) {
     if (["change_job", "leave_village", "invite_migrant", "work_harder"].includes(actionType)) score += 10;
     if (["marry", "conceive_child", "adopt_child"].includes(actionType)) score -= 8;
@@ -990,6 +1078,7 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       raw.detail || (["change_job", "offer_work"].includes(raw.actionType) ? "laborer" : "")
     ).trim().slice(0, 40);
     if (!hasLifeCourseEligibility(state, visit, actor, target, raw.actionType, detail)) break;
+    if (counselContradictsAction(visit, raw.actionType)) break;
     const resolvedDecisionScore = decisionScore(state, visit, actor, target, raw.actionType);
     if (resolvedDecisionScore < requiredDecisionScore(raw.actionType)) break;
     if (!Number.isInteger(requestedIntensity) || requestedIntensity < 1 || requestedIntensity > maximumIntensity) break;
@@ -1064,7 +1153,14 @@ export function finishVisit(state, plan, { record = true } = {}) {
       state.statistics.cascades += 1;
     }
   }
-  person.memories.push(`On ${calendarLabel(state)}, the parish counsel ended: ${String(validated.summary || "The hour left its mark.").slice(0, 180)}`);
+  addStructuredMemory(state, person, {
+    type: "outcome",
+    summary: `On ${calendarLabel(state)}, ${String(validated.summary || "the hour left its mark").slice(0, 170)}`,
+    emotion: visit.mood,
+    confidence: 85,
+    privateMemory: ["confessional", "office"].includes(visit.location) || visit.hiddenConcernDisclosed,
+    sourceEventId: parentEventId
+  });
   if (record) {
     appendCommand(state, "finish_visit", {
       plan: { summary: validated.summary, steps: validated.steps },
@@ -1145,8 +1241,13 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
     if (heard) {
       person.faith = clamp(person.faith + Math.max(0, (themeDeltas.faith || 1) * sensitivity));
       person.morale = clamp(person.morale + (themeDeltas.harmony || themeDeltas.mercy || 0) * 0.25);
-      person.memories.push(`Sunday sermon: ${theme} — ${String(text).slice(0, 100)}`);
-      person.memories = person.memories.slice(-8);
+      addStructuredMemory(state, person, {
+        type: "sermon",
+        summary: `Sunday sermon: ${theme} — ${String(text).slice(0, 100)}`,
+        emotion: theme === "Hope" || theme === "Mercy" ? "hopeful" : "contemplative",
+        confidence: 70,
+        sourceEventId: null
+      });
     } else {
       person.attendanceChance = clamp(person.attendanceChance - 1);
     }
@@ -1157,7 +1258,14 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
     person.faith = clamp(person.faith + clamp(effect.faithDelta, -6, 6));
     person.morale = clamp(person.morale + clamp(effect.moraleDelta, -6, 6));
     person.attendanceChance = clamp(person.attendanceChance + clamp(effect.attendanceDelta, -10, 10));
-    if (effect.memory) person.memories.push(String(effect.memory).slice(0, 180));
+    if (effect.memory) {
+      addStructuredMemory(state, person, {
+        type: "sermon_reaction",
+        summary: effect.memory,
+        emotion: "contemplative",
+        confidence: 70
+      });
+    }
   }
   const mechanicalSummary = `The sermon on ${theme.toLowerCase()} changed ${Object.entries(deltas)
     .filter(([, delta]) => Number(delta) !== 0)
@@ -1218,6 +1326,16 @@ export function replayGame(seed, commands, replayBase = null) {
         throw new Error(`Replay visitor mismatch at command ${command.id}`);
       }
     } else if (command.type === "conversation_exchange") {
+      const person = state.residents.find((resident) => resident.id === state.currentVisit?.personId);
+      const resolution = resolvePriestSpeech(state, person, state.currentVisit, command.payload.playerText);
+      if (command.payload.response.trustDelta !== resolution.trustDelta
+        || command.payload.response.stressDelta !== resolution.stressDelta
+        || command.payload.response.disclosure !== resolution.disclosure
+        || command.payload.response.contradictionId !== resolution.contradictionId
+        || command.payload.response.mood !== resolution.mood
+        || JSON.stringify(command.payload.response.intents) !== JSON.stringify(resolution.intents)) {
+        throw new Error(`Replay conversation audit mismatch at command ${command.id}`);
+      }
       recordExchange(state, command.payload.playerText, {
         ...command.payload.response,
         source: command.source

@@ -33,9 +33,9 @@ test("state round-trips through the authoritative schema", () => {
 test("offline wary dialogue remains valid and saveable", () => {
   const state = createGame("wary-fallback-seed");
   beginVisit(state);
-  const response = fallbackConversation(state, "You may leave if danger comes.");
+  const response = fallbackConversation(state, "You should leave the village if danger comes.");
   assert.equal(response.mood, "wary");
-  recordExchange(state, "You may leave if danger comes.", response);
+  recordExchange(state, "You should leave the village if danger comes.", response);
   assert.doesNotThrow(() => serializeState(state));
 });
 
@@ -156,7 +156,10 @@ test("command and accepted AI proposal audit data must match exactly", () => {
               mood: "resolved",
               trustDelta: 0,
               stressDelta: 0,
-              memory: ""
+              memory: "",
+              intents: ["neutral"],
+              disclosure: 10,
+              contradictionId: null
             }
           }
         });
@@ -321,7 +324,7 @@ test("imported AI proposals pass the same conversation and sermon validators", (
   const forgedConversation = JSON.parse(serializeState(conversation));
   forgedConversation.commandLog[1].payload.response.mood = "ecstatic";
   sealState(forgedConversation);
-  assert.throws(() => deserializeState(JSON.stringify(forgedConversation)), /invalid mood/);
+  assert.throws(() => deserializeState(JSON.stringify(forgedConversation)), /conversation audit mismatch/);
 
   const sermon = createGame("imported-ai-sermon-seed");
   while (sermon.calendar.dayIndex !== 6) {

@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ParishAiClient, validateSermonResponse } from "../js/ai.js";
-import { beginVisit, createGame, departureCandidates } from "../js/simulation.js";
+import {
+  beginVisit,
+  createGame,
+  departureCandidates,
+  materializeResident,
+  recordExchange
+} from "../js/simulation.js";
 import { addKnowledge, createRumor } from "../js/population.js";
+import { addStructuredMemory } from "../js/conversation.js";
 
 const validResponse = {
   summary: "The congregation listens with mixed feeling.",
@@ -68,10 +75,15 @@ test("AI departure responses reject oversized chains instead of truncating", asy
     })
   });
 
-  test("AI conversation rejects fractional deltas and unknown moods before mutation", async () => {
+  test("AI conversation rejects unknown moods and cannot author mechanical deltas", async () => {
     const state = createGame("invalid-conversation-client-seed");
     const visit = beginVisit(state);
     const person = state.residents.find((resident) => resident.id === visit.personId);
+    addStructuredMemory(state, person, {
+      summary: visit.intent.hiddenConcern,
+      privateMemory: true,
+      emotion: "ashamed"
+    });
     const client = new ParishAiClient({
       fetchImpl: async () => new Response(JSON.stringify({
         choices: [{
@@ -91,6 +103,27 @@ test("AI departure responses reject oversized chains instead of truncating", asy
       })
     });
 
+    test("AI conversation prompt hides the concern until deterministic disclosure", async () => {
+      const state = createGame("hidden-concern-prompt-seed");
+      const visit = beginVisit(state);
+      const person = state.residents.find((resident) => resident.id === visit.personId);
+      let prompt = "";
+      const client = new ParishAiClient({
+        fetchImpl: async (_url, options) => {
+          const body = JSON.parse(options.body);
+          prompt = body.messages[1].content;
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ reply: "I am not ready.", memory: "The priest asked." }) } }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      });
+      await client.conversation(state, person, "What troubles you?");
+      assert.doesNotMatch(prompt, new RegExp(visit.intent.hiddenConcern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+      visit.hiddenConcernDisclosed = true;
+      await client.conversation(state, person, "Now speak plainly.");
+      assert.match(prompt, new RegExp(visit.intent.hiddenConcern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+    });
+
     test("AI departure context exposes only heard rumor beliefs, never objective truth", async () => {
       const state = createGame("rumor-prompt-privacy-seed");
       const visit = beginVisit(state);
@@ -102,6 +135,80 @@ test("AI departure responses reject oversized chains instead of truncating", asy
         claim: "The miller hides grain.",
         truth: 99,
         intensity: 3
+      });
+
+      test("Sunday sermon prompts never expose private memories", async () => {
+        const state = createGame("sermon-private-memory-seed");
+        state.calendar.absoluteDay = 6;
+        state.calendar.dayIndex = 6;
+        state.calendar.week = 1;
+        const attendee = state.residents[0];
+        materializeResident(state, attendee.id, true);
+        addStructuredMemory(state, attendee, {
+          summary: "PRIVATE_CHALICE_SECRET",
+          privateMemory: true,
+          emotion: "ashamed"
+        });
+
+        test("office disclosure remains private through Sunday sermon context", async () => {
+          const state = createGame("office-disclosure-sermon-privacy");
+          const visit = beginVisit(state);
+          visit.location = "office";
+          visit.intent.hiddenConcern = "PRIVATE_WORSENING_ILLNESS";
+          visit.intent.disclosureThreshold = 0;
+          recordExchange(state, "I hear you.", {
+            reply: "I must admit it.",
+            memory: "PRIVATE_WORSENING_ILLNESS"
+          });
+          const person = state.residents.find((resident) => resident.id === visit.personId);
+          assert.ok(person.memories.some((memory) => memory.summary.includes("PRIVATE_WORSENING_ILLNESS") && memory.privateMemory));
+          state.currentVisit = null;
+          state.calendar.absoluteDay = 6;
+          state.calendar.dayIndex = 6;
+          state.calendar.week = 1;
+          state.calendar.slot = 0;
+          let prompt = "";
+          const client = new ParishAiClient({
+            fetchImpl: async (_url, options) => {
+              prompt = JSON.parse(options.body).messages[1].content;
+              return new Response(JSON.stringify({
+                choices: [{
+                  message: {
+                    content: JSON.stringify({
+                      summary: "The sermon is heard.",
+                      townDeltas: { harmony: 0, faith: 1, prosperity: 0, health: 0, safety: 0, mercy: 1 },
+                      responseTags: ["mercy"],
+                      notableEffects: []
+                    })
+                  }
+                }]
+              }), { status: 200, headers: { "Content-Type": "application/json" } });
+            }
+          });
+          await client.sermon(state, "Mercy", "Let mercy guide us.", [person]);
+          assert.doesNotMatch(prompt, /PRIVATE_WORSENING_ILLNESS/);
+        });
+        let prompt = "";
+        const client = new ParishAiClient({
+          fetchImpl: async (_url, options) => {
+            prompt = JSON.parse(options.body).messages[1].content;
+            return new Response(JSON.stringify({
+              choices: [{
+                message: {
+                  content: JSON.stringify({
+                    summary: "The sermon is heard.",
+                    townDeltas: { harmony: 0, faith: 1, prosperity: 0, health: 0, safety: 0, mercy: 1 },
+                    responseTags: ["mercy"],
+                    notableEffects: []
+                  })
+                }
+              }]
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+        });
+        const attendees = state.residents.filter((person) => person.active).slice(0, 20);
+        await client.sermon(state, "Mercy", "Let mercy guide us.", attendees);
+        assert.doesNotMatch(prompt, /PRIVATE_CHALICE_SECRET/);
       });
       addKnowledge(state, {
         holderId: visit.personId,
@@ -149,10 +256,28 @@ test("AI departure responses reject oversized chains instead of truncating", asy
       assert.doesNotMatch(prompt, /"truth":99|UNHEARD_PRIVATE_RUMOR/);
       assert.doesNotMatch(prompt, /rumor-prompt-privacy-seed|"bishopFavor":13|"debt":37/);
     });
-    await assert.rejects(
-      () => client.conversation(state, person, "Speak plainly."),
-      /invalid mood|invalid emotional changes/
-    );
+    const ignoredMechanicalFields = await client.conversation(state, person, "Speak plainly.");
+    assert.equal(ignoredMechanicalFields.mood, undefined);
+    assert.equal(ignoredMechanicalFields.trustDelta, undefined);
+
+    const proseOnly = new ParishAiClient({
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              reply: "A valid prose answer.",
+              mood: "resolved",
+              trustDelta: 5,
+              stressDelta: -5,
+              memory: "The priest spoke."
+            })
+          }
+        }]
+      }), { status: 200, headers: { "Content-Type": "application/json" } })
+    });
+    const response = await proseOnly.conversation(state, person, "Speak plainly.");
+    assert.equal(response.trustDelta, undefined);
+    assert.equal(response.stressDelta, undefined);
   });
   await assert.rejects(
     () => client.departure(state, departureCandidates(state)),

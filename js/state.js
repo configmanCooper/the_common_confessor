@@ -2,7 +2,7 @@ import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
 
-export const STATE_SCHEMA_VERSION = 3;
+export const STATE_SCHEMA_VERSION = 4;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -93,10 +93,81 @@ function defaultPriest() {
     romanAttention: 0,
     alive: true,
     promises: [],
+    positions: [],
+    confidentialityBreaches: [],
     supporters: [],
     enemies: [],
     accusations: []
   };
+}
+
+function upgradeConversationState(state) {
+  state.nextMemorySequence ||= 1;
+  for (const person of state.residents || []) {
+    person.memories = (person.memories || []).map((memory) => {
+      if (memory && typeof memory === "object") {
+        const numericId = Number(String(memory.id || "").replace(/\D/g, ""));
+        if (Number.isFinite(numericId)) state.nextMemorySequence = Math.max(state.nextMemorySequence, numericId + 1);
+        return memory;
+      }
+      const entry = {
+        id: `memory-${String(state.nextMemorySequence).padStart(7, "0")}`,
+        type: "legacy",
+        subjectId: "priest",
+        summary: String(memory || "").slice(0, 220),
+        emotion: "neutral",
+        confidence: 60,
+        privateMemory: true,
+        day: 0,
+        sourceEventId: null
+      };
+      state.nextMemorySequence += 1;
+      return entry;
+    });
+    if (person.materialized && !person.publicBackstory) {
+      person.publicBackstory = `${String(person.backstory || "").split(",")[0]}.`;
+    }
+  }
+  state.priest.promises = (state.priest.promises || []).map((promise, index) => (
+    promise && typeof promise === "object"
+      ? promise
+      : {
+        id: `promise-${String(index + 1).padStart(5, "0")}`,
+        personId: null,
+        text: String(promise || "").slice(0, 180),
+        madeDay: 0,
+        status: "open"
+      }
+  ));
+  state.priest.positions ||= [];
+  for (const position of state.priest.positions) {
+    position.personId ||= state.currentVisit?.personId || state.residents?.[0]?.id || "priest";
+  }
+  state.priest.confidentialityBreaches ||= [];
+  state.nextPositionSequence ||= state.priest.positions.reduce((maximum, position) => {
+    const match = /^position-(\d+)$/.exec(position.id || "");
+    return Math.max(maximum, match ? Number(match[1]) + 1 : 1);
+  }, 1);
+  if (state.currentVisit) {
+    state.currentVisit.intent ||= {
+      primaryMatter: state.currentVisit.issue?.kind || "counsel",
+      desiredOutcome: state.currentVisit.issue?.kind === "confession" ? "absolution" : "guidance",
+      hiddenConcern: state.currentVisit.issue?.detail || "an undisclosed concern",
+      disclosureThreshold: 70,
+      urgency: state.currentVisit.issue?.gravity || 2,
+      risk: Math.max(1, (state.currentVisit.issue?.gravity || 2) - 1)
+    };
+    state.currentVisit.disclosure ??= 10;
+    state.currentVisit.hiddenConcernDisclosed ??= false;
+  }
+  for (const command of state.commandLog || []) {
+    if (command.type === "conversation_exchange") {
+      command.payload.response.intents ||= ["neutral"];
+      command.payload.response.disclosure ??= 10;
+      command.payload.response.contradictionId ??= null;
+    }
+  }
+  return state;
 }
 
 export function migrateState(rawState) {
@@ -147,6 +218,7 @@ export function migrateState(rawState) {
       state.currentVisit.eventLicense ||= "ordinary";
     }
     upgradePopulationState(state);
+    upgradeConversationState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const replaySnapshot = {
@@ -167,6 +239,7 @@ export function migrateState(rawState) {
   }
   if (detectedVersion === 2) {
     upgradePopulationState(state);
+    upgradeConversationState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -183,6 +256,30 @@ export function migrateState(rawState) {
     state.replayBase = {
       kind: "migration",
       sourceSchemaVersion: 2,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
+  if (detectedVersion === 3) {
+    verifyIntegrity(state);
+    upgradeConversationState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 3,
       source: cloneJson(rawState),
       snapshot: migrationSnapshot
     };
@@ -238,9 +335,33 @@ export function validateState(state) {
     requireFinite(state.priest[field], `Priest ${field}`, 0, 100);
   }
   if (typeof state.priest.alive !== "boolean") throw new Error("Priest alive state is invalid");
-  for (const field of ["promises", "supporters", "enemies", "accusations"]) {
+  for (const field of ["supporters", "enemies", "accusations"]) {
     requireArray(state.priest[field], `Priest ${field}`);
     if (state.priest[field].some((entry) => typeof entry !== "string")) throw new Error(`Priest ${field} is invalid`);
+  }
+  requireArray(state.priest.promises, "Priest promises");
+  requireArray(state.priest.positions, "Priest positions");
+  requireArray(state.priest.confidentialityBreaches, "Priest confidentiality breaches");
+  const promiseIds = new Set();
+  for (const promise of state.priest.promises) {
+    requireObject(promise, "Priest promise");
+    if (typeof promise.id !== "string" || (promise.personId != null && typeof promise.personId !== "string")
+      || typeof promise.text !== "string" || !Number.isInteger(promise.madeDay)
+      || !["open", "kept", "broken"].includes(promise.status)) {
+      throw new Error("Priest promise is invalid");
+    }
+    if (promiseIds.has(promise.id)) throw new Error(`Duplicate promise ID: ${promise.id}`);
+    promiseIds.add(promise.id);
+  }
+  const positionIds = new Set();
+  for (const position of state.priest.positions) {
+    requireObject(position, "Priest position");
+    if (typeof position.id !== "string" || typeof position.intent !== "string"
+      || typeof position.personId !== "string" || typeof position.summary !== "string" || !Number.isInteger(position.day)) {
+      throw new Error("Priest position is invalid");
+    }
+    if (positionIds.has(position.id)) throw new Error(`Duplicate position ID: ${position.id}`);
+    positionIds.add(position.id);
   }
   requireArray(state.residents, "Residents");
   if (!state.residents.length || !state.residents.some((resident) => resident?.active === true)) {
@@ -292,13 +413,13 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (state.replayBase.sourceSchemaVersion !== 2
-        || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== 2) {
+      if (![2, 3].includes(state.replayBase.sourceSchemaVersion)
+        || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
       const remigrated = migrateState(state.replayBase.source);
       if (stableStringify(remigrated.replayBase.snapshot) !== stableStringify(state.replayBase.snapshot)) {
-        throw new Error("Replay base does not match its schema-v2 migration");
+        throw new Error("Replay base does not match its schema migration");
       }
     } else if (state.replayBase.kind !== "periodic") {
       throw new Error("Replay base kind is invalid");
@@ -314,6 +435,7 @@ export function validateState(state) {
   const people = [...state.residents, ...state.externalActors];
   const personIds = new Set();
   const residentIds = new Set(state.residents.map((person) => person.id));
+  const memoryIds = new Set();
   const residentNames = new Set();
   for (const person of people) {
     requireObject(person, "Person");
@@ -371,7 +493,18 @@ export function validateState(state) {
         || (person.departureDay != null && (!Number.isInteger(person.departureDay) || person.departureDay < person.arrivalDay))) {
         throw new Error(`Resident ${person.id} has invalid migration dates`);
       }
-      if (person.memories.some((memory) => typeof memory !== "string")) throw new Error(`Resident ${person.id} has invalid memories`);
+      for (const memory of person.memories) {
+        requireObject(memory, `Memory for ${person.id}`);
+        if (typeof memory.id !== "string" || typeof memory.type !== "string"
+          || typeof memory.subjectId !== "string" || typeof memory.summary !== "string"
+          || typeof memory.emotion !== "string" || typeof memory.privateMemory !== "boolean"
+          || !Number.isInteger(memory.day)) {
+          throw new Error(`Resident ${person.id} has invalid memory`);
+        }
+        if (memoryIds.has(memory.id)) throw new Error(`Duplicate memory ID: ${memory.id}`);
+        memoryIds.add(memory.id);
+        requireFinite(memory.confidence, `Memory confidence for ${person.id}`, 0, 100);
+      }
       if (person.flags.some((flag) => typeof flag !== "string")) throw new Error(`Resident ${person.id} has invalid flags`);
       if (person.materialized) {
         requireObject(person.personality, `Personality for ${person.id}`);
@@ -380,7 +513,8 @@ export function validateState(state) {
         for (const field of ["candor", "empathy", "boldness", "piety"]) {
           requireFinite(person.personality[field], `${field} for ${person.id}`, 0, 100);
         }
-        if (typeof person.backstory !== "string" || typeof person.privatePressure !== "string") {
+        if (typeof person.backstory !== "string" || typeof person.publicBackstory !== "string"
+          || typeof person.privatePressure !== "string") {
           throw new Error(`Resident ${person.id} has incomplete materialized profile`);
         }
       }
@@ -423,6 +557,19 @@ export function validateState(state) {
     if (!householdIds.has(resident.householdId)) throw new Error(`Resident ${resident.id} references missing household ${resident.householdId}`);
     if (householdMembership.get(resident.id) !== resident.householdId) {
       throw new Error(`Resident ${resident.id} is missing from household ${resident.householdId}`);
+    }
+    for (const promise of state.priest.promises) {
+      if (promise.personId != null && !personIds.has(promise.personId)) throw new Error(`Promise ${promise.id} has missing person`);
+    }
+    for (const position of state.priest.positions) {
+      if (!personIds.has(position.personId)) throw new Error(`Position ${position.id} has missing person`);
+    }
+    for (const breach of state.priest.confidentialityBreaches) {
+      requireObject(breach, "Confidentiality breach");
+      if (typeof breach.id !== "string" || !personIds.has(breach.subjectId) || !personIds.has(breach.listenerId)
+        || !Number.isInteger(breach.day)) {
+        throw new Error("Confidentiality breach is invalid");
+      }
     }
     for (const relationId of resident.relationshipIds) {
       if (!personIds.has(relationId)) throw new Error(`Resident ${resident.id} references missing relationship ${relationId}`);
@@ -512,6 +659,13 @@ export function validateState(state) {
     }
     priorEventIds.add(event.id);
   }
+  for (const person of state.residents) {
+    for (const memory of person.memories) {
+      if (memory.sourceEventId != null && !eventIds.has(memory.sourceEventId)) {
+        throw new Error(`Memory ${memory.id} has missing source event`);
+      }
+    }
+  }
   for (const entry of state.knowledge) {
     if (entry.sourceEventId != null && !eventIds.has(entry.sourceEventId)) {
       throw new Error(`Knowledge ${entry.id} has missing source event`);
@@ -554,6 +708,15 @@ export function validateState(state) {
     if (state.currentVisit.counsel.some((entry) => typeof entry !== "string")) {
       throw new Error("Current visit counsel is malformed");
     }
+    requireObject(state.currentVisit.intent, "Current visit intent");
+    for (const field of ["primaryMatter", "desiredOutcome", "hiddenConcern"]) {
+      if (typeof state.currentVisit.intent[field] !== "string") throw new Error(`Current visit intent ${field} is invalid`);
+    }
+    for (const field of ["disclosureThreshold", "urgency", "risk"]) {
+      requireFinite(state.currentVisit.intent[field], `Current visit intent ${field}`, 0, 100);
+    }
+    requireFinite(state.currentVisit.disclosure, "Current visit disclosure", 0, 100);
+    if (typeof state.currentVisit.hiddenConcernDisclosed !== "boolean") throw new Error("Current visit disclosure state is invalid");
     if (!Number.isInteger(state.currentVisit.turnsUsed) || state.currentVisit.turnsUsed < 0 || state.currentVisit.turnsUsed > 10) {
       throw new Error("Current visit turn count is invalid");
     }
@@ -597,6 +760,19 @@ export function validateState(state) {
       }
       requireObject(command.payload.response, "Conversation command response");
       validateConversation(command.payload.response);
+      if (typeof command.payload.response.mood !== "string") throw new Error("Conversation command mood is invalid");
+      for (const field of ["trustDelta", "stressDelta"]) {
+        if (!Number.isInteger(command.payload.response[field])
+          || command.payload.response[field] < -5
+          || command.payload.response[field] > 5) {
+          throw new Error(`Conversation command ${field} is invalid`);
+        }
+      }
+      requireArray(command.payload.response.intents, "Conversation command intents");
+      if (command.payload.response.intents.some((intent) => typeof intent !== "string")) {
+        throw new Error("Conversation command intents are invalid");
+      }
+      requireFinite(command.payload.response.disclosure, "Conversation command disclosure", 0, 100);
       activeVisitTurns += 1;
     } else if (command.type === "finish_visit") {
       if (!activeVisitPersonId) throw new Error("Finish command has no active visit");
@@ -653,7 +829,9 @@ export function validateState(state) {
   if ((state.commandLog.length || state.replayBase) && Boolean(activeVisitPersonId) !== Boolean(state.currentVisit)) {
     throw new Error("Command log active-visit state does not match the saved state");
   }
-  if (state.currentVisit && activeVisitTurns !== state.currentVisit.turnsUsed) {
+  if ((state.commandLog.length || state.replayBase)
+    && state.currentVisit
+    && activeVisitTurns !== state.currentVisit.turnsUsed) {
     throw new Error("Command log turn count does not match the saved visit");
   }
   const proposalIds = new Set();
@@ -710,6 +888,14 @@ export function validateState(state) {
     const match = /^rumor-(\d+)$/.exec(rumor.id);
     return Math.max(maximum, match ? Number(match[1]) : 0);
   }, 0);
+  const maximumMemorySequence = state.residents.flatMap((person) => person.memories).reduce((maximum, memory) => {
+    const match = /^memory-(\d+)$/.exec(memory.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
+  const maximumPositionSequence = state.priest.positions.reduce((maximum, position) => {
+    const match = /^position-(\d+)$/.exec(position.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
   if (!Number.isInteger(state.populationSequence) || state.populationSequence <= maximumResidentSequence) {
     throw new Error("Population sequence would create a duplicate resident");
   }
@@ -718,6 +904,12 @@ export function validateState(state) {
   }
   if (!Number.isInteger(state.nextRumorSequence) || state.nextRumorSequence <= maximumRumorSequence) {
     throw new Error("Rumor sequence would create a duplicate entry");
+  }
+  if (!Number.isInteger(state.nextMemorySequence) || state.nextMemorySequence <= maximumMemorySequence) {
+    throw new Error("Memory sequence would create a duplicate entry");
+  }
+  if (!Number.isInteger(state.nextPositionSequence) || state.nextPositionSequence <= maximumPositionSequence) {
+    throw new Error("Position sequence would create a duplicate entry");
   }
   if (!Number.isInteger(state.lastInvitedMigrationDay)) {
     throw new Error("Invited migration cooldown is invalid");
@@ -816,7 +1008,8 @@ export function compactReplayHistory(state) {
   const retainedEventIds = new Set([
     ...state.chronicle.map((entry) => entry.eventId),
     ...state.knowledge.map((entry) => entry.sourceEventId),
-    ...state.rumors.map((rumor) => rumor.sourceEventId)
+    ...state.rumors.map((rumor) => rumor.sourceEventId),
+    ...state.residents.flatMap((person) => person.memories.map((memory) => memory.sourceEventId))
   ].filter(Boolean));
   const eventsById = new Map(state.events.map((event) => [event.id, event]));
   const frontier = [...retainedEventIds];

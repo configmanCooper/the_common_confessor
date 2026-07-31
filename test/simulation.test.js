@@ -129,6 +129,8 @@ test("appointment scheduling backfills when every villager was seen recently", (
       "You should leave the village?",
       "It is not best to leave the village.",
       "You should leave the village. I retract that advice. Do not go.",
+      "You should leave the village, but do not go.",
+      "You should leave the village. However, do not go.",
       "You should leave the village. Not."
     ]) {
       const state = createGame(`leave-language-${counsel}`);
@@ -166,7 +168,9 @@ test("appointment scheduling backfills when every villager was seen recently", (
 
     for (const counsel of [
       "You should leave the village. It will not be easy.",
-      "You are not safe. You should flee the village."
+      "You are not safe. You should flee the village.",
+      "I tell you to leave the village.",
+      "Leave the village."
     ]) {
       const clear = createGame(`clear-departure-${counsel}`);
       beginVisit(clear);
@@ -201,6 +205,36 @@ test("appointment scheduling backfills when every villager was seen recently", (
         intensity: 3
       }]
     }).steps.length, 1);
+
+    const counseledDistress = createGame("counseled-distress");
+    beginVisit(counseledDistress);
+    counseledDistress.currentVisit.counsel.push("I hear you.");
+    const counseledPerson = counseledDistress.residents.find((person) => person.id === counseledDistress.currentVisit.personId);
+    counseledPerson.age = 30;
+    counseledPerson.ageDays = 30 * 365;
+    counseledPerson.stress = 80;
+    counseledPerson.morale = 20;
+    assert.equal(validateDeparturePlan(counseledDistress, {
+      steps: [{
+        actorId: counseledPerson.id,
+        targetId: null,
+        actionType: "leave_village",
+        intensity: 3
+      }]
+    }).steps.length, 0);
+
+    const reported = createGame("reported-departure-advice");
+    beginVisit(reported);
+    reported.currentVisit.counsel.push("Thomas told me that you should leave the village.");
+    const reportedActor = reported.currentVisit.personId;
+    assert.equal(validateDeparturePlan(reported, {
+      steps: [{
+        actorId: reportedActor,
+        targetId: null,
+        actionType: "leave_village",
+        intensity: 3
+      }]
+    }).steps.length, 0);
   });
 
   test("offering work changes the recipient rather than the employer", () => {

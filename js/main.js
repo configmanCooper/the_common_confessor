@@ -276,11 +276,13 @@ function renderVisit() {
   elements["location-name"].textContent = location.name;
   elements["location-description"].textContent = location.description;
   elements["visitor-name"].textContent = person.name;
-  elements["visitor-summary"].textContent = `${visit.issue.kind}: ${visit.issue.detail}`;
+  elements["visitor-summary"].textContent = visit.hiddenConcernDisclosed
+    ? `${visit.issue.kind}: ${visit.intent.hiddenConcern}`
+    : `${visit.issue.kind}: ${visit.intent.desiredOutcome} sought`;
   elements["visitor-occupation"].textContent = person.occupation;
   elements["visitor-age"].textContent = `age ${person.age}`;
   elements["visitor-mood"].textContent = visit.mood;
-  elements["visitor-backstory"].textContent = person.backstory;
+  elements["visitor-backstory"].textContent = visit.hiddenConcernDisclosed ? person.backstory : person.publicBackstory;
   elements["turn-counter"].textContent = `${visit.turnsUsed} / ${visit.maxTurns} things said`;
   elements["hour-state"].textContent = visit.turnsUsed >= visit.maxTurns ? "The hour is spent." : "The hour continues.";
   elements["speak-button"].disabled = visit.turnsUsed >= visit.maxTurns;
@@ -391,8 +393,12 @@ async function submitCounsel(event) {
   conversationInFlight = false;
   const currentToken = state.currentVisit?.visitId || "";
   if (generation !== stateGeneration || currentToken !== visitToken) return;
+  const previousHistoryLength = state.currentVisit.history.length;
   recordExchange(requestState, text, response);
-  appendDialogue("visitor", response.reply);
+  state.currentVisit.history
+    .slice(previousHistoryLength)
+    .filter((line) => line.speaker === "visitor")
+    .forEach((line) => appendDialogue("visitor", line.text));
   renderVisit();
   if (state.currentVisit.turnsUsed >= state.currentVisit.maxTurns) {
     elements["hour-state"].textContent = "Ten things have been said. The hour is spent.";
