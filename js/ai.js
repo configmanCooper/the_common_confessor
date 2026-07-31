@@ -1,4 +1,4 @@
-import { PHASE_ZERO_SAFE_ACTIONS } from "./data.js";
+import { AI_ALLOWED_ACTIONS } from "./data.js";
 
 function boundedString(value, maximum) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
@@ -213,7 +213,7 @@ export class ParishAiClient extends EventTarget {
         depth: { type: "integer", minimum: 1, maximum: 3 },
         actorId: { type: "string", enum: candidateIds },
         targetId: { type: ["string", "null"], enum: [...candidateIds, null] },
-        actionType: { type: "string", enum: PHASE_ZERO_SAFE_ACTIONS },
+        actionType: { type: "string", enum: AI_ALLOWED_ACTIONS },
         intensity: { type: "integer", minimum: 1, maximum: 5 },
         title: { type: "string", maxLength: 100 },
         description: { type: "string", maxLength: 400 },
@@ -229,8 +229,31 @@ export class ParishAiClient extends EventTarget {
         steps: { type: "array", minItems: 1, maxItems: 3, items: stepSchema }
       }
     };
+    const band = (value) => {
+      if (value >= 75) return "high";
+      if (value >= 55) return "comfortable";
+      if (value >= 35) return "strained";
+      return "low";
+    };
+    const household = state.households.find((entry) => entry.id === person.householdId);
     const context = {
-      town: state.town,
+      town: {
+        name: state.town.name,
+        description: state.town.description,
+        publicConditions: {
+          harmony: band(state.town.metrics.harmony),
+          prosperity: band(state.town.metrics.prosperity),
+          health: band(state.town.metrics.health),
+          safety: band(state.town.metrics.safety),
+          faith: band(state.town.metrics.faith)
+        }
+      },
+      priest: {
+        publicTrust: band(state.priest.localTrust),
+        moralAuthority: band(state.priest.moralAuthority),
+        publicScandal: band(state.priest.scandal),
+        visibleHealth: band(state.priest.health)
+      },
       visitor: {
         id: person.id,
         name: person.name,
@@ -240,15 +263,55 @@ export class ParishAiClient extends EventTarget {
         issue: visit.issue,
         trustPriest: person.trustPriest
       },
+      household: household ? {
+        foodSecurity: band(household.food),
+        means: band(household.wealth),
+        debtPressure: band(Math.min(100, household.debt)),
+        dwelling: household.dwelling
+      } : null,
       counsel: visit.counsel,
       finalMood: visit.mood,
       eventLicense: visit.eventLicense,
+      activeRumors: state.rumors
+        .filter((rumor) => rumor.active && rumor.heardByIds.includes(person.id))
+        .slice(-5)
+        .map((rumor) => ({
+          claim: rumor.claim,
+          intensity: rumor.intensity,
+          personalConfidence: state.knowledge.find((entry) => (
+            entry.holderId === person.id
+            && entry.subjectId === rumor.subjectId
+            && entry.topic === "rumor"
+          ))?.confidence ?? 45
+        })),
+      knownFacts: state.knowledge
+        .filter((entry) => entry.holderId === person.id)
+        .slice(-12)
+        .map((entry) => ({
+          subjectId: entry.subjectId,
+          topic: entry.topic,
+          belief: entry.belief,
+          confidence: entry.confidence,
+          privateKnowledge: entry.privateKnowledge
+        })),
       possiblePeople: candidates.map((candidate) => ({
         id: candidate.id,
         name: candidate.name,
+        age: candidate.age,
         occupation: candidate.occupation,
-        relationshipIds: candidate.relationshipIds.filter((id) => candidateIds.includes(id)),
-        profile: candidate.materialized ? candidate.personality?.traits : undefined
+        relationshipFromVisitor: (() => {
+          const relationship = state.relationships.find((entry) => (
+            entry.actorId === person.id && entry.targetId === candidate.id
+          ));
+          if (!relationship) return "unfamiliar";
+          return {
+            familiarity: band(relationship.familiarity),
+            trust: band(relationship.trust),
+            affection: band(relationship.affection),
+            fear: band(relationship.fear),
+            resentment: band(relationship.resentment)
+          };
+        })()
       }))
     };
     const prompt = [

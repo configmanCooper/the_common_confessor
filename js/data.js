@@ -234,6 +234,16 @@ export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
   "keep_silence", "confess_publicly", "protect", "offer_work", "refuse_work"
 ]);
 
+export const PHASE_TWO_LIFE_ACTIONS = Object.freeze([
+  "court", "marry", "separate", "conceive_child", "adopt_child",
+  "invite_migrant", "leave_village", "change_job"
+]);
+
+export const AI_ALLOWED_ACTIONS = Object.freeze([
+  ...PHASE_ZERO_SAFE_ACTIONS,
+  ...PHASE_TWO_LIFE_ACTIONS
+]);
+
 export const EXTERNAL_ROLES = Object.freeze({
   archdeacon: {
     title: "Archdeacon",

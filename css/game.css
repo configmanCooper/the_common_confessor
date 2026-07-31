@@ -91,12 +91,12 @@ p { margin: .45rem 0; }
 
 #town-panel { top: 5.6rem; left: 1rem; width: min(290px, 25vw); max-height: calc(100vh - 9rem); overflow: auto; padding: 1rem; }
 #town-panel h2 { font-size: 1.35rem; }
-#town-metrics { display: grid; gap: .28rem; margin: .8rem 0; }
-#town-metrics div { display: grid; grid-template-columns: 1fr 3rem; align-items: center; gap: .4rem; }
-#town-metrics dt { position: relative; overflow: hidden; padding-right: .25rem; font-size: .85rem; text-transform: capitalize; }
-#town-metrics dt::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(84,55,30,.18); }
-#town-metrics dt span { position: absolute; left: 0; bottom: 0; height: 4px; background: #7f272a; }
-#town-metrics dd { margin: 0; text-align: right; font-weight: 600; }
+#town-metrics, #priest-metrics { display: grid; gap: .28rem; margin: .8rem 0; }
+#town-metrics div, #priest-metrics div { display: grid; grid-template-columns: 1fr 3rem; align-items: center; gap: .4rem; }
+#town-metrics dt, #priest-metrics dt { position: relative; overflow: hidden; padding-right: .25rem; font-size: .85rem; text-transform: capitalize; }
+#town-metrics dt::after, #priest-metrics dt::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(84,55,30,.18); }
+#town-metrics dt span, #priest-metrics dt span { position: absolute; left: 0; bottom: 0; height: 4px; background: #7f272a; }
+#town-metrics dd, #priest-metrics dd { margin: 0; text-align: right; font-weight: 600; }
 .population-line { display: flex; justify-content: space-between; border-top: 1px solid rgba(74,44,21,.3); padding-top: .55rem; }
 
 #visitor-panel { top: 5.6rem; right: 1rem; width: min(315px, 27vw); padding: 1rem; max-height: calc(100vh - 17rem); overflow: auto; }

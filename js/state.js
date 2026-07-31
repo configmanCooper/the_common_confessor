@@ -1,7 +1,8 @@
-import { PHASE_ZERO_SAFE_ACTIONS, SERMON_THEMES } from "./data.js";
+import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
+import { upgradePopulationState } from "./population.js";
 
-export const STATE_SCHEMA_VERSION = 2;
+export const STATE_SCHEMA_VERSION = 3;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -108,6 +109,7 @@ export function migrateState(rawState) {
   if (detectedVersion < 1) {
     throw new Error(`Unsupported save schema ${detectedVersion}`);
   }
+  if (detectedVersion === 2) verifyIntegrity(state);
   if (detectedVersion === 1) {
     requireArray(state.residents, "Save residents");
     if (!state.residents.length || !state.residents.some((resident) => resident?.active === true)) {
@@ -144,6 +146,7 @@ export function migrateState(rawState) {
       state.currentVisit.originEventId ||= state.events.at(-1)?.id || null;
       state.currentVisit.eventLicense ||= "ordinary";
     }
+    upgradePopulationState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const replaySnapshot = {
@@ -159,6 +162,29 @@ export function migrateState(rawState) {
       legacySchemaVersion: 1,
       legacySource: cloneJson(rawState),
       snapshot: replaySnapshot
+    };
+    sealState(state);
+  }
+  if (detectedVersion === 2) {
+    upgradePopulationState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 2,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
     };
     sealState(state);
   }
@@ -221,6 +247,10 @@ export function validateState(state) {
     throw new Error("State has no active resident roster");
   }
   requireArray(state.households, "Households");
+  requireArray(state.relationships, "Relationships");
+  requireArray(state.knowledge, "Knowledge");
+  requireArray(state.rumors, "Rumors");
+  if (typeof state.householdFamiliesSeeded !== "boolean") throw new Error("Household family seed state is invalid");
   requireArray(state.externalActors, "External actors");
   requireArray(state.eventQueue, "Event queue");
   requireArray(state.commandLog, "Command log");
@@ -260,6 +290,16 @@ export function validateState(state) {
       if (stableStringify(remigrated.replayBase.snapshot) !== stableStringify(state.replayBase.snapshot)) {
         throw new Error("Replay base does not match its legacy source migration");
       }
+    } else if (state.replayBase.kind === "migration") {
+      requireObject(state.replayBase.source, "Replay migration source");
+      if (state.replayBase.sourceSchemaVersion !== 2
+        || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== 2) {
+        throw new Error("Replay migration source is invalid");
+      }
+      const remigrated = migrateState(state.replayBase.source);
+      if (stableStringify(remigrated.replayBase.snapshot) !== stableStringify(state.replayBase.snapshot)) {
+        throw new Error("Replay base does not match its schema-v2 migration");
+      }
     } else if (state.replayBase.kind !== "periodic") {
       throw new Error("Replay base kind is invalid");
     }
@@ -286,12 +326,16 @@ export function validateState(state) {
       residentNames.add(person.name);
       if (typeof person.firstName !== "string" || typeof person.surname !== "string") throw new Error(`Resident ${person.id} has invalid name fields`);
       if (!["female", "male"].includes(person.sex)) throw new Error(`Resident ${person.id} has invalid sex`);
-      requireFinite(person.age, `Age for ${person.id}`, 0, 120);
+      requireFinite(person.age, `Age for ${person.id}`, 0);
       if (typeof person.householdId !== "string") throw new Error(`Resident ${person.id} has no household`);
       if (typeof person.occupation !== "string") throw new Error(`Resident ${person.id} has invalid occupation`);
       if (!Number.isInteger(person.sprite) || person.sprite < 0 || person.sprite > 41) throw new Error(`Resident ${person.id} has invalid sprite`);
       for (const field of ["active", "profileRevealed", "materialized"]) {
         if (typeof person[field] !== "boolean") throw new Error(`Resident ${person.id} has invalid ${field}`);
+      }
+      if (typeof person.alive !== "boolean") throw new Error(`Resident ${person.id} has invalid alive state`);
+      if (!Number.isInteger(person.ageDays) || person.ageDays < 0 || Math.floor(person.ageDays / 365) !== person.age) {
+        throw new Error(`Resident ${person.id} has invalid age-day state`);
       }
       if (!Number.isInteger(person.visitCount) || person.visitCount < 0) throw new Error(`Resident ${person.id} has invalid visit count`);
       requireFinite(person.lastVisitDay, `Last visit day for ${person.id}`);
@@ -301,6 +345,32 @@ export function validateState(state) {
       requireArray(person.relationshipIds, `Relationships for ${person.id}`);
       requireArray(person.memories, `Memories for ${person.id}`);
       requireArray(person.flags, `Flags for ${person.id}`);
+      requireArray(person.parentIds, `Parents for ${person.id}`);
+      requireArray(person.childrenIds, `Children for ${person.id}`);
+      if (!["single", "married", "separated", "annulled", "deserted", "widowed", "deceased"].includes(person.maritalStatus)) {
+        throw new Error(`Resident ${person.id} has invalid marital status`);
+      }
+      if (person.spouseId != null && typeof person.spouseId !== "string") throw new Error(`Resident ${person.id} has invalid spouse`);
+      if (person.marriageDay != null && (!Number.isInteger(person.marriageDay) || person.marriageDay < 0)) {
+        throw new Error(`Resident ${person.id} has invalid marriage day`);
+      }
+      if (person.pregnantDueDay != null && (!Number.isInteger(person.pregnantDueDay) || person.pregnantDueDay < 0)) {
+        throw new Error(`Resident ${person.id} has invalid pregnancy state`);
+      }
+      if (person.pregnancyCoParentId != null && typeof person.pregnancyCoParentId !== "string") {
+        throw new Error(`Resident ${person.id} has invalid pregnancy co-parent`);
+      }
+      if ((person.pregnantDueDay == null) !== (person.pregnancyCoParentId == null)
+        || (person.pregnantDueDay != null && (person.sex !== "female" || !person.alive))) {
+        throw new Error(`Resident ${person.id} has inconsistent pregnancy state`);
+      }
+      if (person.illness != null && typeof person.illness !== "string") throw new Error(`Resident ${person.id} has invalid illness`);
+      if (!Number.isInteger(person.illnessDays) || person.illnessDays < 0) throw new Error(`Resident ${person.id} has invalid illness duration`);
+      if (person.causeOfDeath != null && typeof person.causeOfDeath !== "string") throw new Error(`Resident ${person.id} has invalid cause of death`);
+      if (!Number.isInteger(person.arrivalDay) || person.arrivalDay < 0
+        || (person.departureDay != null && (!Number.isInteger(person.departureDay) || person.departureDay < person.arrivalDay))) {
+        throw new Error(`Resident ${person.id} has invalid migration dates`);
+      }
       if (person.memories.some((memory) => typeof memory !== "string")) throw new Error(`Resident ${person.id} has invalid memories`);
       if (person.flags.some((flag) => typeof flag !== "string")) throw new Error(`Resident ${person.id} has invalid flags`);
       if (person.materialized) {
@@ -338,6 +408,9 @@ export function validateState(state) {
       requireFinite(household[field], `${field} for ${household.id}`, 0, 100);
     }
     requireFinite(household.debt, `Debt for ${household.id}`, 0);
+    requireFinite(household.dailyProduction, `Daily production for ${household.id}`, 0);
+    if (!Number.isInteger(household.lastBalanceDay)) throw new Error(`Household ${household.id} has invalid balance day`);
+    if (!Number.isInteger(household.lastAdoptionDay)) throw new Error(`Household ${household.id} has invalid adoption day`);
     householdIds.add(household.id);
     requireArray(household.memberIds, `Household members for ${household.id}`);
     for (const memberId of household.memberIds) {
@@ -354,6 +427,68 @@ export function validateState(state) {
     for (const relationId of resident.relationshipIds) {
       if (!personIds.has(relationId)) throw new Error(`Resident ${resident.id} references missing relationship ${relationId}`);
     }
+    for (const relativeId of [...resident.parentIds, ...resident.childrenIds]) {
+      if (!personIds.has(relativeId)) throw new Error(`Resident ${resident.id} references missing relative ${relativeId}`);
+    }
+    if (resident.spouseId != null && !personIds.has(resident.spouseId)) {
+      throw new Error(`Resident ${resident.id} references missing spouse ${resident.spouseId}`);
+    }
+    if (resident.pregnancyCoParentId != null && !personIds.has(resident.pregnancyCoParentId)) {
+      throw new Error(`Resident ${resident.id} references missing pregnancy co-parent ${resident.pregnancyCoParentId}`);
+    }
+    if (resident.spouseId != null) {
+      const spouse = state.residents.find((person) => person.id === resident.spouseId);
+      if (spouse?.spouseId !== resident.id || resident.age < 18 || spouse.age < 18) {
+        throw new Error(`Resident ${resident.id} has invalid reciprocal adult spouse`);
+      }
+      if (spouse.sex === resident.sex) throw new Error(`Resident ${resident.id} has invalid same-sex marriage`);
+    }
+  }
+
+  const relationshipIds = new Set();
+  for (const relationship of state.relationships) {
+    requireObject(relationship, "Relationship");
+    if (!relationship.id || relationshipIds.has(relationship.id)) throw new Error(`Duplicate or missing relationship ID: ${relationship.id}`);
+    relationshipIds.add(relationship.id);
+    if (!personIds.has(relationship.actorId) || !personIds.has(relationship.targetId) || relationship.actorId === relationship.targetId) {
+      throw new Error(`Relationship ${relationship.id} has invalid people`);
+    }
+    if (relationship.id !== `relationship-${relationship.actorId}-${relationship.targetId}`) {
+      throw new Error(`Relationship ${relationship.id} has invalid canonical ID`);
+    }
+    for (const field of ["familiarity", "trust", "affection", "attraction", "fear", "respect", "resentment", "obligation"]) {
+      requireFinite(relationship[field], `${field} for ${relationship.id}`, 0, 100);
+    }
+    if (!Number.isInteger(relationship.lastInteractionDay)) throw new Error(`Relationship ${relationship.id} has invalid interaction day`);
+  }
+  const knowledgeIds = new Set();
+  for (const entry of state.knowledge) {
+    requireObject(entry, "Knowledge entry");
+    if (!entry.id || knowledgeIds.has(entry.id)) throw new Error(`Duplicate or missing knowledge ID: ${entry.id}`);
+    knowledgeIds.add(entry.id);
+    if (!personIds.has(entry.holderId) || (entry.subjectId !== "priest" && !personIds.has(entry.subjectId))) {
+      throw new Error(`Knowledge ${entry.id} has invalid people`);
+    }
+    if (typeof entry.topic !== "string" || typeof entry.belief !== "string"
+      || typeof entry.isTrue !== "boolean" || typeof entry.privateKnowledge !== "boolean") {
+      throw new Error(`Knowledge ${entry.id} is malformed`);
+    }
+    requireFinite(entry.confidence, `Confidence for ${entry.id}`, 0, 100);
+  }
+  const rumorIds = new Set();
+  for (const rumor of state.rumors) {
+    requireObject(rumor, "Rumor");
+    if (!rumor.id || rumorIds.has(rumor.id)) throw new Error(`Duplicate or missing rumor ID: ${rumor.id}`);
+    rumorIds.add(rumor.id);
+    if (!personIds.has(rumor.originatorId) || (rumor.subjectId !== "priest" && !personIds.has(rumor.subjectId))) {
+      throw new Error(`Rumor ${rumor.id} has invalid people`);
+    }
+    if (typeof rumor.claim !== "string" || typeof rumor.active !== "boolean") throw new Error(`Rumor ${rumor.id} is malformed`);
+    requireFinite(rumor.truth, `Truth for ${rumor.id}`, 0, 100);
+    requireFinite(rumor.intensity, `Intensity for ${rumor.id}`, 1, 5);
+    requireArray(rumor.heardByIds, `Hearers for ${rumor.id}`);
+    if (rumor.heardByIds.some((id) => !personIds.has(id))) throw new Error(`Rumor ${rumor.id} has missing hearers`);
+    if (!Number.isInteger(rumor.createdDay) || rumor.createdDay < 0) throw new Error(`Rumor ${rumor.id} has invalid day`);
   }
 
   const eventIds = new Set();
@@ -376,6 +511,16 @@ export function validateState(state) {
       throw new Error(`Event ${event.id} has a missing or non-prior parent ${event.parentId}`);
     }
     priorEventIds.add(event.id);
+  }
+  for (const entry of state.knowledge) {
+    if (entry.sourceEventId != null && !eventIds.has(entry.sourceEventId)) {
+      throw new Error(`Knowledge ${entry.id} has missing source event`);
+    }
+  }
+  for (const rumor of state.rumors) {
+    if (rumor.sourceEventId != null && !eventIds.has(rumor.sourceEventId)) {
+      throw new Error(`Rumor ${rumor.id} has missing source event`);
+    }
   }
   for (const entry of state.chronicle) {
     requireObject(entry, "Chronicle entry");
@@ -469,12 +614,22 @@ export function validateState(state) {
           throw new Error("Finish command causal actor is invalid");
         }
         if (step.targetId != null && !residentIds.has(step.targetId)) throw new Error("Finish command target is invalid");
-        if (!PHASE_ZERO_SAFE_ACTIONS.includes(step.actionType)) throw new Error("Finish command action is invalid");
+        if (!AI_ALLOWED_ACTIONS.includes(step.actionType)) throw new Error("Finish command action is invalid");
         if (!Number.isInteger(step.intensity) || step.intensity < 1 || step.intensity > 5) {
           throw new Error("Finish command intensity is invalid");
         }
         for (const field of ["title", "description", "detail"]) {
           if (typeof step[field] !== "string") throw new Error(`Finish command ${field} is invalid`);
+        }
+        if (!Number.isInteger(step.decisionScore) || step.decisionScore < 0 || step.decisionScore > 100) {
+          throw new Error("Finish command decision score is invalid");
+        }
+        if (step.createdResidentId != null && !residentIds.has(step.createdResidentId)) {
+          throw new Error("Finish command created resident is invalid");
+        }
+        const createsResident = ["adopt_child", "invite_migrant"].includes(step.actionType);
+        if (createsResident !== (typeof step.createdResidentId === "string")) {
+          throw new Error("Finish command created resident identity is inconsistent");
         }
         expectedActorId = step.targetId;
         if (stepIndex < command.payload.plan.steps.length - 1 && !expectedActorId) {
@@ -542,6 +697,30 @@ export function validateState(state) {
   }
   if (!Number.isInteger(state.nextCommandSequence) || state.nextCommandSequence <= maximumCommandSequence) {
     throw new Error("Next command sequence would create a duplicate ID");
+  }
+  const maximumResidentSequence = state.residents.reduce((maximum, resident) => {
+    const match = /^person-(\d+)$/.exec(resident.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
+  const maximumKnowledgeSequence = state.knowledge.reduce((maximum, entry) => {
+    const match = /^knowledge-(\d+)$/.exec(entry.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
+  const maximumRumorSequence = state.rumors.reduce((maximum, rumor) => {
+    const match = /^rumor-(\d+)$/.exec(rumor.id);
+    return Math.max(maximum, match ? Number(match[1]) : 0);
+  }, 0);
+  if (!Number.isInteger(state.populationSequence) || state.populationSequence <= maximumResidentSequence) {
+    throw new Error("Population sequence would create a duplicate resident");
+  }
+  if (!Number.isInteger(state.nextKnowledgeSequence) || state.nextKnowledgeSequence <= maximumKnowledgeSequence) {
+    throw new Error("Knowledge sequence would create a duplicate entry");
+  }
+  if (!Number.isInteger(state.nextRumorSequence) || state.nextRumorSequence <= maximumRumorSequence) {
+    throw new Error("Rumor sequence would create a duplicate entry");
+  }
+  if (!Number.isInteger(state.lastInvitedMigrationDay)) {
+    throw new Error("Invited migration cooldown is invalid");
   }
   return state;
 }
@@ -634,7 +813,20 @@ export function registerReplayVerifier(verifier) {
 
 export function compactReplayHistory(state) {
   if (state.currentVisit) throw new Error("Replay history can compact only between appointments");
-  const retainedEventIds = new Set(state.chronicle.map((entry) => entry.eventId).filter(Boolean));
+  const retainedEventIds = new Set([
+    ...state.chronicle.map((entry) => entry.eventId),
+    ...state.knowledge.map((entry) => entry.sourceEventId),
+    ...state.rumors.map((rumor) => rumor.sourceEventId)
+  ].filter(Boolean));
+  const eventsById = new Map(state.events.map((event) => [event.id, event]));
+  const frontier = [...retainedEventIds];
+  while (frontier.length) {
+    const event = eventsById.get(frontier.pop());
+    if (event?.parentId && !retainedEventIds.has(event.parentId)) {
+      retainedEventIds.add(event.parentId);
+      frontier.push(event.parentId);
+    }
+  }
   const retainedEvents = state.events
     .filter((event) => retainedEventIds.has(event.id))
     .map((event) => ({

@@ -100,6 +100,9 @@ test("appointment scheduling backfills when every villager was seen recently", (
     const state = createGame("negated-departure-seed");
     beginVisit(state);
     state.currentVisit.counsel.push("Do not leave or flee; remain with your family.");
+    const visitor = state.residents.find((person) => person.id === state.currentVisit.personId);
+    visitor.stress = 80;
+    visitor.morale = 20;
     const plan = fallbackDeparturePlan(state);
     assert.notEqual(plan.steps[0].actionType, "leave_village");
     const visitorId = state.currentVisit.personId;
@@ -117,20 +120,24 @@ test("appointment scheduling backfills when every villager was seen recently", (
     assert.equal(validated.steps.length, 0);
   });
 
-  test("phase zero never grants AI authority to remove a villager", () => {
+  test("life-course departure requires explicit counsel or severe independent distress", () => {
     for (const counsel of [
       "You should leave your anger behind and reconcile.",
       "You should leave? No. Stay here with your family.",
       "You should leave the village. No, stay here with your family.",
       "You should leave the village, shouldn't you?",
+      "You should leave the village?",
       "It is not best to leave the village.",
       "You should leave the village. I retract that advice. Do not go.",
-      "For your safety, you should leave the village."
+      "You should leave the village. Not."
     ]) {
       const state = createGame(`leave-language-${counsel}`);
       beginVisit(state);
       state.currentVisit.counsel.push(counsel);
       const visitorId = state.currentVisit.personId;
+      const visitor = state.residents.find((person) => person.id === visitorId);
+      visitor.stress = 80;
+      visitor.morale = 20;
       const validated = validateDeparturePlan(state, {
         steps: [{
           actorId: visitorId,
@@ -143,6 +150,57 @@ test("appointment scheduling backfills when every villager was seen recently", (
       });
       assert.equal(validated.steps.length, 0, counsel);
     }
+
+    const advised = createGame("explicit-departure-advice");
+    beginVisit(advised);
+    advised.currentVisit.counsel.push("For your safety, you should leave the village.");
+    const advisedId = advised.currentVisit.personId;
+    assert.equal(validateDeparturePlan(advised, {
+      steps: [{
+        actorId: advisedId,
+        targetId: null,
+        actionType: "leave_village",
+        intensity: 3
+      }]
+    }).steps.length, 1);
+
+    for (const counsel of [
+      "You should leave the village. It will not be easy.",
+      "You are not safe. You should flee the village."
+    ]) {
+      const clear = createGame(`clear-departure-${counsel}`);
+      beginVisit(clear);
+      clear.currentVisit.counsel.push(counsel);
+      const actorId = clear.currentVisit.personId;
+      const clearActor = clear.residents.find((person) => person.id === actorId);
+      clearActor.trustPriest = 90;
+      clearActor.age = 30;
+      clearActor.ageDays = 30 * 365;
+      clear.priest.localTrust = 85;
+      clear.priest.moralAuthority = 85;
+      assert.equal(validateDeparturePlan(clear, {
+        steps: [{
+          actorId,
+          targetId: null,
+          actionType: "leave_village",
+          intensity: 3
+        }]
+      }).steps.length, 1, counsel);
+    }
+
+    const distressed = createGame("independent-departure-distress");
+    beginVisit(distressed);
+    const distressedPerson = distressed.residents.find((person) => person.id === distressed.currentVisit.personId);
+    distressedPerson.stress = 80;
+    distressedPerson.morale = 20;
+    assert.equal(validateDeparturePlan(distressed, {
+      steps: [{
+        actorId: distressedPerson.id,
+        targetId: null,
+        actionType: "leave_village",
+        intensity: 3
+      }]
+    }).steps.length, 1);
   });
 
   test("offering work changes the recipient rather than the employer", () => {

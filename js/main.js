@@ -237,7 +237,8 @@ function appendDialogue(speaker, text) {
 }
 
 function updateMetrics() {
-  elements["town-metrics"].replaceChildren(...Object.entries(state.town.metrics).map(([name, value]) => {
+  function metricRows(metrics) {
+    return Object.entries(metrics).map(([name, value]) => {
     const row = document.createElement("div");
     const dt = document.createElement("dt");
     const bar = document.createElement("span");
@@ -248,6 +249,14 @@ function updateMetrics() {
     dd.textContent = Math.round(value);
     row.append(dt, dd);
     return row;
+    });
+  }
+  elements["town-metrics"].replaceChildren(...metricRows(state.town.metrics));
+  elements["priest-metrics"].replaceChildren(...metricRows({
+    trust: state.priest.localTrust,
+    authority: state.priest.moralAuthority,
+    scandal: state.priest.scandal,
+    health: state.priest.health
   }));
   elements["population-count"].textContent = populationCount(state);
 }
@@ -458,12 +467,14 @@ function renderRegister(filter = "") {
     const title = document.createElement("h3");
     title.textContent = person.name + (person.active ? "" : " — departed");
     const facts = document.createElement("p");
-    facts.textContent = `${person.age}, ${person.occupation}`;
+    facts.textContent = `${person.age}, ${person.occupation} · ${person.maritalStatus}`;
     const knowledge = document.createElement("p");
     knowledge.textContent = person.profileRevealed
       ? `${person.personality.traits.join(", ")}. Visited ${person.visitCount} time${person.visitCount === 1 ? "" : "s"}.`
       : "Named in the register; inward life not yet revealed.";
-    card.append(title, facts, knowledge);
+    const household = document.createElement("p");
+    household.textContent = `${person.householdId.replace("household-", "Household ")} · health ${Math.round(person.health)} · morale ${Math.round(person.morale)}`;
+    card.append(title, facts, household, knowledge);
     return card;
   }));
 }

@@ -1,11 +1,11 @@
 import {
   ACTION_TYPES,
+  AI_ALLOWED_ACTIONS,
   BACKSTORY_PARTS,
   buildFirstNameBank,
   buildSurnameBank,
   ISSUE_TEMPLATES,
   OCCUPATIONS,
-  PHASE_ZERO_SAFE_ACTIONS,
   SERMON_THEMES,
   TOWN_CHARACTERS,
   TOWN_LANDSCAPES,
@@ -25,6 +25,18 @@ import {
   STATE_SCHEMA_VERSION
 } from "./state.js";
 import { validateSermonResponse } from "./ai.js";
+import {
+  ADULT_AGE,
+  addKnowledge,
+  adjustRelationship,
+  advancePopulationDay,
+  areProhibitedKin,
+  createPopulationResident,
+  createRumor,
+  getRelationship,
+  isAdultRelationshipEligible,
+  upgradePopulationState
+} from "./population.js";
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -199,6 +211,7 @@ export function createGame(seed = String(Date.now())) {
       departures: 0
     }
   };
+  upgradePopulationState(state);
   addChronicle(state, `A new cure begins in ${town.name}`, town.description, "neutral", {
     type: "world_started",
     parentId: null,
@@ -208,28 +221,37 @@ export function createGame(seed = String(Date.now())) {
   return sealState(state);
 }
 
+function deriveResidentProfile(state, person) {
+  const rng = new SeededRng(`${state.seed}:${person.id}:soul`);
+  const firstTrait = rng.pick(TRAITS);
+  const secondTrait = chooseDifferent(rng, TRAITS, firstTrait);
+  const origin = rng.pick(BACKSTORY_PARTS.origins);
+  const turn = rng.pick(BACKSTORY_PARTS.turns);
+  const pressure = rng.pick(BACKSTORY_PARTS.pressures);
+  const texture = rng.pick(BACKSTORY_PARTS.textures);
+  return {
+    personality: {
+      traits: [firstTrait, secondTrait],
+      candor: rng.int(20, 90),
+      empathy: rng.int(20, 90),
+      boldness: rng.int(20, 90),
+      piety: rng.int(20, 90)
+    },
+    backstory: `${person.firstName} ${origin}, ${turn}, and now ${pressure}. ${person.firstName} ${texture}.`,
+    privatePressure: pressure
+  };
+}
+
 export function materializeResident(state, personId, revealProfile = false) {
   const person = state.residents.find((resident) => resident.id === personId);
   if (!person) {
     throw new Error(`Unknown resident: ${personId}`);
   }
   if (!person.materialized) {
-    const rng = new SeededRng(`${state.seed}:${person.id}:soul`);
-    const firstTrait = rng.pick(TRAITS);
-    const secondTrait = chooseDifferent(rng, TRAITS, firstTrait);
-    const origin = rng.pick(BACKSTORY_PARTS.origins);
-    const turn = rng.pick(BACKSTORY_PARTS.turns);
-    const pressure = rng.pick(BACKSTORY_PARTS.pressures);
-    const texture = rng.pick(BACKSTORY_PARTS.textures);
-    person.personality = {
-      traits: [firstTrait, secondTrait],
-      candor: rng.int(20, 90),
-      empathy: rng.int(20, 90),
-      boldness: rng.int(20, 90),
-      piety: rng.int(20, 90)
-    };
-    person.backstory = `${person.firstName} ${origin}, ${turn}, and now ${pressure}. ${person.firstName} ${texture}.`;
-    person.privatePressure = pressure;
+    const profile = deriveResidentProfile(state, person);
+    person.personality = profile.personality;
+    person.backstory = profile.backstory;
+    person.privatePressure = profile.privatePressure;
     person.materialized = true;
   }
   if (revealProfile && !person.profileRevealed) {
@@ -240,7 +262,11 @@ export function materializeResident(state, personId, revealProfile = false) {
 }
 
 function activeResidents(state) {
-  return state.residents.filter((person) => person.active);
+  return state.residents.filter((person) => person.active && person.alive);
+}
+
+function counselEligibleResidents(state) {
+  return activeResidents(state).filter((person) => person.age >= 12);
 }
 
 function issueForPerson(state, person) {
@@ -263,12 +289,12 @@ export function beginVisit(state, { record = true } = {}) {
   if (state.currentVisit) {
     return state.currentVisit;
   }
-  const candidates = activeResidents(state)
+  const candidates = counselEligibleResidents(state)
     .filter((person) => person.lastVisitDay < state.calendar.absoluteDay - 4)
     .sort((a, b) => (a.visitCount - b.visitCount) || (a.lastVisitDay - b.lastVisitDay));
   const backfill = candidates.length
     ? candidates
-    : activeResidents(state).sort((a, b) => (a.lastVisitDay - b.lastVisitDay) || (a.visitCount - b.visitCount));
+    : counselEligibleResidents(state).sort((a, b) => (a.lastVisitDay - b.lastVisitDay) || (a.visitCount - b.visitCount));
   if (!backfill.length) {
     throw new Error("No active villagers remain to fill this appointment");
   }
@@ -416,6 +442,23 @@ function addChronicle(state, title, text, tone = "neutral", event = {}) {
   state.chronicle = state.chronicle.slice(0, 250);
 }
 
+function resolvePopulationDay(state) {
+  const tick = appendEvent(state, {
+    type: "population_day",
+    parentId: null,
+    facts: { day: state.calendar.absoluteDay }
+  });
+  for (const event of advancePopulationDay(state)) {
+    addChronicle(state, event.title, event.text, event.tone, {
+      type: event.type,
+      parentId: tick.id,
+      actorId: event.actorId ?? null,
+      targetId: event.targetId ?? null,
+      facts: { populationEvent: true }
+    });
+  }
+}
+
 function maximumIntensityForLicense(license) {
   return license === "outrageous" ? 5 : license === "comic" ? 4 : 3;
 }
@@ -446,45 +489,6 @@ function metricDeltaForAction(actionType) {
   return positive[actionType] || negative[actionType] || {};
 }
 
-function createNewResident(state, sourcePerson, reason) {
-  const idNumber = state.residents.length + 1;
-  const rng = new SeededRng(`${state.seed}:new:${idNumber}:${reason}`);
-  const sex = rng.next() < 0.5 ? "female" : "male";
-  const firstNames = buildFirstNameBank(sex);
-  const surnames = buildSurnameBank();
-  const surname = reason === "birth" && sourcePerson ? sourcePerson.surname : rng.pick(surnames);
-  const person = {
-    id: `person-${String(idNumber).padStart(3, "0")}`,
-    name: `${rng.pick(firstNames)} ${surname}`,
-    firstName: "",
-    surname,
-    sex,
-    age: reason === "birth" ? 0 : rng.int(16, 55),
-    householdId: sourcePerson?.householdId || `household-new-${idNumber}`,
-    occupation: reason === "birth" ? "infant" : rng.pick(OCCUPATIONS),
-    sprite: 1 + (idNumber % 41),
-    active: true,
-    profileRevealed: false,
-    materialized: false,
-    visitCount: 0,
-    lastVisitDay: -999,
-    attendanceChance: rng.int(45, 90),
-    trustPriest: 50,
-    faith: rng.int(35, 70),
-    morale: 55,
-    prosperity: 45,
-    health: 70,
-    stress: 35,
-    reputation: 50,
-    relationshipIds: sourcePerson ? [sourcePerson.id] : [],
-    memories: [],
-    flags: [reason]
-  };
-  person.firstName = person.name.split(" ")[0];
-  state.residents.push(person);
-  return person;
-}
-
 export function applyAction(state, step) {
   if (!ACTION_TYPES.includes(step.actionType)) {
     return null;
@@ -492,6 +496,8 @@ export function applyAction(state, step) {
   const actor = materializeResident(state, step.actorId, false);
   const target = step.targetId ? materializeResident(state, step.targetId, false) : null;
   const intensity = clamp(step.intensity || 2, 1, 5);
+  let createdResident = null;
+  let createdResidentType = null;
   const deltas = metricDeltaForAction(step.actionType);
   for (const [metric, delta] of Object.entries(deltas)) {
     state.town.metrics[metric] = clamp(state.town.metrics[metric] + delta * (intensity / 2));
@@ -502,6 +508,20 @@ export function applyAction(state, step) {
     target.morale = clamp(target.morale + (deltas.mercy || deltas.harmony || 0));
     if (!actor.relationshipIds.includes(target.id)) actor.relationshipIds.push(target.id);
     if (!target.relationshipIds.includes(actor.id)) target.relationshipIds.push(actor.id);
+    const positive = Math.max(0, (deltas.harmony || 0) + (deltas.mercy || 0));
+    const negative = Math.max(0, -(deltas.harmony || 0));
+    adjustRelationship(state, actor.id, target.id, {
+      familiarity: 2,
+      trust: positive - negative,
+      affection: positive,
+      resentment: negative * 2
+    });
+    adjustRelationship(state, target.id, actor.id, {
+      familiarity: 2,
+      trust: positive - negative,
+      affection: positive,
+      resentment: negative * 2
+    });
   }
 
   if (step.actionType === "attend_church") actor.attendanceChance = clamp(actor.attendanceChance + 12);
@@ -516,18 +536,89 @@ export function applyAction(state, step) {
     target.occupation = step.detail?.slice(0, 40) || "laborer";
     target.prosperity = clamp(target.prosperity + 4);
   }
-  if (step.actionType === "conceive_child" || step.actionType === "adopt_child") {
-    const child = createNewResident(state, actor, step.actionType === "conceive_child" ? "birth" : "adoption");
-    state.statistics.births += step.actionType === "conceive_child" ? 1 : 0;
-    step.detail = `${step.detail || ""} ${child.name} enters the parish register.`.trim();
+  if (step.actionType === "heal" && target) {
+    target.health = clamp(target.health + intensity * 6);
+    target.illnessDays = Math.max(0, target.illnessDays - intensity * 2);
+    if (target.health >= 55 && target.illnessDays <= 2) target.illness = null;
+  }
+  if (step.actionType === "nurse" && target) {
+    target.health = clamp(target.health + intensity * 3);
+    target.stress = clamp(target.stress - intensity * 2);
+    target.illnessDays = Math.max(0, target.illnessDays - intensity);
+  }
+  if (step.actionType === "court" && target) {
+    adjustRelationship(state, actor.id, target.id, { attraction: 8, affection: 4, familiarity: 3 });
+  }
+  if (step.actionType === "marry" && target) {
+    actor.maritalStatus = "married";
+    target.maritalStatus = "married";
+    actor.spouseId = target.id;
+    target.spouseId = actor.id;
+    actor.marriageDay = state.calendar.absoluteDay;
+    target.marriageDay = state.calendar.absoluteDay;
+  }
+  if (step.actionType === "separate" && target) {
+    actor.maritalStatus = "separated";
+    target.maritalStatus = "separated";
+    actor.spouseId = null;
+    target.spouseId = null;
+    actor.marriageDay = null;
+    target.marriageDay = null;
+  }
+  if (step.actionType === "conceive_child" && target) {
+    const mother = actor.sex === "female" ? actor : target.sex === "female" ? target : null;
+    const coParent = mother?.id === actor.id ? target : actor;
+    if (mother && coParent?.sex === "male") {
+      mother.pregnantDueDay = state.calendar.absoluteDay + 280;
+      mother.pregnancyCoParentId = coParent.id;
+    }
+  }
+  if (step.actionType === "adopt_child" && target) {
+    const rng = new SeededRng(`${state.seed}:adoption:${state.calendar.absoluteDay}:${actor.id}:${target.id}`);
+    const child = createPopulationResident(state, {
+      sex: rng.next() < 0.5 ? "female" : "male",
+      age: rng.int(1, 8),
+      surname: actor.surname,
+      householdId: actor.householdId,
+      occupation: "child laborer",
+      parentIds: [actor.id, target.id],
+      reason: "adoption"
+    });
+    createdResident = child;
+    createdResidentType = "adoption";
+    const household = state.households.find((entry) => entry.id === actor.householdId);
+    if (household) household.lastAdoptionDay = state.calendar.absoluteDay;
+    step.detail = `${child.name} enters the household by adoption.`;
   }
   if (step.actionType === "invite_migrant") {
-    const migrant = createNewResident(state, actor, "arrival");
+    const rng = new SeededRng(`${state.seed}:invited-migrant:${state.calendar.absoluteDay}:${actor.id}`);
+    const surname = rng.pick(buildSurnameBank());
+    const migrant = createPopulationResident(state, {
+      sex: rng.next() < 0.5 ? "female" : "male",
+      age: rng.int(18, 50),
+      surname,
+      householdId: `household-new-${state.populationSequence}`,
+      occupation: rng.pick(OCCUPATIONS.filter((occupation) => occupation !== "infant")),
+      reason: "arrival"
+    });
+    createdResident = migrant;
+    createdResidentType = "immigration";
+    state.lastInvitedMigrationDay = state.calendar.absoluteDay;
     state.statistics.arrivals += 1;
     step.detail = `${step.detail || ""} ${migrant.name} arrives in ${state.town.name}.`.trim();
   }
   if (step.actionType === "leave_village" || step.actionType === "expel") {
+    const spouse = state.residents.find((person) => person.id === actor.spouseId);
+    if (spouse) {
+      spouse.maritalStatus = "deserted";
+      spouse.spouseId = null;
+      spouse.marriageDay = null;
+      actor.maritalStatus = "deserted";
+      actor.spouseId = null;
+      actor.marriageDay = null;
+    }
     actor.active = false;
+    actor.departureDay = state.calendar.absoluteDay;
     state.statistics.departures += 1;
   }
 
@@ -546,7 +637,57 @@ export function applyAction(state, step) {
       facts: { actionType: step.actionType, intensity }
     }
   );
-  return { actor, target, description, eventId: state.chronicle[0].eventId };
+  const eventId = state.chronicle[0].eventId;
+  let consequenceEventId = eventId;
+  if (createdResident) {
+    addChronicle(
+      state,
+      createdResidentType === "adoption"
+        ? `${createdResident.name} is adopted`
+        : `${createdResident.name} settles in ${state.town.name}`,
+      createdResidentType === "adoption"
+        ? `${createdResident.name} enters the ${actor.surname} household by adoption.`
+        : `${createdResident.name}, a ${createdResident.occupation}, enters the parish after ${actor.name}'s invitation.`,
+      "change",
+      {
+        type: createdResidentType,
+        parentId: eventId,
+        actorId: actor.id,
+        targetId: createdResident.id,
+        facts: { createdResidentId: createdResident.id }
+      }
+    );
+    consequenceEventId = state.chronicle[0].eventId;
+  }
+  if (["gossip", "reveal_secret", "accuse"].includes(step.actionType) && target) {
+    createRumor(state, {
+      originatorId: actor.id,
+      subjectId: target.id,
+      claim: `${actor.name} says that ${target.name} is involved in a troubling matter.`,
+      truth: step.actionType === "reveal_secret" ? 70 : step.actionType === "accuse" ? 45 : 35,
+      intensity,
+      sourceEventId: eventId
+    });
+  }
+  if (target) {
+    addKnowledge(state, {
+      holderId: actor.id,
+      subjectId: target.id,
+      topic: step.actionType,
+      belief: description,
+      confidence: 65,
+      sourceEventId: eventId,
+      isTrue: true,
+      privateKnowledge: step.actionType === "reveal_secret"
+    });
+  }
+  return {
+    actor,
+    target,
+    description,
+    eventId: consequenceEventId,
+    createdResidentId: createdResident?.id || null
+  };
 }
 
 export function fallbackDeparturePlan(state) {
@@ -604,7 +745,8 @@ const TARGET_REQUIRED_ACTIONS = new Set([
   "comfort", "advise", "apologize", "forgive", "reconcile", "pray_with", "share_food",
   "lend_money", "shelter", "teach", "heal", "nurse", "hire", "accuse", "gossip",
   "reveal_secret", "return_stolen_goods", "report_crime", "make_peace", "testify",
-  "visit", "write_letter", "protect", "offer_work", "refuse_work"
+  "visit", "write_letter", "protect", "offer_work", "refuse_work", "court", "marry",
+  "separate", "conceive_child", "adopt_child"
 ]);
 
 const HEALING_OCCUPATIONS = new Set(["healer", "herbalist", "midwife"]);
@@ -616,6 +758,199 @@ function hasPhaseZeroCapability(actor, actionType) {
   if (actionType === "build" || actionType === "repair") return BUILDING_OCCUPATIONS.has(actor.occupation);
   if (actionType === "hire" || actionType === "offer_work") return HIRING_OCCUPATIONS.has(actor.occupation);
   return true;
+}
+
+function hasLifeCourseEligibility(state, visit, actor, target, actionType, detail) {
+  const counsel = visit.counsel.join(" ").toLowerCase();
+  const household = state.households.find((entry) => entry.id === actor.householdId);
+  const isNegated = (keywords) => new RegExp(
+    `\\b(?:do not|don't|must not|never|should not|shouldn't|avoid|refuse to|retract|not)\\b.{0,70}\\b(?:${keywords})\\b`
+  ).test(counsel);
+  const negationKeywords = {
+    change_job: "work|job|trade|craft|employment|labor|change",
+    offer_work: "offer|hire|work|employment",
+    hire: "hire|employ",
+    court: "court\\w*|lov\\w*|romanc\\w*",
+    marry: "marr\\w*|wedd\\w*|spouse",
+    separate: "separat\\w*|annul\\w*|leave my spouse",
+    conceive_child: "child|baby|pregnan\\w*|conceiv\\w*",
+    adopt_child: "adopt\\w*|orphan|take in a child|raise a child",
+    invite_migrant: "invit\\w*|newcomer|refugee|settl\\w*|bring"
+  };
+  if (negationKeywords[actionType] && isNegated(negationKeywords[actionType])) return false;
+  if (["heal", "nurse"].includes(actionType)) {
+    const conversationSupport = /\bheal|ill|sick|fever|care|nurse|physician|herb\b/.test(counsel);
+    const independentPressure = actor.occupation === "healer" && Boolean(target?.illness) && target.health < 45;
+    return Boolean(target && (target.illness || target.health < 90) && (conversationSupport || independentPressure));
+  }
+  if (["work_harder", "shirk_work", "quit_job"].includes(actionType) && actor.age < ADULT_AGE) return false;
+  if (["hire", "offer_work"].includes(actionType) && actor.age < ADULT_AGE) return false;
+  if (actionType === "hire" && (!target || target.age < ADULT_AGE)) return false;
+  if (actionType === "change_job" || actionType === "offer_work") {
+    const conversationSupport = /\bwork|job|trade|craft|employment|hire|labor|duty\b/.test(counsel)
+      && !isNegated("work|job|trade|craft|employment|hire|labor|change");
+    const independentPressure = actor.occupation === "unemployed" || (household?.wealth || 50) < 20;
+    const worker = actionType === "offer_work" ? target : actor;
+    return Boolean(worker && worker.age >= ADULT_AGE && OCCUPATIONS.includes(detail) && (conversationSupport || independentPressure));
+  }
+  if (["court", "marry", "separate", "conceive_child", "adopt_child"].includes(actionType)) {
+    if (!target || !isAdultRelationshipEligible(actor) || !isAdultRelationshipEligible(target)) return false;
+  }
+  if (actionType === "court") {
+    const relationship = getRelationship(state, actor.id, target.id, false);
+    const conversationSupport = /\blove|court|affection|marry|romance\b/.test(counsel)
+      && !isNegated("court|love|marry|romance");
+    const independentPressure = (relationship?.affection || 0) > 85 && (relationship?.attraction || 0) > 70;
+    return actor.maritalStatus === "single"
+      && target.maritalStatus === "single"
+      && actor.sex !== target.sex
+      && !areProhibitedKin(state, actor.id, target.id)
+      && (conversationSupport || independentPressure);
+  }
+  if (actionType === "marry") {
+    const forward = getRelationship(state, actor.id, target.id, false);
+    const reverse = getRelationship(state, target.id, actor.id, false);
+    return actor.maritalStatus === "single"
+      && target.maritalStatus === "single"
+      && actor.sex !== target.sex
+      && !areProhibitedKin(state, actor.id, target.id)
+      && ((/\blove|marry|spouse|wedding|family\b/.test(counsel) && !isNegated("marry|wedding|spouse|family"))
+        || ((forward?.affection || 0) > 85 && (reverse?.affection || 0) > 85))
+      && (forward?.affection || 0) >= 45
+      && (reverse?.affection || 0) >= 45
+      && (forward?.resentment || 0) < 50
+      && (reverse?.resentment || 0) < 50;
+  }
+  if (actionType === "separate") {
+    const relationship = getRelationship(state, actor.id, target.id, false);
+    return actor.spouseId === target.id
+      && target.spouseId === actor.id
+      && ((/\bseparate|leave my spouse|abuse|unsafe marriage|annul\b/.test(counsel)
+        && !isNegated("separate|leave my spouse|annul"))
+        || (relationship?.resentment || 0) > 80);
+  }
+  if (actionType === "conceive_child") {
+    const mother = actor.sex === "female" ? actor : target.sex === "female" ? target : null;
+    const father = actor.sex === "male" ? actor : target.sex === "male" ? target : null;
+    return actor.spouseId === target.id
+      && target.spouseId === actor.id
+      && mother != null
+      && father != null
+      && mother.age <= 42
+      && mother.pregnantDueDay == null
+      && ((/\bchild|baby|family|pregnan|conceive\b/.test(counsel)
+        && !isNegated("child|baby|pregnan|conceive"))
+        || ((getRelationship(state, actor.id, target.id, false)?.affection || 0) > 78
+          && (household?.food || 0) > 50
+          && (household?.wealth || 0) > 45));
+  }
+  if (actionType === "adopt_child") {
+    const householdChildren = state.residents.filter((person) => (
+      person.householdId === actor.householdId && person.active && person.alive && person.age < 18
+    )).length;
+    return actor.spouseId === target.id
+      && target.spouseId === actor.id
+      && householdChildren < 6
+      && state.calendar.absoluteDay - (household?.lastAdoptionDay ?? -999) >= 365
+      && ((/\badopt|orphan|take in a child|raise a child\b/.test(counsel)
+        && !isNegated("adopt|orphan|take in a child|raise a child"))
+        || (actor.childrenIds.length === 0 && (household?.food || 0) > 65 && (household?.wealth || 0) > 60));
+  }
+  if (actionType === "invite_migrant") {
+    const activePopulation = activeResidents(state).length;
+    const official = ["reeve", "bailiff", "merchant", "innkeeper"].includes(actor.occupation);
+    return actor.age >= 18
+      && official
+      && activePopulation < 250
+      && state.calendar.absoluteDay - state.lastInvitedMigrationDay >= 30
+      && state.town.metrics.prosperity >= 35
+      && (
+      (/\binvite|newcomer|refugee|settle|bring .* village\b/.test(counsel)
+        && !isNegated("invite|newcomer|refugee|settle|bring"))
+      || (official && activePopulation < 160 && state.town.metrics.prosperity > 55)
+    );
+  }
+  if (actionType === "leave_village") {
+    if (actor.age < 18) return false;
+    const counsel = visit.counsel.join(" ").toLowerCase();
+    const directivePattern = /\b(?:you should|you must|you need to|you ought to|i advise you to)\s+(?:leave|flee|depart from)\s+(?:(?:this|the|our)\s+)?(?:village|town|parish|settlement)\b/g;
+    const directives = [...counsel.matchAll(directivePattern)];
+    const explicit = directives.length > 0;
+    const mentionsDeparture = /\b(?:leave|flee|depart)\b/.test(counsel);
+    const lastDirective = directives.at(-1);
+    const directiveStart = lastDirective?.index ?? -1;
+    const beforeDirective = directiveStart >= 0 ? counsel.slice(Math.max(0, directiveStart - 25), directiveStart) : counsel;
+    const afterDirective = directiveStart >= 0
+      ? counsel.slice(directiveStart + lastDirective[0].length, directiveStart + lastDirective[0].length + 35)
+      : "";
+    const negated = /\b(?:do not|don't|never|should not|shouldn't|must not|retract)\b/.test(beforeDirective)
+      || /^\s*(?:[,;:-]\s*)?(?:not\b|no\b|stay\b|remain\b|i retract\b|do not go\b|don't go\b|shouldn't you\b|should you\b)/.test(afterDirective)
+      || /^\s*\?\s*(?:shouldn't you\b|should you\b|not\b|no\b)/.test(afterDirective)
+      || /^\s*\.\s*(?:not\b|no\b|stay\b|remain\b|i retract\b|do not go\b|don't go\b)/.test(afterDirective)
+      || /^\s*\?/.test(afterDirective)
+      || lastDirective?.[0].includes("?");
+    if (negated) return false;
+    if (mentionsDeparture && !explicit) return false;
+    if (actor.stress >= 75 && actor.morale <= 25) return true;
+    return explicit && !negated;
+  }
+  return true;
+}
+
+function decisionScore(state, visit, actor, target, actionType) {
+  const counsel = visit.counsel.join(" ").toLowerCase();
+  const household = state.households.find((entry) => entry.id === actor.householdId);
+  const personality = actor.personality || deriveResidentProfile(state, actor).personality;
+  let score = 35;
+  score += (actor.trustPriest - 50) * 0.22;
+  score += (state.priest.moralAuthority - 50) * 0.18;
+  score += (state.priest.localTrust - 50) * 0.1;
+  score -= state.priest.scandal * 0.16;
+  score += visit.issue.gravity * 3;
+  score += Math.min(8, visit.counsel.join(" ").split(/\s+/).filter(Boolean).length / 10);
+  if (household?.food < 20 || household?.wealth < 20) {
+    if (["change_job", "leave_village", "invite_migrant", "work_harder"].includes(actionType)) score += 10;
+    if (["marry", "conceive_child", "adopt_child"].includes(actionType)) score -= 8;
+  }
+  if (["change_job", "quit_job", "work_harder", "offer_work"].includes(actionType) && /\bwork|job|trade|duty|labor\b/.test(counsel)) score += 16;
+  if (["court", "marry", "conceive_child", "adopt_child", "separate"].includes(actionType)
+    && /\blove|marry|spouse|family|child|separate|household\b/.test(counsel)) score += 16;
+  if (actionType === "leave_village" && /\bleave|flee|depart\b/.test(counsel)) score += 20;
+  if (actionType === "leave_village" && actor.stress >= 75 && actor.morale <= 25) score += 22;
+  if (["court", "marry", "conceive_child", "adopt_child"].includes(actionType) && target) {
+    const relationship = getRelationship(state, actor.id, target.id, false);
+    score += ((relationship?.affection || 50) - 50) * 0.35;
+    score += ((relationship?.attraction || 35) - 35) * 0.2;
+    score -= (relationship?.resentment || 0) * 0.25;
+  }
+  if (actionType === "separate" && target) {
+    const relationship = getRelationship(state, actor.id, target.id, false);
+    score += (relationship?.resentment || 0) * 0.4;
+    score -= (relationship?.affection || 0) * 0.2;
+  }
+  if (["leave_village", "change_job", "court"].includes(actionType)) score += (personality.boldness - 50) * 0.15;
+  if (["forgive", "comfort", "share_food", "adopt_child"].includes(actionType)) score += (personality.empathy - 50) * 0.15;
+  if (["pray_with", "seek_absolution", "confess_publicly"].includes(actionType)) score += (personality.piety - 50) * 0.15;
+  if (["heal", "nurse"].includes(actionType) && target) {
+    score += Math.max(0, 70 - target.health) * 0.25;
+    if (target.illness) score += 8;
+    score += (personality.empathy - 50) * 0.18;
+  }
+  const relevantRumors = state.rumors.filter((rumor) => (
+    rumor.active && rumor.heardByIds.includes(actor.id) && (!target || rumor.subjectId === target.id)
+  ));
+  if (relevantRumors.length) {
+    const rumorPressure = Math.max(...relevantRumors.map((rumor) => rumor.intensity));
+    if (["accuse", "gossip", "report_crime", "leave_village"].includes(actionType)) score += rumorPressure * 3;
+    if (["forgive", "make_peace"].includes(actionType)) score -= rumorPressure;
+  }
+  return Math.round(clamp(score, 0, 100));
+}
+
+function requiredDecisionScore(actionType) {
+  if (["marry", "conceive_child", "adopt_child", "leave_village"].includes(actionType)) return 55;
+  if (["court", "separate", "change_job", "invite_migrant"].includes(actionType)) return 45;
+  return 25;
 }
 
 export function validateDeparturePlan(state, plan, candidates = departureCandidates(state)) {
@@ -633,18 +968,30 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
   const steps = [];
   let expectedActorId = visit.personId;
   const maximumIntensity = maximumIntensityForLicense(visit.eventLicense);
+  const reservedRelationshipParticipants = new Set();
+  const relationshipChangingActions = new Set(["court", "marry", "separate", "conceive_child", "adopt_child"]);
   for (let index = 0; index < rawSteps.length; index += 1) {
     const raw = rawSteps[index] || {};
     const actor = candidateMap.get(raw.actorId);
     const target = raw.targetId == null ? null : candidateMap.get(raw.targetId);
     const requestedIntensity = Number(raw.intensity);
     if (!actor || actor.id !== expectedActorId) break;
-    if (!PHASE_ZERO_SAFE_ACTIONS.includes(raw.actionType)) break;
+    if (relationshipChangingActions.has(raw.actionType)
+      && (reservedRelationshipParticipants.has(actor.id) || (target && reservedRelationshipParticipants.has(target.id)))) {
+      break;
+    }
+    if (!AI_ALLOWED_ACTIONS.includes(raw.actionType)) break;
     if (raw.targetId != null && (!target || target.id === actor.id)) break;
     if (target && !actor.relationshipIds.includes(target.id)) break;
     if (TARGET_REQUIRED_ACTIONS.has(raw.actionType) && !target) break;
     if (!TARGET_REQUIRED_ACTIONS.has(raw.actionType) && target) break;
     if (!hasPhaseZeroCapability(actor, raw.actionType)) break;
+    const detail = String(
+      raw.detail || (["change_job", "offer_work"].includes(raw.actionType) ? "laborer" : "")
+    ).trim().slice(0, 40);
+    if (!hasLifeCourseEligibility(state, visit, actor, target, raw.actionType, detail)) break;
+    const resolvedDecisionScore = decisionScore(state, visit, actor, target, raw.actionType);
+    if (resolvedDecisionScore < requiredDecisionScore(raw.actionType)) break;
     if (!Number.isInteger(requestedIntensity) || requestedIntensity < 1 || requestedIntensity > maximumIntensity) break;
     steps.push({
       depth: index + 1,
@@ -654,8 +1001,14 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       intensity: requestedIntensity,
       title: raw.actionType.replaceAll("_", " "),
       description: `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`,
-      detail: ""
+      detail: ["change_job", "offer_work"].includes(raw.actionType) ? detail : "",
+      decisionScore: resolvedDecisionScore,
+      expectedCreatedResidentId: typeof raw.createdResidentId === "string" ? raw.createdResidentId : null
     });
+    if (relationshipChangingActions.has(raw.actionType)) {
+      reservedRelationshipParticipants.add(actor.id);
+      if (target) reservedRelationshipParticipants.add(target.id);
+    }
     if (!target) break;
     expectedActorId = target.id;
   }
@@ -682,21 +1035,32 @@ export function finishVisit(state, plan, { record = true } = {}) {
     : null;
   if (!validated.complete) validated = validateDeparturePlan(state, fallbackDeparturePlan(state));
   if (!validated.complete) {
-    validated = validateDeparturePlan(state, {
-      summary: `${person.name} left with the matter unresolved.`,
+    validated = {
+      summary: `${person.name} acted after the hour's counsel.`,
+      complete: true,
       steps: [{
+        depth: 1,
         actorId: person.id,
         targetId: null,
         actionType: "keep_silence",
-        intensity: 1
+        intensity: 1,
+        title: "keep silence",
+        description: `${person.name} chose to keep silence.`,
+        detail: "",
+        decisionScore: 100
       }]
-    });
+    };
   }
   let parentEventId = visit.originEventId;
   for (const step of validated.steps) {
     const result = applyAction(state, { ...step, parentEventId });
     if (result) {
       parentEventId = result.eventId;
+      if (step.expectedCreatedResidentId && step.expectedCreatedResidentId !== result.createdResidentId) {
+        throw new Error("Replay created resident mismatch");
+      }
+      if (result.createdResidentId) step.createdResidentId = result.createdResidentId;
+      delete step.expectedCreatedResidentId;
       state.statistics.cascades += 1;
     }
   }
@@ -719,6 +1083,7 @@ export function finishVisit(state, plan, { record = true } = {}) {
     addChronicle(state, `${WEEK_DAYS[state.calendar.dayIndex]} begins`, state.calendar.dayIndex === 6
       ? "The bells call the whole village toward Sunday worship."
       : "Four new hours of counsel await within the church.", "neutral");
+    resolvePopulationDay(state);
   }
   return state;
 }
@@ -824,6 +1189,7 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
   state.calendar.dayIndex = state.calendar.absoluteDay % 7;
   state.calendar.week = Math.floor(state.calendar.absoluteDay / 7) + 1;
   state.calendar.slot = 0;
+  resolvePopulationDay(state);
   return attendees.length;
 }
 

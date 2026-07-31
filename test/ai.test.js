@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ParishAiClient, validateSermonResponse } from "../js/ai.js";
 import { beginVisit, createGame, departureCandidates } from "../js/simulation.js";
+import { addKnowledge, createRumor } from "../js/population.js";
 
 const validResponse = {
   summary: "The congregation listens with mixed feeling.",
@@ -88,6 +89,65 @@ test("AI departure responses reject oversized chains instead of truncating", asy
         status: 200,
         headers: { "Content-Type": "application/json" }
       })
+    });
+
+    test("AI departure context exposes only heard rumor beliefs, never objective truth", async () => {
+      const state = createGame("rumor-prompt-privacy-seed");
+      const visit = beginVisit(state);
+      state.priest.bishopFavor = 13;
+      state.households.find((household) => household.id === state.residents.find((person) => person.id === visit.personId).householdId).debt = 37;
+      const heard = createRumor(state, {
+        originatorId: visit.personId,
+        subjectId: state.residents[1].id,
+        claim: "The miller hides grain.",
+        truth: 99,
+        intensity: 3
+      });
+      addKnowledge(state, {
+        holderId: visit.personId,
+        subjectId: heard.subjectId,
+        topic: "rumor",
+        belief: heard.claim,
+        confidence: 61,
+        isTrue: true
+      });
+      createRumor(state, {
+        originatorId: state.residents[2].id,
+        subjectId: visit.personId,
+        claim: "UNHEARD_PRIVATE_RUMOR",
+        truth: 3,
+        intensity: 4
+      });
+      let prompt = "";
+      const client = new ParishAiClient({
+        fetchImpl: async (_url, options) => {
+          const body = JSON.parse(options.body);
+          prompt = body.messages[1].content;
+          return new Response(JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  summary: "The visitor keeps quiet.",
+                  steps: [{
+                    depth: 1,
+                    actorId: visit.personId,
+                    targetId: null,
+                    actionType: "keep_silence",
+                    intensity: 1,
+                    title: "Silence",
+                    description: "The visitor says nothing."
+                  }]
+                })
+              }
+            }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      });
+      await client.departure(state, departureCandidates(state));
+      assert.match(prompt, /The miller hides grain/);
+      assert.match(prompt, /"personalConfidence":61/);
+      assert.doesNotMatch(prompt, /"truth":99|UNHEARD_PRIVATE_RUMOR/);
+      assert.doesNotMatch(prompt, /rumor-prompt-privacy-seed|"bishopFavor":13|"debt":37/);
     });
     await assert.rejects(
       () => client.conversation(state, person, "Speak plainly."),

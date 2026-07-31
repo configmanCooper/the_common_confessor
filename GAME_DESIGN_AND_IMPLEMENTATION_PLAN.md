@@ -982,6 +982,8 @@ The independent reviewer must specifically examine:
 
 **Scope**
 
+- Expand validated AI departure proposals beyond prose so conversation-driven reactions may directly initiate eligible work, relationship, family, health, and migration changes.
+- Resolve final choices from a blended decision score: AI interpretation and conversation conclusions matter substantially, while personality, relationships, household pressure, health, wealth, rumors, and the priest's trust, moral authority, scandal, and consistency independently constrain the result.
 - Household economy.
 - Directed relationships.
 - Knowledge and rumor layers.

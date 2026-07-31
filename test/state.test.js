@@ -43,6 +43,22 @@ test("state validation rejects corrupt references", () => {
   const state = createGame("corruption-seed");
   state.residents[0].relationshipIds.push("person-missing");
   assert.throws(() => serializeState(state), /missing relationship/);
+
+  const rumorState = createGame("missing-rumor-source");
+  rumorState.rumors.push({
+    id: "rumor-000001",
+    originatorId: rumorState.residents[0].id,
+    subjectId: rumorState.residents[1].id,
+    claim: "A dangling rumor.",
+    truth: 50,
+    intensity: 2,
+    sourceEventId: "event-missing",
+    createdDay: 0,
+    heardByIds: [rumorState.residents[0].id],
+    active: true
+  });
+  rumorState.nextRumorSequence = 2;
+  assert.throws(() => serializeState(rumorState), /Rumor .* missing source event/);
 });
 
 test("state validation rejects malformed visits, causal references, and counters", () => {
@@ -168,7 +184,8 @@ test("command and accepted AI proposal audit data must match exactly", () => {
               intensity: 1,
               title: "keep silence",
               description: "The visitor kept silence.",
-              detail: ""
+              detail: "",
+              decisionScore: 50
             }]
           }
         }
