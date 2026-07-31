@@ -105,10 +105,29 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
   const advice = /\b(?:you should|you must|i advise you to|why don't you|why not|consider)\b/.test(speech);
   if (advice) {
     const trusts = person.trustPriest >= 60;
-    const proposedAction = speech
+    const adviceParts = [];
+    if (/\b(?:obey|lawful|order)\b/.test(speech)) adviceParts.push("obey the lawful order");
+    if (/\b(?:church|help|aid)\b.*\b(?:hungry|poor|need)\b|\b(?:hungry|poor|need)\b.*\b(?:church|help|aid)\b/.test(speech)) {
+      adviceParts.push("ask the church to help the hungry households");
+    }
+    const joinMatch = speech.match(/\b(?:ask|invite)\s+([a-z'-]+)\s+to\s+join\b/);
+    if (joinMatch) adviceParts.push(`ask ${joinMatch[1]} to join the work`);
+    else if (/\b(?:split|share|join|partner)\b/.test(speech)) adviceParts.push("propose sharing the work");
+    if (/\b(?:refuse|decline|reject)\b/.test(speech)) adviceParts.push("refuse the harmful offer");
+    if (/\b(?:start|open|run)\b.*\b(?:trade|business|workshop)\b/.test(speech)) adviceParts.push("start an independent trade");
+    if (!joinMatch && /\b(?:speak|talk|ask)\b.*\b(?:hemlock|other|neighbor|victim)\b/.test(speech)) adviceParts.push("speak directly with the other person");
+    if (/\bpray\b/.test(speech)) adviceParts.push("pray about the decision");
+    else if (/\bforgive\b/.test(speech)) adviceParts.push("forgive the person who wronged you");
+    else if (/\bconfess\b/.test(speech)) adviceParts.push("confess the truth");
+    else if (/\bapologize\b/.test(speech)) adviceParts.push("apologize and make amends");
+    const extracted = speech
       .replace(/^.*?\b(?:you should|you must|i advise you to|why don't you|why not|consider)\b/, "")
-      .replace(/[.?!]+$/, "")
-      .trim();
+      .split(/[.;!?]/)[0]
+      .trim()
+      .split(/\s+/)
+      .slice(0, 10)
+      .join(" ");
+    const proposedAction = adviceParts.slice(0, 2).join(" and also ") || extracted || "take that course";
     const adviceTerms = (proposedAction.match(/[a-z]{3,}/g) || [])
       .filter((word) => !["the", "and", "you", "him", "her", "should", "would", "could", "about", "their", "there"].includes(word))
       .slice(0, 2);
@@ -119,10 +138,10 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
       requiredTerms: adviceTerms,
       proposedAction,
       fallbackReply: mode === "defensive"
-        ? `You make "${proposedAction || "that"}" sound simple, Father, but you will not carry the cost if it fails. Tell me how my household survives the choice.`
+        ? `I understand: you want me to ${proposedAction}. I can try, but I still need to know how my household survives if the plan fails.`
         : trusts
-          ? `I will consider ${proposedAction || "doing that"}, Father. Before I agree, I must decide what it will cost my household and the other people involved.`
-          : `I understand your counsel to ${proposedAction || "act"}, Father, but I cannot promise to follow it until the practical danger to my household is answered.`
+          ? `I will try to ${proposedAction}, Father. Tell me what help I may honestly rely upon if the cost becomes more than my household can bear.`
+          : `I understand your counsel: ${proposedAction}. I cannot promise it yet, but I can test the first step without pretending the risk is gone.`
     };
   }
   return null;

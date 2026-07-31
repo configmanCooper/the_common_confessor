@@ -123,6 +123,21 @@ test("advice relevance is validated against the actual proposed action", async (
     }), { status: 200, headers: { "Content-Type": "application/json" } })
   });
 
+  test("complex advice is summarized naturally instead of quoted back", async () => {
+    const { state, person } = groundedDecisionState("natural-advice-summary");
+    const client = repeatingClient();
+    const response = await client.conversation(
+      state,
+      person,
+      "My child, if it is lawful, unless it is a direct sin, you must obey. However, perhaps the church can help those already hungry."
+    );
+    assert.doesNotMatch(response.reply, /"obey|you make "/i);
+    assert.doesNotMatch(response.reply, /while ask/i);
+    assert.match(response.reply, /obey the lawful order/i);
+    assert.match(response.reply, /church.*hungry|hungry.*church/i);
+    assert.ok(response.reply.split(/\s+/).length < 55);
+  });
+
   test("why-not suggestions are treated as advice, not overwritten clarification", async () => {
     const { state, person } = groundedDecisionState("why-not-advice");
     const client = new ParishAiClient({

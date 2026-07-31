@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { beginVisit, createGame } from "../js/simulation.js";
+import { GENERATED_SCENARIO_ARCHETYPE_COUNT } from "../js/scenario_catalog.js";
+
+test("scenario catalog contains at least one hundred generated archetypes", () => {
+  assert.ok(GENERATED_SCENARIO_ARCHETYPE_COUNT >= 100, GENERATED_SCENARIO_ARCHETYPE_COUNT);
+});
 
 test("consecutive visitors avoid recently used scenario archetypes", () => {
   const state = createGame("scenario-rotation");
@@ -37,8 +42,8 @@ test("first-visitor generation spans many fundamentally different scenarios", ()
     openings.add(visit.history[0].text);
     assert.doesNotMatch(visit.history[0].text, /share in (?:sexton|soldier|child laborer|unemployed) work/i);
   }
-  assert.ok(ids.size >= 13, ids.size);
-  assert.ok(openings.size >= 90, openings.size);
+  assert.ok(ids.size >= 35, ids.size);
+  assert.ok(openings.size >= 110, openings.size);
 });
 
 test("scenario facts always provide concrete consequences and an alternative", () => {

@@ -53,6 +53,7 @@ import {
   resolveCongregationReactions,
   upgradeParishState
 } from "./parish.js";
+import { buildGeneratedScenarioArchetypes } from "./scenario_catalog.js";
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -414,7 +415,15 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
       facts: [`The hidden grain is enough for about ${rng.int(3, 8)} weeks.`, `The household has already received two distributions.`, `A sick child in the same home still needs broth.`, `Aid could be limited to the child while requiring an honest inventory.`]
     }
   ];
-  return archetypes;
+  return archetypes.concat(buildGeneratedScenarioArchetypes({
+    person: person.name,
+    relation: relationName,
+    victim: victimName,
+    official: official?.name || relationName,
+    resource,
+    sum,
+    deadlineDays: rng.int(1, 12)
+  }));
 }
 
 function issueForPerson(state, person) {
@@ -461,7 +470,18 @@ function issueForPerson(state, person) {
             : "nave";
     }
     const timing = rng.pick(["at dawn yesterday", "after market closed", "during the evening bell", "three nights ago", "before Sunday worship", "during the last rain"]);
-    const place = rng.pick(["beside the mill road", "behind the alehouse", "at the manor storehouse", "near the common well", "inside a crowded workshop", "at the edge of the east field"]);
+    const placesByScenario = archetype.id.startsWith("manor_order")
+      ? ["at the manor storehouse", "beside the mill road"]
+      : archetype.id.includes("well")
+        ? ["beside the common well", "near the drainage ditch"]
+        : archetype.id.includes("bridge")
+          ? ["at the bridge approach", "beside the flooded road"]
+          : archetype.id.includes("marriage") || archetype.id.includes("pregnancy")
+            ? ["inside the family cottage", "in the chapel garden"]
+            : archetype.id.includes("trade") || archetype.id.includes("wage") || archetype.id.includes("apprentice")
+              ? ["inside the workshop", "at the market stalls"]
+              : ["beside the mill road", "behind the alehouse", "at the manor storehouse", "near the common well", "at the edge of the east field"];
+    const place = rng.pick(placesByScenario);
     const witness = rng.pick(["No one else heard the whole exchange.", `${victimName} saw part of it.`, `A young apprentice may have overheard.`, `Two households are already whispering about it.`]);
     issue.opening = `${archetype.opening} The matter came to a head ${timing}, ${place}. ${witness}`;
     issue.scenarioFacts = archetype.facts.map((text, index) => ({
@@ -473,7 +493,7 @@ function issueForPerson(state, person) {
     }));
     issue.openingDisclosesHidden = issue.kind === "confession" && person.personality.candor >= 55;
     if (issue.kind === "confession" && !issue.openingDisclosesHidden) {
-      issue.opening = `Forgive me, Father. I have done something wrong, and another person may suffer for it. I am not yet certain I can say every part aloud.`;
+      issue.opening = `Forgive me, Father. Something I did ${timing}, ${place}, may cause another person to suffer. ${witness} I am not yet certain I can say every part aloud.`;
     }
     return issue;
   }
