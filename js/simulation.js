@@ -47,6 +47,11 @@ import {
   isAdultRelationshipEligible,
   upgradePopulationState
 } from "./population.js";
+import {
+  attendanceReason,
+  resolveCongregationReactions,
+  upgradeParishState
+} from "./parish.js";
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -238,6 +243,7 @@ export function createGame(seed = String(Date.now())) {
     }
   };
   upgradePopulationState(state);
+  upgradeParishState(state);
   state.priest.positions = [];
   state.priest.confidentialityBreaches = [];
   addChronicle(state, `A new cure begins in ${town.name}`, town.description, "neutral", {
@@ -454,6 +460,54 @@ export function beginVisit(state, { record = true } = {}) {
     throw new Error("Sunday is reserved for the parish service");
   }
   if (state.currentVisit) {
+    return state.currentVisit;
+  }
+  state.eventQueue = state.eventQueue.filter((event) => {
+    if (event.type !== "sermon_followup" || event.dueDay > state.calendar.absoluteDay) return true;
+    const actor = state.residents.find((person) => person.id === event.sourcePersonId);
+    return Boolean(actor?.active && actor.alive);
+  });
+  const followupIndex = state.eventQueue.findIndex((event) => (
+    event.type === "sermon_followup" && event.dueDay <= state.calendar.absoluteDay
+  ));
+  if (followupIndex >= 0) {
+    const queued = state.eventQueue.splice(followupIndex, 1)[0];
+    const person = materializeResident(state, queued.sourcePersonId, true);
+    person.visitCount += 1;
+    person.lastVisitDay = state.calendar.absoluteDay;
+    const issue = {
+      kind: "sermon follow-up",
+      location: "nave",
+      gravity: 3,
+      opening: `Father, I have come because of what happened after Sunday's sermon.`,
+      detail: queued.reason,
+      relatedPersonId: null,
+      relatedName: null
+    };
+    const originEvent = appendEvent(state, {
+      type: "sermon_followup_started",
+      parentId: queued.sourceEventId,
+      actorId: person.id,
+      targetId: "priest",
+      facts: { queuedEventId: queued.id }
+    });
+    state.currentVisit = {
+      visitId: `visit-${state.calendar.absoluteDay}-${state.calendar.slot}-${person.id}`,
+      personId: person.id,
+      issue,
+      intent: createVisitIntent(state, person, issue),
+      location: issue.location,
+      turnsUsed: 0,
+      maxTurns: 10,
+      originEventId: originEvent.id,
+      history: [{ speaker: "visitor", text: issue.opening }],
+      counsel: [],
+      mood: "guarded",
+      disclosure: 20,
+      hiddenConcernDisclosed: false,
+      eventLicense: "ordinary"
+    };
+    if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
   }
   const queuedIndex = state.eventQueue.findIndex((event) => (
@@ -1572,8 +1626,15 @@ export function finishVisit(state, plan, { record = true } = {}) {
 }
 
 export function sundayAttendance(state) {
+  return sundayAttendanceReport(state).filter((entry) => entry.attending).map((entry) => entry.person);
+}
+
+export function sundayAttendanceReport(state) {
   const rng = new SeededRng(`${state.seed}:attendance:${state.calendar.absoluteDay}`);
-  return activeResidents(state).filter((person) => rng.int(1, 100) <= person.attendanceChance);
+  return activeResidents(state).map((person) => {
+    const reason = attendanceReason(state, person, rng.int(1, 100));
+    return { person, attending: reason === "attending", reason };
+  });
 }
 
 function sermonThemeDeltas(theme) {
@@ -1592,10 +1653,14 @@ export function fallbackSermonOutcome(state, theme, text) {
   const base = sermonThemeDeltas(theme);
   const conviction = Math.min(1.5, Math.max(0.55, text.trim().split(/\s+/).length / 60));
   const townDeltas = Object.fromEntries(Object.entries(base).map(([key, value]) => [key, Math.round(value * conviction)]));
+  const responseTags = [theme.toLowerCase(), "reflection"];
+  if (theme === "Repentance") responseTags.push("confession");
+  if (theme === "Community") responseTags.push("procession");
+  if (theme === "Justice" && state.priest.scandal >= 45) responseTags.push("protest");
   return {
     summary: `The sermon on ${theme.toLowerCase()} settles unevenly over the parish: some hear comfort, others a demand.`,
     townDeltas,
-    responseTags: [theme.toLowerCase(), "reflection"],
+    responseTags,
     notableEffects: sundayAttendance(state).slice(0, 8).map((person, index) => ({
       personId: person.id,
       faithDelta: index % 3 === 0 ? 3 : 1,
@@ -1635,8 +1700,6 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
         confidence: 70,
         sourceEventId: null
       });
-    } else {
-      person.attendanceChance = clamp(person.attendanceChance - 1);
     }
   }
   for (const effect of Array.isArray(outcome?.notableEffects) ? outcome.notableEffects : []) {
@@ -1669,6 +1732,40 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
     type: "sermon_delivered",
     facts: { theme, attendance: attendees.length, townDeltas: deltas }
   });
+  const congregation = resolveCongregationReactions(state, theme, text, attendees, outcome);
+  const publicIntent = {
+    Mercy: "forgiveness",
+    Forgiveness: "forgiveness",
+    Justice: "judgment",
+    Duty: "work",
+    Family: "family",
+    Repentance: "truth"
+  }[theme];
+  if (publicIntent && attendees[0]) {
+    for (const position of recordPriestPosition(state, null, [publicIntent], text)) {
+      position.publicPosition = true;
+    }
+  }
+  for (const event of congregation.events) {
+    addChronicle(state, event.title, event.text, event.type === "sermon_protest" ? "danger" : "faith", {
+      type: event.type,
+      actorId: event.actorId,
+      parentId: state.chronicle[0].eventId,
+      facts: { sermonTheme: theme, consistency: congregation.consistency }
+    });
+    state.eventQueue.push({
+      id: `queue-${String(state.nextQueueSequence++).padStart(6, "0")}`,
+      type: "sermon_followup",
+      role: null,
+      reason: event.text,
+      dueDay: state.calendar.absoluteDay + 1,
+      sourcePersonId: event.actorId,
+      sourceEventId: state.chronicle[0].eventId,
+      actorId: event.actorId,
+      targetId: "priest",
+      payload: { eventType: event.type }
+    });
+  }
   if (record) {
     appendCommand(state, "deliver_sermon", {
       theme,

@@ -139,6 +139,7 @@ test("all durable positions receive unique monotonic IDs", () => {
     state.priest.positions.push({
       id: `position-${String(state.nextPositionSequence++).padStart(5, "0")}`,
       personId: state.currentVisit.personId,
+      publicPosition: false,
       intent: "truth",
       summary: `Position ${index}`,
       day: 0
@@ -440,7 +441,7 @@ test("schema-v3 saves migrate strings into structured conversation state", () =>
   delete legacy.integrityHash;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.equal(typeof migrated.residents[0].memories[0], "object");
   assert.equal(migrated.residents[0].memories[0].privateMemory, true);
   assert.equal(typeof migrated.priest.promises[0], "object");

@@ -91,11 +91,14 @@ function contradictionFor(state, intents, personId) {
     ["forgiveness", "judgment"],
     ["truth", "secrecy"]
   ];
-  const positions = state.priest.positions.filter((entry) => entry.personId === personId).reverse();
+  const positions = state.priest.positions
+    .filter((entry) => entry.publicPosition || entry.personId === personId)
+    .reverse();
   for (const intent of intents) {
-    const pair = contradictionPairs.find(([first, second]) => first === intent || second === intent);
-    if (!pair) continue;
-    const latest = positions.find((position) => pair.includes(position.intent));
+    const relatedPairs = contradictionPairs.filter(([first, second]) => first === intent || second === intent);
+    if (!relatedPairs.length) continue;
+    const relevantIntents = new Set(relatedPairs.flat());
+    const latest = positions.find((position) => relevantIntents.has(position.intent));
     if (latest && latest.intent !== intent) return latest;
   }
   return null;
@@ -205,12 +208,18 @@ export function recordPriestPosition(state, personId, intents, text) {
   const positions = durable.map((intent) => ({
     id: `position-${String(state.nextPositionSequence++).padStart(5, "0")}`,
     personId,
+    publicPosition: false,
     intent,
     summary: String(text).slice(0, 160),
     day: state.calendar.absoluteDay
   }));
   state.priest.positions.push(...positions);
-  state.priest.positions = state.priest.positions.slice(-60);
+  const retainedPrivateIds = new Set(
+    state.priest.positions.filter((position) => !position.publicPosition).slice(-60).map((position) => position.id)
+  );
+  state.priest.positions = state.priest.positions.filter((position) => (
+    position.publicPosition || retainedPrivateIds.has(position.id)
+  ));
   return positions;
 }
 

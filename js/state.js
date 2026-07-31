@@ -1,8 +1,9 @@
 import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
+import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 6;
+export const STATE_SCHEMA_VERSION = 7;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -164,8 +165,10 @@ function upgradeConversationState(state) {
   state.priest.positions ||= [];
   state.priest.relicStolenById ??= null;
   upgradeAuthorityState(state);
+  upgradeParishState(state);
   for (const position of state.priest.positions) {
     position.personId ||= state.currentVisit?.personId || state.residents?.[0]?.id || "priest";
+    position.publicPosition ??= false;
   }
   state.priest.confidentialityBreaches ||= [];
   state.nextPositionSequence ||= state.priest.positions.reduce((maximum, position) => {
@@ -244,6 +247,7 @@ export function migrateState(rawState) {
     upgradePopulationState(state);
     upgradeConversationState(state);
     upgradeAuthorityState(state);
+    upgradeParishState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const replaySnapshot = {
@@ -266,6 +270,7 @@ export function migrateState(rawState) {
     upgradePopulationState(state);
     upgradeConversationState(state);
     upgradeAuthorityState(state);
+    upgradeParishState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -291,6 +296,7 @@ export function migrateState(rawState) {
     verifyIntegrity(state);
     upgradeConversationState(state);
     upgradeAuthorityState(state);
+    upgradeParishState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -314,7 +320,9 @@ export function migrateState(rawState) {
   }
   if (detectedVersion === 5) {
     verifyIntegrity(state);
+    upgradeConversationState(state);
     upgradeAuthorityState(state);
+    upgradeParishState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -330,10 +338,26 @@ export function migrateState(rawState) {
     };
     sealState(state);
   }
+  if (detectedVersion === 6) {
+    verifyIntegrity(state);
+    upgradeConversationState(state);
+    upgradeParishState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 6, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
   if (detectedVersion === 4) {
     verifyIntegrity(state);
+    upgradeConversationState(state);
     state.priest.relicStolenById ??= null;
     upgradeAuthorityState(state);
+    upgradeParishState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -430,7 +454,8 @@ export function validateState(state) {
   for (const position of state.priest.positions) {
     requireObject(position, "Priest position");
     if (typeof position.id !== "string" || typeof position.intent !== "string"
-      || typeof position.personId !== "string" || typeof position.summary !== "string" || !Number.isInteger(position.day)) {
+      || (position.personId != null && typeof position.personId !== "string") || typeof position.publicPosition !== "boolean"
+      || typeof position.summary !== "string" || !Number.isInteger(position.day)) {
       throw new Error("Priest position is invalid");
     }
     if (positionIds.has(position.id)) throw new Error(`Duplicate position ID: ${position.id}`);
@@ -444,6 +469,18 @@ export function validateState(state) {
   requireArray(state.relationships, "Relationships");
   requireArray(state.knowledge, "Knowledge");
   requireArray(state.rumors, "Rumors");
+  requireArray(state.parishFactions, "Parish factions");
+  requireArray(state.sermonReactions, "Sermon reactions");
+  const requiredFactionIds = ["traditionalists", "reformers", "brotherhood"];
+  if (state.parishFactions.length !== requiredFactionIds.length
+    || requiredFactionIds.some((id) => !state.parishFactions.some((faction) => faction.id === id))) {
+    throw new Error("Parish factions are incomplete");
+  }
+  for (const faction of state.parishFactions) {
+    requireArray(faction.memberIds, `Faction members for ${faction.id}`);
+    if (typeof faction.name !== "string") throw new Error(`Faction ${faction.id} has invalid name`);
+    requireFinite(faction.influence, `Faction influence for ${faction.id}`, 0, 100);
+  }
   if (typeof state.householdFamiliesSeeded !== "boolean") throw new Error("Household family seed state is invalid");
   requireArray(state.externalActors, "External actors");
   requireArray(state.eventQueue, "Event queue");
@@ -498,7 +535,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -659,7 +696,7 @@ export function validateState(state) {
       if (promise.personId != null && !personIds.has(promise.personId)) throw new Error(`Promise ${promise.id} has missing person`);
     }
     for (const position of state.priest.positions) {
-      if (!personIds.has(position.personId)) throw new Error(`Position ${position.id} has missing person`);
+      if (position.personId != null && !personIds.has(position.personId)) throw new Error(`Position ${position.id} has missing person`);
     }
     for (const breach of state.priest.confidentialityBreaches) {
       requireObject(breach, "Confidentiality breach");

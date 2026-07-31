@@ -403,6 +403,7 @@ export class ParishAiClient extends EventTarget {
     const prompt = [
       "Evaluate a Sunday sermon delivered to a 16th-century village parish.",
       "The whole attending congregation is affected through the town deltas and response tags. Add notable individual effects only for listed people.",
+      "Use response tags confession, protest, disruption, or procession only when the sermon and parish conditions plausibly propose that public outcome; deterministic rules will independently decide whether it occurs.",
       "The sermon may comfort some and provoke others. Judge its actual wording, theme, town tensions, current metrics, attendance, and known personalities.",
       "Do not mention AI, prompts, tokens, or game mechanics.",
       `CONTEXT_JSON=${JSON.stringify({

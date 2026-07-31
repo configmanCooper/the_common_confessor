@@ -15,7 +15,8 @@ import {
   materializeResident,
   populationCount,
   recordExchange,
-  sundayAttendance
+  sundayAttendance,
+  sundayAttendanceReport
 } from "./simulation.js";
 import { compactReplayHistory, deserializeState, serializeState } from "./state.js";
 import { queueAutosave, readAutosaves } from "./storage.js";
@@ -305,12 +306,18 @@ function showVisit() {
 }
 
 function showSunday() {
-  const attendees = sundayAttendance(state);
+  const report = sundayAttendanceReport(state);
+  const attendees = report.filter((entry) => entry.attending).map((entry) => entry.person);
   renderer.showSundayCrowd(attendees);
   setHidden(elements["visitor-panel"], true);
   setHidden(elements["dialogue-panel"], true);
   setHidden(elements["sermon-panel"], false);
   elements["attendance-count"].textContent = `${attendees.length} of ${populationCount(state)}`;
+  elements["notable-absences"].textContent = report
+    .filter((entry) => !entry.attending)
+    .slice(0, 5)
+    .map((entry) => `${entry.person.name}: ${entry.reason}`)
+    .join(" · ");
   elements["sermon-text"].value = "";
   elements["sermon-word-count"].textContent = "0 / 100 words";
   renderCommon();
