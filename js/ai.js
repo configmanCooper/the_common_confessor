@@ -14,6 +14,55 @@ function parseContent(payload) {
 
 function directSocialRequirement(state, person, visit, playerText, mode) {
   const speech = String(playerText).toLowerCase();
+  const farewell = /\b(?:goodbye|farewell|go with god|god go with you|god be with you|peace be with you|you may go|that will be all)\b/.test(speech);
+  if (farewell) {
+    const nextStep = (visit.scenarioFacts || []).find((fact) => fact.id === "alternative")?.text;
+    return {
+      type: "farewell",
+      requireAll: false,
+      minimumMatches: 1,
+      requiredTerms: ["god", "thank", "farewell", "peace"],
+      responsePattern: /\b(?:god|thank you|farewell|peace|goodbye)\b/i,
+      fallbackReply: nextStep
+        ? `Thank you, Father. I will go with your blessing and take the next honest step: ${nextStep}`
+        : "Thank you, Father. God keep you. I will go and do what conscience now requires.",
+      endsConversation: true
+    };
+  }
+  const openInvitation = /\b(?:anything else|any other way i can help|else you wish to discuss|another matter|something else|other concern)\b/.test(speech);
+  if (openInvitation) {
+    const household = state.households.find((entry) => entry.id === person.householdId);
+    const spouse = state.residents.find((entry) => entry.id === person.spouseId);
+    const child = state.residents.find((entry) => person.childrenIds?.includes(entry.id) && entry.active && entry.alive);
+    const rumor = state.rumors.find((entry) => entry.active && entry.heardByIds.includes(person.id));
+    const topics = [
+      child && `There is one other thing, Father. ${child.name} has been troubled lately, and I do not know whether it is illness, fear, or something the child will not tell me.`,
+      spouse && `There is another matter. ${spouse.name} and I have been speaking past one another, and I fear this dispute will follow me home.`,
+      household?.debt > 5 && `There is one other concern: our household owes ${Math.round(household.debt)} measures of debt, and the next payment may cost us food.`,
+      household?.food < 30 && `There is another matter, Father. Our household food stores are low enough that I am already counting the days until the next market.`,
+      person.illness && `Yes. I have concealed that I am suffering from ${person.illness}, because I fear losing work if others know.`,
+      rumor && `There is another matter. I heard a rumor that ${rumor.claim.toLowerCase()}, and I do not know whether repeating it would warn someone or merely spread harm.`,
+      `There is one other thing, Father. I have been neglecting prayer, not from disbelief, but because I am ashamed to ask for help only when I am afraid.`,
+      `No, Father. That is all I wished to discuss today. Thank you for hearing me plainly.`
+    ].filter(Boolean);
+    let hash = 2166136261;
+    for (const character of `${state.seed}:${person.id}:${visit.visitId}:${visit.turnsUsed}`) {
+      hash ^= character.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    const closes = visit.turnsUsed >= 8 || (hash >>> 0) % 4 === 0;
+    const fallbackReply = closes ? topics.at(-1) : topics[(hash >>> 0) % Math.max(1, topics.length - 1)];
+    return {
+      type: "open_invitation",
+      requireAll: false,
+      minimumMatches: 1,
+      requiredTerms: closes ? ["no", "all"] : ["other", "another", "yes"],
+      responsePattern: closes
+        ? /\b(?:no|nothing else|that is all|all i wished)\b/i
+        : /\b(?:yes|there is|one other|another matter|another concern)\b/i,
+      fallbackReply
+    };
+  }
   const offer = speech.match(/\b(?:would you like|do you want|may i offer|can i offer)\b.*\b(cheese|bread|food|ale|water|coin)\b/);
   if (offer) {
     const item = offer[1];
@@ -333,6 +382,10 @@ export class ParishAiClient extends EventTarget {
       latestSpeechAct: socialRequirement
         ? socialRequirement.type === "offer"
           ? `The priest offered ${socialRequirement.item}. Answer the offer directly before discussing anything else.`
+          : socialRequirement.type === "farewell"
+            ? "The priest ended the meeting with a blessing. Reply with a brief farewell and leave; do not reopen the prior dilemma."
+          : socialRequirement.type === "open_invitation"
+            ? "The priest asked whether there is anything else to discuss. Either introduce one concrete new concern or clearly say the meeting can end. Do not return to the resolved dilemma."
           : `The priest advised: ${socialRequirement.proposedAction || socialRequirement.type}. Evaluate that exact advice before discussing anything else.`
         : "Respond directly to the priest's newest words before returning to the larger concern.",
       responseMode: mode,
@@ -359,11 +412,14 @@ export class ParishAiClient extends EventTarget {
     if (socialRequirement) {
       const direct = result.reply.toLowerCase();
       const matchCount = socialRequirement.requiredTerms.filter((term) => direct.includes(term)).length;
-      const relevant = matchCount >= (socialRequirement.minimumMatches ?? (socialRequirement.requireAll ? socialRequirement.requiredTerms.length : 1));
+      const relevant = socialRequirement.responsePattern
+        ? socialRequirement.responsePattern.test(result.reply)
+        : matchCount >= (socialRequirement.minimumMatches ?? (socialRequirement.requireAll ? socialRequirement.requiredTerms.length : 1));
       if (socialRequirement.requiredTerms.length && !relevant) {
         result.reply = socialRequirement.fallbackReply;
         result.groundedFallback = true;
       }
+      if (socialRequirement.endsConversation) result.endsConversation = true;
     }
     const previousVisitorLine = [...visit.history].reverse().find((line) => line.speaker === "visitor")?.text || "";
     const maximumRepetition = Math.max(0, ...(visit.lastVisitorReplies || []).map((line) => repetitionScore(rawModelReply, line)));

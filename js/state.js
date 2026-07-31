@@ -3,7 +3,7 @@ import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 9;
+export const STATE_SCHEMA_VERSION = 10;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -34,6 +34,7 @@ function upgradeAuthorityState(state) {
 }
 
 function upgradeGroundedConversationState(state) {
+  state.scenarioHistory ||= [];
   if (state.currentVisit) {
     state.currentVisit.scenarioFacts ||= state.currentVisit.issue?.scenarioFacts || [];
     state.currentVisit.revealedFactIds ||= [];
@@ -429,6 +430,19 @@ export function migrateState(rawState) {
     state.replayBase = { kind: "migration", sourceSchemaVersion: 8, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
+  if (detectedVersion === 9) {
+    verifyIntegrity(state);
+    upgradeGroundedConversationState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 9, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
   state.schemaVersion = STATE_SCHEMA_VERSION;
   state.version = STATE_SCHEMA_VERSION;
   return state;
@@ -521,6 +535,7 @@ export function validateState(state) {
   requireArray(state.rumors, "Rumors");
   requireArray(state.parishFactions, "Parish factions");
   requireArray(state.sermonReactions, "Sermon reactions");
+  requireArray(state.scenarioHistory, "Scenario history");
   requireObject(state.material, "Material village state");
   for (const field of ["foodSecurity", "grainPrice", "diseasePressure", "crime", "infrastructure"]) {
     requireFinite(state.material[field], `Material ${field}`, 0, 100);
@@ -592,7 +607,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }

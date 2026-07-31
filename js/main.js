@@ -423,7 +423,13 @@ async function submitCounsel(event) {
     .filter((line) => line.speaker === "visitor")
     .forEach((line) => appendDialogue("visitor", line.text));
   renderVisit();
-  if (state.currentVisit.turnsUsed >= state.currentVisit.maxTurns) {
+  if (response.endsConversation) {
+    elements["hour-state"].textContent = `${person.firstName} takes leave of the church.`;
+    elements["counsel-input"].disabled = true;
+    elements["speak-button"].disabled = true;
+    elements["next-hour"].disabled = false;
+    elements["next-hour"].textContent = "Let visitor depart";
+  } else if (state.currentVisit.turnsUsed >= state.currentVisit.maxTurns) {
     elements["hour-state"].textContent = "Ten things have been said. The hour is spent.";
     elements["next-hour"].disabled = false;
   } else {

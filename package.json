@@ -1,6 +1,6 @@
 {
   "name": "the-common-confessor",
-  "version": "0.9.0-playtest",
+  "version": "0.10.0-playtest",
   "private": true,
   "type": "module",
   "description": "A painterly 16th-century parish conversation and village consequence simulation.",

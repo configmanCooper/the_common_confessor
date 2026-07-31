@@ -86,6 +86,32 @@ test("offers and practical advice receive direct, different answers", async () =
   assert.doesNotMatch(trade.reply, /Thomas offers me a share.*which path is right/i);
 });
 
+test("anything-else questions introduce a new concern or close the meeting", async () => {
+  const outcomes = new Set();
+  for (let index = 0; index < 16; index += 1) {
+    const { state, person } = groundedDecisionState(`anything-else-${index}`);
+    const client = repeatingClient();
+    const response = await client.conversation(
+      state,
+      person,
+      "Is there any other way I can help, my child? Anything else you wish to discuss?"
+    );
+    assert.match(response.reply, /\b(?:no|nothing else|that is all|there is|one other|another matter|another concern|yes)\b/i);
+    assert.doesNotMatch(response.reply, /offers me a share.*which path is right/i);
+    outcomes.add(/\b(?:no|nothing else|that is all)\b/i.test(response.reply) ? "close" : "new_topic");
+  }
+  assert.deepEqual(outcomes, new Set(["close", "new_topic"]));
+});
+
+test("farewells close naturally instead of reopening or apologizing for repetition", async () => {
+  const { state, person } = groundedDecisionState("farewell-quality");
+  const client = repeatingClient();
+  const response = await client.conversation(state, person, "Ok, my child. Go with God.");
+  assert.match(response.reply, /\b(?:god|thank you|farewell|peace|goodbye)\b/i);
+  assert.doesNotMatch(response.reply, /repeating myself|which path is right|Thomas offers/i);
+  assert.equal(response.endsConversation, true);
+});
+
 test("advice relevance is validated against the actual proposed action", async () => {
   const { state, person } = groundedDecisionState("advice-relevance");
   const client = new ParishAiClient({

@@ -229,6 +229,7 @@ export function createGame(seed = String(Date.now())) {
     nextCommandSequence: 1,
     nextMemorySequence: 1,
     nextPositionSequence: 1,
+    scenarioHistory: [],
     replayBase: null,
     sermons: [],
     conversationHistory: [],
@@ -306,6 +307,116 @@ function counselEligibleResidents(state) {
   return activeResidents(state).filter((person) => person.age >= 12);
 }
 
+function scenarioArchetypes(state, person, relation, victim, rng) {
+  const relationName = relation?.name || "a neighboring householder";
+  const relationFirst = relation?.firstName || "The neighbor";
+  const victimName = victim?.name || "an older villager";
+  const child = state.residents.find((candidate) => person.childrenIds.includes(candidate.id));
+  const spouse = state.residents.find((candidate) => candidate.id === person.spouseId);
+  const official = state.residents.find((candidate) => ["reeve", "bailiff", "clerk", "watchman"].includes(candidate.occupation)) || relation;
+  const resource = rng.pick(["the east meadow", "the mill stream", "the market stall", "a timber allotment", "the manor grain contract"]);
+  const sum = rng.int(3, 12);
+  const archetypes = [
+    {
+      id: "trade_displacement",
+      kinds: ["decision", "private counsel", "dispute"],
+      opening: `${relationName} has offered me a profitable partnership, but it depends on taking ${resource} from ${victimName}. I could secure my household and ruin another in the same bargain.`,
+      facts: [`The offer concerns ${resource}.`, `${relationFirst} expects the transfer within ${rng.int(2, 8)} days.`, `${victimName} would lose most of the household income.`, `A shared lease would reduce the profit but keep both households working.`]
+    },
+    {
+      id: "stolen_food_false_accusation",
+      kinds: ["confession", "decision"],
+      opening: `I secretly took ${sum} measures of grain during the shortage. Yesterday ${victimName} accused an innocent apprentice, and the apprentice may be beaten for what I did.`,
+      facts: [`The missing property is ${sum} measures of grain.`, `The grain is hidden in ${person.surname}'s loft.`, `${victimName}'s apprentice is blamed.`, `Returning it anonymously may save the apprentice but will not clear the accusation completely.`]
+    },
+    {
+      id: "withheld_wages",
+      kinds: ["dispute", "private counsel", "village concern"],
+      opening: `${relationName} owes me ${sum} days of wages and says the poor harvest excuses the debt. My household needs the coin, but pressing the claim may close the workshop.`,
+      facts: [`The unpaid work totals ${sum} days.`, `${relationName} has enough coin to pay half now.`, `Two other workers are also unpaid.`, `A staged repayment would keep the workshop open.`]
+    },
+    {
+      id: "unsafe_apprentice",
+      kinds: ["decision", "village concern", "private counsel"],
+      opening: `An apprentice in ${relationName}'s care is being struck and sent into dangerous work. If I report it, the child may lose food and shelter as well as the apprenticeship.`,
+      facts: [`The apprentice is ${rng.int(11, 16)} years old.`, `The dangerous task involves an unstable kiln and night work.`, `${relationName} has already injured the child once.`, `Another household could foster the apprentice temporarily.`]
+    },
+    {
+      id: "marriage_coercion",
+      kinds: ["family counsel", "decision", "confession"],
+      opening: `${relationName} is pressing a marriage that would settle a household debt. The proposed spouse is respectable, but the person being promised does not consent.`,
+      facts: [`The marriage would cancel ${sum} silver pennies of debt.`, `The unwilling person has privately asked ${person.firstName} for help.`, `Refusal may cost the household its lease.`, `A delayed betrothal could create time to repay the debt another way.`]
+    },
+    {
+      id: "hidden_illness",
+      kinds: ["confession", "faith", "private counsel"],
+      opening: `I have concealed a fever because I fear losing work. I may already have exposed ${relationName}'s household, including a young child.`,
+      facts: [`The fever began ${rng.int(3, 9)} days ago.`, `${person.firstName} has continued sharing tools and meals.`, `${relationName}'s child is now coughing.`, `Isolation and honest warning may prevent a wider sickness.`]
+    },
+    {
+      id: "inheritance_document",
+      kinds: ["confession", "dispute", "decision"],
+      opening: `I found a document showing that ${victimName}, not ${relationName}, has the stronger inheritance claim. My household benefits if the paper stays hidden.`,
+      facts: [`The document bears two recognizable witness marks.`, `It concerns a cottage and ${rng.int(2, 7)} acres.`, `${relationName} believes the document was destroyed.`, `Giving it to a neutral clerk would expose the truth without letting either claimant alter it.`]
+    },
+    {
+      id: "poaching_hunger",
+      kinds: ["confession", "decision", "village concern"],
+      opening: `I poached a deer from the lord's wood to feed hungry households. The watch has arrested ${victimName}, who was nowhere near the forest.`,
+      facts: [`The meat fed ${rng.int(2, 5)} households.`, `A broken arrow near the carcass can identify ${person.firstName}.`, `${victimName} may face imprisonment.`, `A confession paired with restitution could free the innocent prisoner.`]
+    },
+    {
+      id: "corrupt_measure",
+      kinds: ["confession", "dispute", "decision"],
+      opening: `${relationName} asked me to use a false measure at market. It takes only a handful from each buyer, but the poorest households are paying the hidden cost.`,
+      facts: [`The false measure is short by one part in ${rng.int(8, 14)}.`, `${relationName} splits the extra goods with two accomplices.`, `${victimName} has begun suspecting the fraud.`, `Using honest measures publicly would expose the scheme without naming every accomplice.`]
+    },
+    {
+      id: "secret_pregnancy",
+      kinds: ["confession", "family counsel", "faith"],
+      opening: `A young woman has trusted me with a pregnancy that her household does not know about. She fears violence if the father or family is named.`,
+      facts: [`The pregnancy is about ${rng.int(2, 6)} months advanced.`, `The father has offered coin but refuses public responsibility.`, `One aunt may provide safe shelter.`, `A private plan for shelter is needed before any public confession.`]
+    },
+    {
+      id: "missing_relic",
+      kinds: ["confession", "grave conscience", "faith"],
+      opening: `I know who took a small church relic. The thief sold it to pay a healer, and exposing the theft may also expose a family's private illness.`,
+      facts: [`The relic was sold to a traveling peddler.`, `The payment bought medicine for ${victimName}.`, `The peddler returns in ${rng.int(2, 9)} days.`, `The relic might be repurchased before deciding whether to name the thief.`]
+    },
+    {
+      id: "violent_feud",
+      kinds: ["village concern", "decision", "grave conscience"],
+      opening: `Two households are preparing to fight over an insult at the tavern. ${relationName} has hidden clubs near ${resource}, and someone may be killed tonight.`,
+      facts: [`The insult concerned an old accusation of theft.`, `At least ${rng.int(4, 9)} people intend to gather.`, `${victimName} wants peace but fears appearing cowardly.`, `Separate meetings and public restitution could prevent the fight.`]
+    },
+    {
+      id: "faith_after_death",
+      kinds: ["grief", "faith", "ordinary talk"],
+      opening: `${victimName} died after weeks of prayer, and I no longer know whether I believe prayer changes anything. I am angry at God and ashamed of the anger.`,
+      facts: [`The death followed a fever lasting ${rng.int(5, 18)} days.`, `${person.firstName} prayed publicly every evening.`, `The household now avoids worship out of grief.`, `The immediate need is permission to grieve without pretending certainty.`]
+    },
+    {
+      id: "manor_order",
+      kinds: ["decision", "village concern", "private counsel"],
+      opening: `${official?.name || relationName} ordered me to reserve food for the manor while two village households are already hungry. The order may be lawful and still cause harm.`,
+      facts: [`The order concerns ${sum} sacks of grain.`, `The manor claims the reserve is for winter emergency.`, `Two households have less than a week of food.`, `Written confirmation and a temporary church loan could delay harm without simply defying authority.`]
+    },
+    {
+      id: "rumor_or_warning",
+      kinds: ["ordinary talk", "village concern", "decision"],
+      opening: `I heard that ${relationName} plans to leave the village with unpaid debts. Repeating it may warn creditors—or destroy an innocent reputation if it is false.`,
+      facts: [`The rumor began with a cart seen after dark.`, `${relationName} has sold two tools but not the house.`, `${victimName} says the debt is real.`, `A private question to ${relationName} could test the rumor before it spreads.`]
+    },
+    {
+      id: "church_relief_abuse",
+      kinds: ["decision", "village concern", "private counsel"],
+      opening: `One household is taking church food while hiding adequate grain. Refusing them may expose panic and shame; continuing may empty stores needed by the truly hungry.`,
+      facts: [`The hidden grain is enough for about ${rng.int(3, 8)} weeks.`, `The household has already received two distributions.`, `A sick child in the same home still needs broth.`, `Aid could be limited to the child while requiring an honest inventory.`]
+    }
+  ];
+  return archetypes;
+}
+
 function issueForPerson(state, person) {
   const rng = new SeededRng(`${state.seed}:${state.calendar.absoluteDay}:${state.calendar.slot}:${person.id}`);
   const issue = { ...rng.pick(ISSUE_TEMPLATES) };
@@ -328,6 +439,44 @@ function issueForPerson(state, person) {
   const victim = knownRelations.find((candidate) => candidate.id !== relation?.id)
     || state.residents.find((candidate) => candidate.id !== person.id && candidate.id !== relation?.id);
   const victimName = victim?.name || "an older villager";
+  state.scenarioHistory ||= [];
+  const allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
+  const availableArchetypes = allArchetypes.filter((archetype) => archetype.kinds.includes(issue.kind));
+  const recent = new Set(state.scenarioHistory.slice(-10));
+  const preferredPool = availableArchetypes.filter((archetype) => !recent.has(archetype.id));
+  const broadPool = allArchetypes.filter((archetype) => !recent.has(archetype.id));
+  const archetype = rng.pick(preferredPool.length ? preferredPool : broadPool.length ? broadPool : availableArchetypes);
+  if (archetype) {
+    state.scenarioHistory.push(archetype.id);
+    state.scenarioHistory = state.scenarioHistory.slice(-30);
+    issue.scenarioId = archetype.id;
+    if (!archetype.kinds.includes(issue.kind)) {
+      issue.kind = archetype.kinds[0];
+      issue.location = issue.kind === "confession"
+        ? "confessional"
+        : ["grief", "faith", "grave conscience"].includes(issue.kind)
+          ? "shrine"
+          : ["private counsel", "family counsel", "dispute"].includes(issue.kind)
+            ? "office"
+            : "nave";
+    }
+    const timing = rng.pick(["at dawn yesterday", "after market closed", "during the evening bell", "three nights ago", "before Sunday worship", "during the last rain"]);
+    const place = rng.pick(["beside the mill road", "behind the alehouse", "at the manor storehouse", "near the common well", "inside a crowded workshop", "at the edge of the east field"]);
+    const witness = rng.pick(["No one else heard the whole exchange.", `${victimName} saw part of it.`, `A young apprentice may have overheard.`, `Two households are already whispering about it.`]);
+    issue.opening = `${archetype.opening} The matter came to a head ${timing}, ${place}. ${witness}`;
+    issue.scenarioFacts = archetype.facts.map((text, index) => ({
+      id: index === 0
+        ? archetype.id === "trade_displacement" ? "trade" : "concrete_matter"
+        : index === 1 ? "mechanism" : index === 2 ? "stakes" : "alternative",
+      text,
+      anchors: (text.toLowerCase().match(/[a-z]{5,}/g) || []).slice(0, 5)
+    }));
+    issue.openingDisclosesHidden = issue.kind === "confession" && person.personality.candor >= 55;
+    if (issue.kind === "confession" && !issue.openingDisclosesHidden) {
+      issue.opening = `Forgive me, Father. I have done something wrong, and another person may suffer for it. I am not yet certain I can say every part aloud.`;
+    }
+    return issue;
+  }
   const landTrade = ["farmer", "shepherd", "beekeeper", "woodcutter"].includes(trade);
   const workshopTrade = ["blacksmith", "carpenter", "mason", "weaver", "dyer", "tailor", "cobbler", "tanner", "potter", "cooper", "candlemaker"].includes(trade);
   const mechanisms = landTrade
