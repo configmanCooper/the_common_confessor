@@ -55,6 +55,21 @@ test("disclosure thresholds reveal hidden concerns organically", () => {
   assert.ok(visit.history.some((line) => line.text.includes(visit.intent.hiddenConcern)));
 });
 
+test("candid opening confessions immediately create canonical secret memory", () => {
+  let found = null;
+  for (let index = 0; index < 300 && !found; index += 1) {
+    const state = createGame(`candid-opening-${index}`);
+    const visit = beginVisit(state);
+    if (visit.issue.kind === "confession" && visit.hiddenConcernDisclosed) found = { state, visit };
+  }
+  assert.ok(found, "expected a candid confession seed");
+  const person = found.state.residents.find((resident) => resident.id === found.visit.personId);
+  assert.ok(person.memories.some((memory) => (
+    memory.type === "disclosed_secret"
+    && memory.summary === found.visit.intent.hiddenConcern
+  )));
+});
+
 test("promises, contradictions, and confidentiality breaches persist", () => {
   const state = createGame("promise-confidentiality-seed");
   const subject = materializeResident(state, state.residents[0].id, true);
@@ -441,7 +456,7 @@ test("schema-v3 saves migrate strings into structured conversation state", () =>
   delete legacy.integrityHash;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 8);
+  assert.equal(migrated.schemaVersion, 9);
   assert.equal(typeof migrated.residents[0].memories[0], "object");
   assert.equal(migrated.residents[0].memories[0].privateMemory, true);
   assert.equal(typeof migrated.priest.promises[0], "object");

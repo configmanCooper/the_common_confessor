@@ -29,6 +29,7 @@ import { validateSermonResponse } from "./ai.js";
 import {
   addStructuredMemory,
   classifyPriestSpeech,
+  clarificationFacts,
   createVisitIntent,
   detectConfidentialityBreach,
   recordPriestPosition,
@@ -315,6 +316,81 @@ function issueForPerson(state, person) {
   issue.relatedPersonId = relation?.id ?? null;
   issue.relatedName = relation?.name ?? "someone in the village";
   issue.detail = person.privatePressure;
+  const tradeOccupations = new Set([
+    "farmer", "shepherd", "miller", "baker", "brewer", "innkeeper", "blacksmith",
+    "carpenter", "mason", "thatcher", "weaver", "dyer", "tailor", "cobbler",
+    "tanner", "butcher", "fishmonger", "herbalist", "potter", "cooper",
+    "candlemaker", "merchant", "peddler", "beekeeper", "woodcutter"
+  ]);
+  const trade = tradeOccupations.has(relation?.occupation)
+    ? relation.occupation
+    : rng.pick(["grain merchant", "wool trader", "carpenter", "brewer", "miller"]);
+  const victim = knownRelations.find((candidate) => candidate.id !== relation?.id)
+    || state.residents.find((candidate) => candidate.id !== person.id && candidate.id !== relation?.id);
+  const victimName = victim?.name || "an older villager";
+  const landTrade = ["farmer", "shepherd", "beekeeper", "woodcutter"].includes(trade);
+  const workshopTrade = ["blacksmith", "carpenter", "mason", "weaver", "dyer", "tailor", "cobbler", "tanner", "potter", "cooper", "candlemaker"].includes(trade);
+  const mechanisms = landTrade
+    ? [
+      `The work depends on using a disputed strip of common land that currently provides most of ${victimName}'s income.`,
+      `${relation?.firstName || "The other party"} wants exclusive grazing and gathering rights that would drive ${victimName} from the same ground.`
+    ]
+    : workshopTrade
+      ? [
+        `The proposed partnership would buy raw materials from the manor at a discount only if ${victimName}'s smaller workshop is excluded from the same supply.`,
+        `${relation?.firstName || "The other party"} plans to hire away ${victimName}'s only apprentice and take the workshop's largest customer.`
+      ]
+      : [
+        `${relation?.firstName || "The other party"} wants to take over the market stall and supply contract now used by ${victimName}, which would leave ${victimName} without customers.`,
+        `${relation?.firstName || "The other party"} plans to undercut ${victimName}'s prices until the older trade closes, then divide the village business with ${person.firstName}.`
+      ];
+  if (issue.kind === "decision" || issue.kind === "private counsel" || issue.kind === "dispute") {
+    const mechanism = rng.pick(mechanisms);
+    issue.scenarioFacts = [
+      {
+        id: "trade",
+        text: `The trade is ${trade} work offered by ${relation?.name || "a local tradesperson"}.`,
+        anchors: [trade.split(" ")[0]]
+      },
+      {
+        id: "mechanism",
+        text: mechanism,
+        anchors: ["market", "contract", "workshop", "undercut", "common land"]
+      },
+      {
+        id: "stakes",
+        text: `${person.firstName} would earn steadier food and coin, but ${victimName} could lose the livelihood that supports the household.`,
+        anchors: ["coin", "livelihood", "household"]
+      },
+      {
+        id: "alternative",
+        text: `A slower alternative is to ask for a smaller share that does not exclude ${victimName}, though ${relation?.firstName || "the offerer"} may withdraw the offer.`,
+        anchors: ["smaller", victim?.firstName || "offer"]
+      }
+    ];
+    issue.opening = `${relation?.name || "A local tradesperson"} has offered me a share in ${trade} work. ${mechanism} I would gain steadier food and coin, but ${victimName} may lose the livelihood that supports the household. I need to decide whether accepting is honest or merely profitable.`;
+  } else {
+    issue.scenarioFacts = [
+      {
+        id: "concrete_matter",
+        text: `${person.firstName}'s immediate concern involves ${relation?.name || "the household"} and ${person.privatePressure}.`,
+        anchors: [relation?.firstName || person.firstName]
+      },
+      {
+        id: "consequence",
+        text: `If nothing changes, the dispute is likely to cost food, trust, or standing within the next few days.`,
+        anchors: ["food", "trust", "standing"]
+      }
+    ];
+    if (issue.kind === "confession") {
+      issue.opening = person.personality.candor >= 55
+        ? `Forgive me, Father. I must speak plainly: ${person.privatePressure}. ${relation?.name || "Another villager"} may suffer if I keep silent, but telling the truth may cost my household dearly.`
+        : `Forgive me, Father. I have done something wrong, and ${relation?.name || "another villager"} may suffer for it. I am not yet certain I can say every part aloud.`;
+      issue.openingDisclosesHidden = person.personality.candor >= 55;
+    } else if (issue.kind === "grief" || issue.kind === "faith") {
+      issue.opening = `Father, I came because ${person.privatePressure}. I have tried prayer and ordinary counsel, but the matter has not eased.`;
+    }
+  }
   return issue;
 }
 
@@ -504,7 +580,11 @@ export function beginVisit(state, { record = true } = {}) {
       counsel: [],
       mood: "guarded",
       disclosure: 20,
-      hiddenConcernDisclosed: false,
+      hiddenConcernDisclosed: Boolean(issue.openingDisclosesHidden),
+      scenarioFacts: [],
+      revealedFactIds: [],
+      stagnationCount: 0,
+      lastVisitorReplies: [issue.opening],
       eventLicense: "ordinary"
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
@@ -547,7 +627,11 @@ export function beginVisit(state, { record = true } = {}) {
       counsel: [],
       mood: "guarded",
       disclosure: 20,
-      hiddenConcernDisclosed: false,
+      hiddenConcernDisclosed: Boolean(issue.openingDisclosesHidden),
+      scenarioFacts: [],
+      revealedFactIds: [],
+      stagnationCount: 0,
+      lastVisitorReplies: [issue.opening],
       eventLicense: "ordinary"
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
@@ -588,11 +672,25 @@ export function beginVisit(state, { record = true } = {}) {
     counsel: [],
     mood: issue.gravity >= 4 ? "troubled" : "guarded",
     disclosure: 10,
-    hiddenConcernDisclosed: false,
+    hiddenConcernDisclosed: Boolean(issue.openingDisclosesHidden),
+    scenarioFacts: issue.scenarioFacts,
+    revealedFactIds: [],
+    stagnationCount: 0,
+    lastVisitorReplies: [issue.opening],
     eventLicense: eventRoll < 0.01 ? "outrageous" : eventRoll < 0.08 ? "comic" : "ordinary"
   };
   if (issue.kind === "confession") {
     state.statistics.confessions += 1;
+  }
+  if (state.currentVisit.hiddenConcernDisclosed) {
+    addStructuredMemory(state, person, {
+      type: "disclosed_secret",
+      summary: state.currentVisit.intent.hiddenConcern,
+      emotion: "ashamed",
+      confidence: 100,
+      privateMemory: true,
+      sourceEventId: originEvent.id
+    });
   }
   if (record) {
     appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
@@ -618,9 +716,16 @@ export function recordExchange(state, playerText, response, { record = true } = 
     throw new Error("The visitor gave no response");
   }
   const resolution = resolvePriestSpeech(state, person, visit, cleanText);
+  const clarifiedFacts = clarificationFacts(visit, cleanText);
+  for (const fact of clarifiedFacts) {
+    if (!visit.revealedFactIds.includes(fact.id)) visit.revealedFactIds.push(fact.id);
+  }
   visit.turnsUsed += 1;
   visit.history.push({ speaker: "priest", text: cleanText });
   visit.history.push({ speaker: "visitor", text: reply });
+  visit.lastVisitorReplies.push(reply);
+  visit.lastVisitorReplies = visit.lastVisitorReplies.slice(-8);
+  visit.stagnationCount = Math.max(0, Number(response.stagnationCount) || 0);
   visit.counsel.push(cleanText);
   visit.mood = resolution.mood;
   visit.disclosure = resolution.disclosure;
@@ -672,7 +777,9 @@ export function recordExchange(state, playerText, response, { record = true } = 
         memory: String(response.memory || "").slice(0, 180),
         intents: resolution.intents,
         disclosure: resolution.disclosure,
-        contradictionId: resolution.contradictionId
+        contradictionId: resolution.contradictionId,
+        groundedFallback: Boolean(response.groundedFallback),
+        stagnationCount: Math.max(0, Number(response.stagnationCount) || 0)
       }
     }, response.source || "simulation");
   }
@@ -682,6 +789,39 @@ export function recordExchange(state, playerText, response, { record = true } = 
 export function fallbackConversation(state, playerText) {
   const visit = state.currentVisit;
   const person = materializeResident(state, visit.personId, true);
+  const groundedFacts = clarificationFacts(visit, playerText);
+  if (groundedFacts.length) {
+    return {
+      reply: groundedFacts.map((fact) => fact.text).join(" ").slice(0, 600),
+      mood: "resolved",
+      trustDelta: 0,
+      stressDelta: 0,
+      memory: "The visitor answered a request for concrete details.",
+      groundedFallback: true
+    };
+  }
+  const offer = String(playerText).toLowerCase().match(/\b(?:would you like|do you want|may i offer|can i offer)\b.*\b(cheese|bread|food|ale|water|coin)\b/);
+  if (offer) {
+    return {
+      reply: `Yes, Father, thank you. I would gladly accept a little ${offer[1]}.`,
+      mood: "grateful",
+      trustDelta: 0,
+      stressDelta: 0,
+      memory: `The priest offered ${offer[1]}.`,
+      groundedFallback: true
+    };
+  }
+  if (/\b(?:start|open|build|run)\s+(?:your\s+)?own\s+(?:trade|business|shop|workshop)\b/.test(String(playerText).toLowerCase())) {
+    const alternative = visit.scenarioFacts.find((fact) => fact.id === "alternative")?.text;
+    return {
+      reply: `My own trade could avoid the harm, but I would need tools, coin, and customers. ${alternative || ""}`.trim(),
+      mood: "contemplative",
+      trustDelta: 0,
+      stressDelta: 0,
+      memory: "The priest advised an independent trade.",
+      groundedFallback: true
+    };
+  }
   const intents = classifyPriestSpeech(playerText);
   let reply;
   let mood = "uncertain";

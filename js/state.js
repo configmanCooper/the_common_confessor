@@ -3,7 +3,7 @@ import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 8;
+export const STATE_SCHEMA_VERSION = 9;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -30,6 +30,25 @@ function upgradeAuthorityState(state) {
   state.authorityStages.nobleCompleted ??= false;
   state.nextExternalSequence ||= state.externalActors.length + 1;
   state.nextQueueSequence ||= state.eventQueue.length + 1;
+  return state;
+}
+
+function upgradeGroundedConversationState(state) {
+  if (state.currentVisit) {
+    state.currentVisit.scenarioFacts ||= state.currentVisit.issue?.scenarioFacts || [];
+    state.currentVisit.revealedFactIds ||= [];
+    state.currentVisit.stagnationCount ??= 0;
+    state.currentVisit.lastVisitorReplies ||= state.currentVisit.history
+      .filter((line) => line.speaker === "visitor")
+      .map((line) => line.text)
+      .slice(-6);
+  }
+  for (const command of state.commandLog || []) {
+    if (command.type === "conversation_exchange") {
+      command.payload.response.groundedFallback ??= false;
+      command.payload.response.stagnationCount ??= 0;
+    }
+  }
   return state;
 }
 
@@ -193,6 +212,7 @@ function upgradeConversationState(state) {
       command.payload.response.contradictionId ??= null;
     }
   }
+  upgradeGroundedConversationState(state);
   return state;
 }
 
@@ -385,6 +405,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 7) {
     verifyIntegrity(state);
     upgradePopulationState(state);
+    upgradeGroundedConversationState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -393,6 +414,19 @@ export function migrateState(rawState) {
     state.aiProposals = [];
     state.nextCommandSequence = 1;
     state.replayBase = { kind: "migration", sourceSchemaVersion: 7, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
+  if (detectedVersion === 8) {
+    verifyIntegrity(state);
+    upgradeGroundedConversationState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 8, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -558,7 +592,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -874,6 +908,12 @@ export function validateState(state) {
     }
     requireFinite(state.currentVisit.disclosure, "Current visit disclosure", 0, 100);
     if (typeof state.currentVisit.hiddenConcernDisclosed !== "boolean") throw new Error("Current visit disclosure state is invalid");
+    requireArray(state.currentVisit.scenarioFacts, "Current visit scenario facts");
+    requireArray(state.currentVisit.revealedFactIds, "Current visit revealed facts");
+    requireArray(state.currentVisit.lastVisitorReplies, "Current visit visitor replies");
+    if (!Number.isInteger(state.currentVisit.stagnationCount) || state.currentVisit.stagnationCount < 0) {
+      throw new Error("Current visit stagnation count is invalid");
+    }
     if (!Number.isInteger(state.currentVisit.turnsUsed) || state.currentVisit.turnsUsed < 0 || state.currentVisit.turnsUsed > 10) {
       throw new Error("Current visit turn count is invalid");
     }

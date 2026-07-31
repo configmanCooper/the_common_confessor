@@ -85,6 +85,29 @@ export function classifyPriestSpeech(text) {
   return result.length ? result : ["neutral"];
 }
 
+export function clarificationFacts(visit, text) {
+  const speech = String(text).toLowerCase();
+  const facts = visit.scenarioFacts || [];
+  if (!visit.hiddenConcernDisclosed && !facts.some((fact) => fact.id === "trade")) return [];
+  const scenarioTerms = new Set([
+    "trade", "work", "job", "business", "offer", "choice", "harm", "steal",
+    "livelihood", "detail",
+    ...facts.flatMap((fact) => fact.anchors || []).map((anchor) => String(anchor).toLowerCase())
+  ]);
+  const referencesScenario = [...scenarioTerms].some((term) => term && speech.includes(term));
+  if (/\b(?:why|how)\s+not\b/.test(speech)) return [];
+  let wantedIds = [];
+  if (/\bwhat\b.*\b(?:trade|work|job|business)\b|\bwhich trade\b/.test(speech)) {
+    wantedIds = ["trade", "mechanism"];
+  } else if ((/\bhow\b|\bwhy\b/.test(speech) && referencesScenario)
+    || /\bdo not understand\b|\bexplain (?:the|this|that)\b|\bmore detail/.test(speech)) {
+    wantedIds = ["mechanism", "stakes"];
+  } else if (/\bwho\b/.test(speech)) {
+    wantedIds = ["trade", "concrete_matter"];
+  }
+  return facts.filter((fact) => wantedIds.includes(fact.id));
+}
+
 function contradictionFor(state, intents, personId) {
   const contradictionPairs = [
     ["mercy", "judgment"],
