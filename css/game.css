@@ -145,6 +145,10 @@ summary { cursor: pointer; font-weight: 600; }
 .modal.wide { width: min(980px, calc(100vw - 2rem)); }
 .modal header { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
 .register-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(245px, 1fr)); gap: .55rem; margin-top: .8rem; }
+.request-visit-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .4rem; max-height: 42vh; overflow: auto; margin: .7rem 0; }
+.request-visit-option { display: grid; grid-template-columns: auto 1fr; gap: .5rem; align-items: start; padding: .5rem; border: 1px solid rgba(72,42,20,.3); background: rgba(255,250,231,.25); }
+.request-visit-option input { width: auto; margin-top: .18rem; }
+.request-visit-option span { display: grid; font-size: .82rem; }
 .resident-card { border: 1px solid rgba(72,42,20,.3); padding: .6rem; background: rgba(255,250,231,.25); }
 .resident-card.unknown { opacity: .72; }
 .resident-card h3 { font-size: .95rem; margin: 0; }

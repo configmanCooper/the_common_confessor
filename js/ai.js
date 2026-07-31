@@ -64,7 +64,51 @@ function directSocialRequirement(state, person, visit, playerText, mode) {
       endsConversation: true
     };
   }
-  const openInvitation = /\b(?:anything else|any other way i can help|else you wish to discuss|another matter|something else|other concern)\b/.test(speech);
+  const sharedPrayer = /\b(?:let us pray|let's pray|pray together|join me in prayer|amen\b|(?:god|lord|father in heaven)[,\s]+please)\b/.test(speech);
+  if (sharedPrayer) {
+    return {
+      type: "shared_prayer",
+      requireAll: false,
+      minimumMatches: 1,
+      requiredTerms: ["amen", "pray", "thank"],
+      responsePattern: /\b(?:amen|thank you|pray|god hear|lord hear)\b/i,
+      fallbackReply: "Amen, Father. Thank you for praying with me and for naming this burden before God. I will hold to the honest course we discussed."
+    };
+  }
+  const mentionedPerson = state.residents.find((resident) => {
+    const fullName = resident.name.toLowerCase();
+    const firstName = resident.firstName.toLowerCase();
+    return speech.includes(fullName) || (firstName.length >= 4 && new RegExp(`\\b${firstName}\\b`).test(speech));
+  });
+  const offersIntervention = /\b(?:could|can|shall|should|may|would)\s+i\s+(?:talk|speak|meet|write)\s+(?:to|with)?\s*/.test(speech);
+  if (mentionedPerson && offersIntervention) {
+    const supportingFact = (visit.scenarioFacts || []).find((fact) => (
+      String(fact.text).toLowerCase().includes(mentionedPerson.name.toLowerCase())
+    ));
+    return {
+      type: "priest_intervention",
+      requireAll: true,
+      minimumMatches: 2,
+      requiredTerms: [mentionedPerson.firstName.toLowerCase(), "speak"],
+      responsePattern: new RegExp(`\\b${mentionedPerson.firstName}\\b.*\\b(?:speak|talk|meet|ask|show|bring)\\b|\\b(?:speak|talk|meet|ask|show|bring)\\b.*\\b${mentionedPerson.firstName}\\b`, "i"),
+      fallbackReply: `Yes, Father. Speak with ${mentionedPerson.name}, but ask for the facts plainly before naming me as the source. ${supportingFact?.text || "A private meeting may resolve this without widening the dispute."}`
+    };
+  }
+  const currentMatterHelp = /\b(?:anything else|what else|any other way)\b.*\b(?:help here|help with this|do here|do about this|for this matter)\b/.test(speech);
+  if (currentMatterHelp) {
+    const alternative = (visit.scenarioFacts || []).find((fact) => fact.id === "alternative")?.text;
+    return {
+      type: "current_matter_help",
+      requireAll: false,
+      minimumMatches: 1,
+      requiredTerms: ["also", "could", "help"],
+      responsePattern: /\b(?:you could also|another way|what would help|please|speak with|ask|bring|gather)\b/i,
+      fallbackReply: alternative
+        ? `There is one more way you could help with this matter, Father: ${alternative}`
+        : "There is one more thing you could do here, Father: help me bring the right people and evidence together before the dispute spreads."
+    };
+  }
+  const openInvitation = /\b(?:anything else|else you wish to discuss|another matter|something else|other concern)\b/.test(speech);
   if (openInvitation) {
     const household = state.households.find((entry) => entry.id === person.householdId);
     const spouse = state.residents.find((entry) => entry.id === person.spouseId);
@@ -571,6 +615,12 @@ export class ParishAiClient extends EventTarget {
             ? "The priest committed church resources to the visitor. Acknowledge the exact aid directly and explain briefly what immediate need it addresses."
           : socialRequirement.type === "church_donation"
             ? "The priest asked the visitor to donate a specific resource to the church. Accept only if the household can spare it; otherwise refuse plainly."
+          : socialRequirement.type === "priest_intervention"
+            ? "The priest offered to contact a named person involved in the current problem. Answer that offer directly, naming the same person and stating what the priest should ask or avoid saying."
+          : socialRequirement.type === "current_matter_help"
+            ? "The priest asked what else can be done about the current problem. Give one concrete next action within this same matter; do not introduce a new personal topic."
+          : socialRequirement.type === "shared_prayer"
+            ? "The priest prayed with the visitor about the current burden. Join the prayer naturally, say amen or offer thanks, and do not restart or recite the scenario facts."
           : `The priest advised: ${socialRequirement.proposedAction || socialRequirement.type}. Evaluate that exact advice before discussing anything else.`
         : "Respond directly to the priest's newest words before returning to the larger concern.",
       responseMode: mode,
@@ -601,7 +651,13 @@ export class ParishAiClient extends EventTarget {
       result.groundedFallback = true;
     }
     if (socialRequirement) {
-      if (["church_aid", "church_donation"].includes(socialRequirement.type)) {
+      if ([
+        "church_aid",
+        "church_donation",
+        "priest_intervention",
+        "current_matter_help",
+        "shared_prayer"
+      ].includes(socialRequirement.type)) {
         result.reply = socialRequirement.fallbackReply;
         result.groundedFallback = true;
       }

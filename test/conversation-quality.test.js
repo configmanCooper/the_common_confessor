@@ -243,6 +243,51 @@ test("anything-else questions introduce a new concern or close the meeting", asy
   assert.deepEqual(outcomes, new Set(["close", "new_topic"]));
 });
 
+test("anything else about the current matter does not invent a new topic", async () => {
+  const { state, visit, person } = groundedDecisionState("current-matter-help");
+  const oswyn = state.residents.find((resident) => resident.id !== person.id);
+  oswyn.firstName = "Oswyn";
+  oswyn.name = "Oswyn Page";
+  visit.scenarioFacts = [
+    {
+      id: "mechanism",
+      text: "Oswyn Page demanded more tax than the written assessment.",
+      anchors: ["oswyn", "tax", "assessment"]
+    },
+    {
+      id: "alternative",
+      text: "Collect copies of receipts and appeal the excess together.",
+      anchors: ["receipts", "appeal", "excess"]
+    }
+  ];
+  const client = repeatingClient();
+  const response = await client.conversation(
+    state,
+    person,
+    "Is there anything else I can do to help here? Could I talk with Oswyn?"
+  );
+  assert.match(response.reply, /Oswyn/i);
+  assert.match(response.reply, /speak|talk|ask|meet/i);
+  assert.doesNotMatch(response.reply, /neglecting prayer|one other thing/i);
+});
+
+test("shared prayer is answered as prayer instead of mistaken for a factual question", async () => {
+  const { state, visit, person } = groundedDecisionState("shared-prayer");
+  visit.scenarioFacts = [{
+    id: "stakes",
+    text: "Households that cannot pay may lose tools before winter.",
+    anchors: ["households", "tools", "winter", "tax"]
+  }];
+  const client = repeatingClient();
+  const response = await client.conversation(
+    state,
+    person,
+    "That is understandable. Let us pray together. God, please help Radel with this tax situation. Amen. See how easy? Continue to do that."
+  );
+  assert.match(response.reply, /Amen|thank you|praying/i);
+  assert.doesNotMatch(response.reply, /lose tools before winter/i);
+});
+
 test("farewells close naturally instead of reopening or apologizing for repetition", async () => {
   const { state, person } = groundedDecisionState("farewell-quality");
   const client = repeatingClient();

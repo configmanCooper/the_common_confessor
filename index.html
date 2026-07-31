@@ -39,6 +39,7 @@
       <button id="save-game">Save</button>
       <button id="export-game">Export</button>
       <button id="import-game">Import</button>
+      <button id="open-request-visits">Request Visits</button>
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
     </div>
@@ -118,6 +119,19 @@
     <header><div><p class="eyebrow">All named souls</p><h2>Parish Register</h2></div><button data-close="register-dialog">Close</button></header>
     <input id="register-search" placeholder="Search 200+ names and occupations...">
     <div id="register-list" class="register-list"></div>
+  </dialog>
+
+  <dialog id="request-visits-dialog" class="parchment modal wide">
+    <header><div><p class="eyebrow">Additional counsel</p><h2>Request up to four visitors</h2></div><button data-close="request-visits-dialog">Close</button></header>
+    <p class="small">Available from the second day onward. These visits occur after the four ordinary appointments, and a villager may decline.</p>
+    <input id="request-visit-search" placeholder="Search villagers by name or occupation...">
+    <p id="request-visit-count" class="small">0 / 4 selected</p>
+    <div id="request-visit-list" class="request-visit-list"></div>
+    <label>Reason for the request
+      <textarea id="request-visit-reason" maxlength="180" rows="2" placeholder="Optional: tax receipts, a family dispute, church work..."></textarea>
+    </label>
+    <p id="request-visit-results" class="small"></p>
+    <button id="send-visit-requests" class="primary">Send requests</button>
   </dialog>
 
   <dialog id="chronicle-dialog" class="parchment modal wide">

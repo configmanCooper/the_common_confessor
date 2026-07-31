@@ -597,6 +597,81 @@ function scheduleExternalVisit(state, role, reason, delayDays, sourcePersonId = 
   return event;
 }
 
+function acceptedVisitRequests(state, day = state.calendar.absoluteDay) {
+  return state.visitRequests.filter((request) => (
+    request.requestedDay === day && ["accepted", "completed"].includes(request.status)
+  ));
+}
+
+export function dailyAppointmentLimit(state) {
+  return 4 + acceptedVisitRequests(state).length;
+}
+
+export function requestVisits(state, personIds, reason = "", { record = true } = {}) {
+  if (state.calendar.absoluteDay < 1) throw new Error("Requested visits become available starting on the second day");
+  if (state.calendar.dayIndex === 6) throw new Error("Individual requested visits cannot be scheduled during Sunday worship");
+  const existing = state.visitRequests.filter((request) => request.requestedDay === state.calendar.absoluteDay);
+  const uniqueIds = [...new Set(personIds)].filter((personId) => !existing.some((request) => request.personId === personId));
+  if (!uniqueIds.length || existing.length + uniqueIds.length > 4) {
+    throw new Error("You may request at most four different people per day");
+  }
+  const cleanReason = String(reason || "").trim().slice(0, 180);
+  const results = uniqueIds.map((personId) => {
+    const person = state.residents.find((resident) => resident.id === personId);
+    if (!person?.active || !person.alive) throw new Error("Only living villagers may be requested");
+    const rng = new SeededRng(`${state.seed}:requested-visit:${state.calendar.absoluteDay}:${person.id}`);
+    const chance = clamp(
+      35
+      + person.trustPriest * 0.3
+      + person.attendanceChance * 0.2
+      - person.stress * 0.12
+      - (person.illness ? 18 : 0)
+      - (person.lastVisitDay === state.calendar.absoluteDay ? 25 : 0),
+      10,
+      92
+    );
+    const status = rng.next() * 100 < chance ? "accepted" : "declined";
+    state.visitRequests.push({
+      id: `request-${String(state.nextVisitRequestSequence++).padStart(5, "0")}`,
+      personId,
+      requestedDay: state.calendar.absoluteDay,
+      status,
+      reason: cleanReason
+    });
+    return { personId, status };
+  });
+  if (record) {
+    appendCommand(state, "request_visits", {
+      personIds: uniqueIds,
+      reason: cleanReason,
+      results
+    });
+  }
+  return results;
+}
+
+function scheduleResidentFollowup(state, personId, reason, sourceEventId) {
+  const person = state.residents.find((resident) => resident.id === personId);
+  if (!person?.active || !person.alive) return null;
+  if (state.eventQueue.some((event) => (
+    event.type === "resident_followup" && event.sourcePersonId === personId
+  ))) return null;
+  const event = {
+    id: `queue-${String(state.nextQueueSequence++).padStart(6, "0")}`,
+    type: "resident_followup",
+    role: null,
+    reason: String(reason).slice(0, 220),
+    dueDay: state.calendar.absoluteDay + 1,
+    sourcePersonId: personId,
+    sourceEventId,
+    actorId: personId,
+    targetId: "priest",
+    payload: {}
+  };
+  state.eventQueue.push(event);
+  return event;
+}
+
 function escalateAuthority(state, actionType, actor, sourceEventId) {
   const rng = new SeededRng(`${state.seed}:authority:${state.calendar.absoluteDay}:${actionType}:${actor.id}`);
   const nextChurchRole = () => (
@@ -723,13 +798,57 @@ export function beginVisit(state, { record = true } = {}) {
   if (state.currentVisit) {
     return state.currentVisit;
   }
+  if (state.calendar.slot >= 4) {
+    const requested = acceptedVisitRequests(state)
+      .sort((left, right) => left.id.localeCompare(right.id))[state.calendar.slot - 4];
+    if (!requested || requested.status !== "accepted") throw new Error("No requested visitor remains for this appointment");
+    const person = materializeResident(state, requested.personId, true);
+    requested.status = "completed";
+    person.visitCount += 1;
+    person.lastVisitDay = state.calendar.absoluteDay;
+    const issue = issueForPerson(state, person);
+    issue.requestedByPriest = true;
+    issue.requestReason = requested.reason;
+    issue.opening = requested.reason
+      ? `Father, your message asked me to come because ${requested.reason}. ${issue.opening}`
+      : `Father, your message asked me to come. I was not sure why you wished to see me, though there is a matter already weighing on me. ${issue.opening}`;
+    const originEvent = appendEvent(state, {
+      type: "requested_visit_started",
+      parentId: state.events.at(-1)?.id || null,
+      actorId: person.id,
+      targetId: "priest",
+      facts: { requestId: requested.id, reason: requested.reason }
+    });
+    state.currentVisit = {
+      visitId: `visit-${state.calendar.absoluteDay}-${state.calendar.slot}-${person.id}`,
+      personId: person.id,
+      issue,
+      intent: createVisitIntent(state, person, issue),
+      location: issue.location,
+      turnsUsed: 0,
+      maxTurns: 10,
+      originEventId: originEvent.id,
+      history: [{ speaker: "visitor", text: issue.opening }],
+      counsel: [],
+      mood: issue.gravity >= 4 ? "troubled" : "guarded",
+      disclosure: 10,
+      hiddenConcernDisclosed: Boolean(issue.openingDisclosesHidden),
+      scenarioFacts: issue.scenarioFacts,
+      revealedFactIds: [],
+      stagnationCount: 0,
+      lastVisitorReplies: [issue.opening],
+      eventLicense: "ordinary"
+    };
+    if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
+    return state.currentVisit;
+  }
   state.eventQueue = state.eventQueue.filter((event) => {
-    if (event.type !== "sermon_followup" || event.dueDay > state.calendar.absoluteDay) return true;
+    if (!["sermon_followup", "resident_followup"].includes(event.type) || event.dueDay > state.calendar.absoluteDay) return true;
     const actor = state.residents.find((person) => person.id === event.sourcePersonId);
     return Boolean(actor?.active && actor.alive);
   });
   const followupIndex = state.eventQueue.findIndex((event) => (
-    event.type === "sermon_followup" && event.dueDay <= state.calendar.absoluteDay
+    ["sermon_followup", "resident_followup"].includes(event.type) && event.dueDay <= state.calendar.absoluteDay
   ));
   if (followupIndex >= 0) {
     const queued = state.eventQueue.splice(followupIndex, 1)[0];
@@ -737,10 +856,12 @@ export function beginVisit(state, { record = true } = {}) {
     person.visitCount += 1;
     person.lastVisitDay = state.calendar.absoluteDay;
     const issue = {
-      kind: "sermon follow-up",
+      kind: queued.type === "sermon_followup" ? "sermon follow-up" : "consequence follow-up",
       location: "nave",
       gravity: 3,
-      opening: `Father, I have come because of what happened after Sunday's sermon.`,
+      opening: queued.type === "sermon_followup"
+        ? `Father, I have come because of what happened after Sunday's sermon.`
+        : `Father, I have come because of what happened in the village: ${queued.reason}`,
       detail: queued.reason,
       relatedPersonId: null,
       relatedName: null
@@ -2111,16 +2232,40 @@ export function finishVisit(state, plan, { record = true } = {}) {
     };
   }
   let parentEventId = visit.originEventId;
+  let followupCandidate = null;
   for (const step of validated.steps) {
     const result = applyAction(state, { ...step, parentEventId });
     if (result) {
       parentEventId = result.eventId;
+      if (!followupCandidate
+        && result.target
+        && result.target.id !== "priest"
+        && !["visit", "keep_silence", "pray_with"].includes(step.actionType)) {
+        followupCandidate = {
+          personId: result.target.id,
+          reason: result.description,
+          sourceEventId: result.eventId,
+          actionType: step.actionType
+        };
+      }
       if (step.expectedCreatedResidentId && step.expectedCreatedResidentId !== result.createdResidentId) {
         throw new Error("Replay created resident mismatch");
       }
       if (result.createdResidentId) step.createdResidentId = result.createdResidentId;
       delete step.expectedCreatedResidentId;
       state.statistics.cascades += 1;
+    }
+  }
+  if (followupCandidate) {
+    const rng = new SeededRng(`${state.seed}:resident-followup:${followupCandidate.sourceEventId}`);
+    const urgent = ["accuse", "threaten", "assault", "evict", "report_crime", "reveal_secret"].includes(followupCandidate.actionType);
+    if (rng.next() < (urgent ? 0.8 : 0.42)) {
+      scheduleResidentFollowup(
+        state,
+        followupCandidate.personId,
+        followupCandidate.reason,
+        followupCandidate.sourceEventId
+      );
     }
   }
   if (person.id.startsWith("external-")) {
@@ -2145,14 +2290,14 @@ export function finishVisit(state, plan, { record = true } = {}) {
   state.currentVisit = null;
   state.conversationHistory = [];
   state.calendar.slot += 1;
-  if (state.calendar.slot >= 4) {
+  if (state.calendar.slot >= dailyAppointmentLimit(state)) {
     state.calendar.slot = 0;
     state.calendar.absoluteDay += 1;
     state.calendar.dayIndex = state.calendar.absoluteDay % 7;
     state.calendar.week = Math.floor(state.calendar.absoluteDay / 7) + 1;
     addChronicle(state, `${WEEK_DAYS[state.calendar.dayIndex]} begins`, state.calendar.dayIndex === 6
       ? "The bells call the whole village toward Sunday worship."
-      : "Four new hours of counsel await within the church.", "neutral");
+      : "Four ordinary hours of counsel await, along with any requested or consequence-driven visits.", "neutral");
     resolvePopulationDay(state);
   }
   return state;
@@ -2319,7 +2464,9 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
 }
 
 export function calendarLabel(state) {
-  const session = state.calendar.dayIndex === 6 ? "Sunday service" : `Hour ${state.calendar.slot + 1} of 4`;
+  const session = state.calendar.dayIndex === 6
+    ? "Sunday service"
+    : `Hour ${state.calendar.slot + 1} of ${dailyAppointmentLimit(state)}`;
   return `${WEEK_DAYS[state.calendar.dayIndex]}, Week ${state.calendar.week} — ${session}`;
 }
 
@@ -2346,6 +2493,11 @@ export function replayGame(seed, commands, replayBase = null) {
         visit.issue.opening = command.payload.opening;
         visit.history[0] = { speaker: "visitor", text: command.payload.opening };
         visit.lastVisitorReplies = [command.payload.opening];
+      }
+    } else if (command.type === "request_visits") {
+      const results = requestVisits(state, command.payload.personIds, command.payload.reason, { record: false });
+      if (JSON.stringify(results) !== JSON.stringify(command.payload.results)) {
+        throw new Error(`Replay requested-visit mismatch at command ${command.id}`);
       }
     } else if (command.type === "conversation_exchange") {
       const person = [...state.residents, ...state.externalActors]

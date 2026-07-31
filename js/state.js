@@ -4,8 +4,8 @@ import { upgradeChurchResources } from "./church.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 11;
-const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon"]);
+export const STATE_SCHEMA_VERSION = 12;
+const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon", "request_visits"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
 
@@ -421,6 +421,8 @@ export function migrateState(rawState) {
   if (detectedVersion === 8) {
     verifyIntegrity(state);
     upgradeGroundedConversationState(state);
+    state.visitRequests ||= [];
+    state.nextVisitRequestSequence ||= 1;
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -434,6 +436,8 @@ export function migrateState(rawState) {
   if (detectedVersion === 9) {
     verifyIntegrity(state);
     upgradeGroundedConversationState(state);
+    state.visitRequests ||= [];
+    state.nextVisitRequestSequence ||= 1;
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -447,6 +451,8 @@ export function migrateState(rawState) {
   if (detectedVersion === 10) {
     verifyIntegrity(state);
     upgradeChurchResources(state);
+    state.visitRequests ||= [];
+    state.nextVisitRequestSequence ||= 1;
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -455,6 +461,20 @@ export function migrateState(rawState) {
     state.aiProposals = [];
     state.nextCommandSequence = 1;
     state.replayBase = { kind: "migration", sourceSchemaVersion: 10, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
+  if (detectedVersion === 11) {
+    verifyIntegrity(state);
+    state.visitRequests ||= [];
+    state.nextVisitRequestSequence ||= 1;
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 11, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -484,7 +504,7 @@ export function validateState(state) {
     ["absoluteDay", 0, Infinity],
     ["week", 1, Infinity],
     ["dayIndex", 0, 6],
-    ["slot", 0, 3]
+    ["slot", 0, 7]
   ]) {
     if (!Number.isInteger(state.calendar[field]) || state.calendar[field] < minimum || state.calendar[field] > maximum) {
       throw new Error(`Calendar ${field} is invalid`);
@@ -550,6 +570,29 @@ export function validateState(state) {
   requireArray(state.parishFactions, "Parish factions");
   requireArray(state.sermonReactions, "Sermon reactions");
   requireArray(state.scenarioHistory, "Scenario history");
+  requireArray(state.visitRequests, "Requested visits");
+  if (!Number.isInteger(state.nextVisitRequestSequence) || state.nextVisitRequestSequence < 1) {
+    throw new Error("Requested visit sequence is invalid");
+  }
+  const visitRequestIds = new Set();
+  for (const request of state.visitRequests) {
+    requireObject(request, "Requested visit");
+    if (typeof request.id !== "string" || visitRequestIds.has(request.id)
+      || !state.residents.some((resident) => resident.id === request.personId)
+      || !Number.isInteger(request.requestedDay) || request.requestedDay < 1
+      || !["accepted", "declined", "completed", "missed"].includes(request.status)
+      || typeof request.reason !== "string") {
+      throw new Error("Requested visit is invalid");
+    }
+    visitRequestIds.add(request.id);
+  }
+  const acceptedRequestsToday = state.visitRequests.filter((request) => (
+    request.requestedDay === state.calendar.absoluteDay
+    && ["accepted", "completed"].includes(request.status)
+  )).length;
+  if (state.calendar.dayIndex !== 6 && state.calendar.slot >= 4 + acceptedRequestsToday) {
+    throw new Error("Calendar slot exceeds the day's scheduled appointments");
+  }
   requireObject(state.churchResources, "Church resources");
   const churchResourceKeys = ["coin", "grain", "bread", "beans", "onions", "saltedFish", "cheese", "firewood", "medicine"];
   if (Object.keys(state.churchResources).sort().join(",") !== [...churchResourceKeys].sort().join(",")) {
@@ -631,7 +674,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -994,6 +1037,21 @@ export function validateState(state) {
       if (!personIds.has(command.payload.personId)) throw new Error("Begin-visit command references a missing person");
       activeVisitPersonId = command.payload.personId;
       activeVisitTurns = 0;
+    } else if (command.type === "request_visits") {
+      requireArray(command.payload.personIds, "Requested visit command people");
+      requireArray(command.payload.results, "Requested visit command results");
+      if (command.payload.personIds.length < 1 || command.payload.personIds.length > 4
+        || command.payload.personIds.some((personId) => typeof personId !== "string" || !personIds.has(personId))
+        || typeof command.payload.reason !== "string"
+        || command.payload.results.length !== command.payload.personIds.length) {
+        throw new Error("Requested visit command is invalid");
+      }
+      for (const result of command.payload.results) {
+        if (!command.payload.personIds.includes(result.personId)
+          || !["accepted", "declined"].includes(result.status)) {
+          throw new Error("Requested visit command result is invalid");
+        }
+      }
     } else if (command.type === "conversation_exchange") {
       if (!activeVisitPersonId) throw new Error("Conversation command has no active visit");
       if (activeVisitTurns >= 10) throw new Error("Command log exceeds the ten-exchange visit limit");

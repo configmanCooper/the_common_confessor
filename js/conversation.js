@@ -105,7 +105,9 @@ export function clarificationFacts(visit, text) {
     wantedIds = ["trade", "mechanism"];
   } else if (/\b(?:what (?:was|is) your role|what did you do|were you involved|did you (?:take|steal|move|hide|divert)|who took|tell me what happened|what happened)\b/.test(speech)) {
     wantedIds = ["concrete_matter", "mechanism"];
-  } else if ((/\bhow\b|\bwhy\b/.test(speech) && referencesScenario)
+  } else if ((/(?:^|[.!?]\s*)(?:how|why)\b/.test(speech)
+      && !/\bhow (?:easy|simple|hard was that)\b/.test(speech)
+      && referencesScenario)
     || /\bdo not understand\b|\bexplain (?:the|this|that)\b|\bmore detail/.test(speech)) {
     wantedIds = ["mechanism", "stakes"];
   } else if (/\bwho\b/.test(speech)) {

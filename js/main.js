@@ -16,6 +16,7 @@ import {
   knownResidents,
   materializeResident,
   populationCount,
+  requestVisits,
   recordExchange,
   sundayAttendance,
   sundayAttendanceReport
@@ -42,6 +43,7 @@ let stateGeneration = 0;
 let initializationComplete = false;
 let startActionInFlight = false;
 let toastTimer = null;
+const requestedVisitSelection = new Set();
 
 function setHidden(element, hidden) {
   element.hidden = hidden;
@@ -123,6 +125,7 @@ function setGameplayMutationDisabled(disabled) {
   elements["deliver-sermon"].disabled = disabled;
   elements["sermon-theme"].disabled = disabled;
   elements["sermon-text"].disabled = disabled;
+  elements["open-request-visits"].disabled = disabled;
 }
 
 function restoreGameplayControls() {
@@ -280,6 +283,11 @@ function renderCommon() {
   elements["calendar-label"].textContent = calendarLabel(state);
   elements["town-name"].textContent = state.town.name;
   elements["town-description"].textContent = state.town.description;
+  const requestsToday = state.visitRequests.filter((request) => request.requestedDay === state.calendar.absoluteDay);
+  elements["open-request-visits"].disabled = state.calendar.absoluteDay < 1
+    || state.calendar.dayIndex === 6
+    || requestsToday.length >= 4
+    || startActionInFlight;
   updateMetrics();
 }
 
@@ -553,6 +561,48 @@ function renderRegister(filter = "") {
   }));
 }
 
+function renderVisitRequests(filter = "") {
+  const query = filter.trim().toLowerCase();
+  const existing = state.visitRequests.filter((request) => request.requestedDay === state.calendar.absoluteDay);
+  const existingIds = new Set(existing.map((request) => request.personId));
+  const residents = state.residents
+    .filter((person) => person.active && person.alive && !existingIds.has(person.id))
+    .filter((person) => !query || person.name.toLowerCase().includes(query) || person.occupation.toLowerCase().includes(query))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  elements["request-visit-list"].replaceChildren(...residents.map((person) => {
+    const label = document.createElement("label");
+    label.className = "request-visit-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = requestedVisitSelection.has(person.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked && requestedVisitSelection.size >= Math.max(0, 4 - existing.length)) {
+        checkbox.checked = false;
+        showToast("Only four requested visitors may be named each day.");
+        return;
+      }
+      if (checkbox.checked) requestedVisitSelection.add(person.id);
+      else requestedVisitSelection.delete(person.id);
+      elements["request-visit-count"].textContent = `${existing.length + requestedVisitSelection.size} / 4 selected`;
+    });
+    const text = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = person.name;
+    const facts = document.createElement("small");
+    facts.textContent = `${person.age}, ${person.occupation}`;
+    text.append(name, facts);
+    label.append(checkbox, text);
+    return label;
+  }));
+  elements["request-visit-count"].textContent = `${existing.length + requestedVisitSelection.size} / 4 selected`;
+  elements["request-visit-results"].textContent = existing.length
+    ? existing.map((request) => {
+      const person = state.residents.find((resident) => resident.id === request.personId);
+      return `${person?.name || request.personId}: ${request.status}`;
+    }).join(" · ")
+    : "";
+}
+
 function renderChronicle() {
   elements["chronicle-list"].replaceChildren(...state.chronicle.map((entry) => {
     const article = document.createElement("article");
@@ -673,6 +723,28 @@ elements["sermon-text"].addEventListener("input", () => {
 elements["open-register"].addEventListener("click", () => {
   renderRegister();
   elements["register-dialog"].showModal();
+});
+elements["open-request-visits"].addEventListener("click", () => {
+  requestedVisitSelection.clear();
+  elements["request-visit-search"].value = "";
+  elements["request-visit-reason"].value = "";
+  renderVisitRequests();
+  elements["request-visits-dialog"].showModal();
+});
+elements["request-visit-search"].addEventListener("input", (event) => renderVisitRequests(event.target.value));
+elements["send-visit-requests"].addEventListener("click", () => {
+  try {
+    const personIds = [...requestedVisitSelection];
+    const results = requestVisits(state, personIds, elements["request-visit-reason"].value);
+    requestedVisitSelection.clear();
+    saveGame(true, true);
+    renderCommon();
+    renderVisitRequests(elements["request-visit-search"].value);
+    const accepted = results.filter((result) => result.status === "accepted").length;
+    showToast(`${accepted} of ${results.length} requested villagers agreed to come.`);
+  } catch (error) {
+    showToast(error.message);
+  }
 });
 elements["open-chronicle"].addEventListener("click", () => {
   renderChronicle();

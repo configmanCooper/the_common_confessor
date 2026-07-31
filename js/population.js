@@ -113,6 +113,8 @@ export function upgradePopulationState(state) {
   state.nextKnowledgeSequence ||= state.knowledge.length + 1;
   state.nextRumorSequence ||= state.rumors.length + 1;
   state.lastInvitedMigrationDay ??= -999;
+  state.visitRequests ||= [];
+  state.nextVisitRequestSequence ||= state.visitRequests.length + 1;
   state.material ||= {
     season: "Spring",
     weather: "mild",
