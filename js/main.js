@@ -131,9 +131,10 @@ function setGameplayMutationDisabled(disabled) {
 function restoreGameplayControls() {
   if (state?.currentVisit) {
     const hourSpent = state.currentVisit.turnsUsed >= state.currentVisit.maxTurns;
+    const endedEarly = Boolean(state.currentVisit.reactionState?.endedEarly);
     const blocked = startActionInFlight || conversationInFlight || departureInFlight;
-    elements["speak-button"].disabled = blocked || hourSpent;
-    elements["counsel-input"].disabled = blocked || hourSpent;
+    elements["speak-button"].disabled = blocked || hourSpent || endedEarly;
+    elements["counsel-input"].disabled = blocked || hourSpent || endedEarly;
     elements["next-hour"].disabled = blocked;
   } else if (state?.calendar.dayIndex === 6) {
     const blocked = startActionInFlight || sermonInFlight;
@@ -304,12 +305,17 @@ function renderVisit() {
     : `${visit.issue.kind}: ${visit.intent.desiredOutcome} sought`;
   elements["visitor-occupation"].textContent = person.occupation;
   elements["visitor-age"].textContent = `age ${person.age}`;
-  elements["visitor-mood"].textContent = visit.mood;
+  elements["visitor-mood"].textContent = visit.reactionState?.lastReaction !== "continue"
+    ? visit.reactionState.lastReaction.replaceAll("_", " ")
+    : visit.mood;
   elements["visitor-backstory"].textContent = visit.hiddenConcernDisclosed ? person.backstory : person.publicBackstory;
   elements["turn-counter"].textContent = `${visit.turnsUsed} / ${visit.maxTurns} things said`;
   elements["hour-state"].textContent = visit.turnsUsed >= visit.maxTurns ? "The hour is spent." : "The hour continues.";
-  elements["speak-button"].disabled = visit.turnsUsed >= visit.maxTurns;
-  elements["counsel-input"].disabled = visit.turnsUsed >= visit.maxTurns;
+  if (visit.reactionState?.endedEarly) {
+    elements["hour-state"].textContent = `${person.firstName} has ended the meeting.`;
+  }
+  elements["speak-button"].disabled = visit.turnsUsed >= visit.maxTurns || visit.reactionState?.endedEarly;
+  elements["counsel-input"].disabled = visit.turnsUsed >= visit.maxTurns || visit.reactionState?.endedEarly;
   elements["next-hour"].textContent = visit.turnsUsed >= visit.maxTurns ? "Continue to next hour" : "End hour";
 }
 
@@ -472,7 +478,12 @@ async function submitCounsel(event) {
     .filter((line) => line.speaker === "visitor")
     .forEach((line) => appendDialogue("visitor", line.text));
   renderVisit();
-  if (response.endsConversation) {
+  if (!state.priest.alive) {
+    elements["ending-text"].textContent = `${person.name}'s reaction ended Father Benedict's life. The village chronicle remains as the record of his counsel.`;
+    elements["ending-dialog"].showModal();
+    return;
+  }
+  if (response.endsConversation || state.currentVisit.reactionState?.endedEarly) {
     elements["hour-state"].textContent = `${person.firstName} takes leave of the church.`;
     elements["counsel-input"].disabled = true;
     elements["speak-button"].disabled = true;

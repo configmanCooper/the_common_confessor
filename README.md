@@ -12,6 +12,10 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - 200 named starting villagers with households, relationships, knowledge, rumors, health, work, marriage, children, migration, and material conditions.
 - Conversation-driven AI may propose real actions and life changes, but deterministic rules validate every result.
 - Persistent issue threads track pressure, awareness, danger, deadlines, memories, rumors, and recurring participants.
+- Every reply receives the complete active appointment plus cumulative trust, fear, anger, sadness, confusion, offense, patience, danger, boundaries, and willingness state.
+- Visitors can challenge, set boundaries, cry, withdraw, leave early, call for help, threaten, or—under exceptionally strict conditions—attack.
+- Scenario selection is grounded in occupation, age, status, household, relationships, travel, access, and knowledge channels.
+- Compositional actions support bounded combinations of work, property, resources, family, law, migration, violence, faith, building work, and improvised social acts.
 - Church food, coin, medicine, and fuel stores can be given or replenished through donations.
 - Rare stewards, magistrates, lords, bishops, sheriffs, royal officers, papal legates, kings, and popes arise through difficult causal escalation.
 - Exported saves include action normalization, accepted-prefix, rejection-gate, and fallback diagnostics.
@@ -26,6 +30,7 @@ Open the local URL printed in the terminal. `npm run play` starts this game and,
 npm test
 npm run test:browser
 npm run balance:social-12w
+npm run balance:reaction-year
 ```
 
 Final balancing can run a one-year deterministic simulation with:

@@ -28,10 +28,10 @@ test("generated openings speak in the visitor's voice instead of narrating the v
   }
   const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
   assert.match(grain.opening, /I diverted 8 sacks of grain/i);
-  assert.match(grain.opening, /My household owes 14 silver pennies to Edwin Price/i);
+  assert.match(grain.opening, /My household depends upon the outcome/i);
 });
 
-test("debt variants identify a concrete creditor", () => {
+test("scenario variants add a related practical stake rather than an unrelated debt", () => {
   const scenarios = buildGeneratedScenarioArchetypes({
     person: "Radel Roseham",
     relation: "Odowyn Oakshaw",
@@ -44,7 +44,8 @@ test("debt variants identify a concrete creditor", () => {
     deadlineDays: 10
   });
   const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
-  assert.match(grain.facts[2], /Radel Roseham's household owes 14 silver pennies to Edwin Price/i);
+  assert.match(grain.facts[2], /Radel Roseham's household has a direct practical stake/i);
+  assert.doesNotMatch(grain.facts[2], /owes 14 silver pennies/i);
 });
 
 test("AI-written openings persist through canonical replay", () => {

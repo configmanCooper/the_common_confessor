@@ -41,20 +41,114 @@ const FAMILIES = [
   ["sanctuary_fugitive", ["faith", "decision"], "A fugitive has claimed sanctuary in the church after injuring a watchman.", "The watch demands surrender, while the fugitive claims self-defense.", "Hear witnesses under sanctuary before negotiating a lawful handover."]
 ];
 
+const ACCESS = Object.freeze({
+  manor: ["reeve", "bailiff", "clerk", "scribe", "servant", "stablehand", "miller", "farmer", "merchant", "laborer"],
+  records: ["reeve", "bailiff", "clerk", "scribe", "merchant", "teacher"],
+  market: ["merchant", "peddler", "baker", "brewer", "butcher", "fishmonger", "weaver", "dyer", "tailor", "cobbler", "tanner", "potter", "cooper", "candlemaker", "farmer", "miller"],
+  land: ["farmer", "shepherd", "goatherd", "beekeeper", "woodcutter", "forester", "hunter", "miller", "ferryman"],
+  workshop: ["blacksmith", "carpenter", "mason", "thatcher", "weaver", "dyer", "tailor", "cobbler", "tanner", "potter", "cooper", "candlemaker", "miller", "baker", "brewer"],
+  health: ["healer", "herbalist", "midwife", "washerwoman", "servant", "sexton", "sacristan", "gravedigger"],
+  church: ["sexton", "sacristan", "gravedigger", "clerk", "scribe", "teacher", "servant"],
+  watch: ["watchman", "soldier", "reeve", "bailiff", "hunter", "forester"],
+  travel: ["peddler", "merchant", "ferryman", "soldier", "hunter", "forester", "servant"],
+  household: ["washerwoman", "servant", "midwife", "healer", "teacher", "unemployed"]
+});
+
+const FAMILY_ACCESS = Object.freeze({
+  embezzled_grain: { groups: ["manor"], public: false },
+  false_accusation: { groups: ["market", "workshop", "watch"], public: true },
+  coerced_marriage: { groups: ["household", "records"], public: true, minimumAge: 16 },
+  forged_inheritance: { groups: ["records", "manor"], public: false, minimumAge: 18 },
+  poaching_for_hunger: { groups: ["land", "watch"], public: true },
+  withheld_wages: { groups: ["workshop", "market"], public: false, minimumAge: 14 },
+  dangerous_apprentice: { groups: ["workshop", "household"], public: true },
+  hidden_contagion: { groups: ["health", "market", "household"], public: true },
+  adulterated_ale: { groups: ["market", "health"], public: true },
+  false_weights: { groups: ["market"], public: true },
+  boundary_stones: { groups: ["land", "records"], public: true },
+  blocked_watercourse: { groups: ["land", "workshop"], public: true },
+  smuggled_goods: { groups: ["travel", "market", "watch"], public: false },
+  hidden_fire: { groups: ["workshop", "watch"], public: true },
+  household_violence: { groups: ["household", "health", "watch"], public: true },
+  secret_pregnancy: { groups: ["health", "household"], public: false, minimumAge: 16 },
+  abandoned_elder: { groups: ["household", "health", "church"], public: true },
+  stolen_relic: { groups: ["church", "market", "travel"], public: false },
+  grave_robbery: { groups: ["church", "watch", "health"], public: false },
+  blackmail_letter: { groups: ["records", "manor", "market"], public: false, minimumAge: 18 },
+  bribed_watch: { groups: ["watch", "market"], public: true },
+  corrupt_tax: { groups: ["manor", "records", "market", "land"], public: true },
+  hidden_deserter: { groups: ["watch", "travel", "household"], public: false },
+  forbidden_courtship: { groups: ["household", "church"], public: true, minimumAge: 15 },
+  exploited_children: { groups: ["workshop", "household", "health"], public: true },
+  market_monopoly: { groups: ["market", "records"], public: true, minimumAge: 18 },
+  price_gouging: { groups: ["market", "manor"], public: true },
+  false_charity: { groups: ["church", "health", "household"], public: false },
+  panic_rumor: { groups: ["travel", "market", "watch"], public: true },
+  witchcraft_accusation: { groups: ["health", "church", "household"], public: true },
+  missing_person: { groups: ["travel", "watch", "household"], public: true },
+  unsafe_bridge: { groups: ["travel", "land", "watch"], public: true },
+  contaminated_well: { groups: ["health", "land", "workshop", "household"], public: true },
+  midwife_error: { groups: ["health"], public: false, minimumAge: 16 },
+  healer_secret: { groups: ["health", "market"], public: false, minimumAge: 16 },
+  debt_imprisonment: { groups: ["records", "market", "manor"], public: true, minimumAge: 18 },
+  orphan_guardianship: { groups: ["household", "records", "church"], public: true, minimumAge: 18 },
+  feast_store_theft: { groups: ["church", "market"], public: false },
+  illegal_enclosure: { groups: ["land", "records", "manor"], public: true },
+  sanctuary_fugitive: { groups: ["church", "watch", "travel"], public: true }
+});
+
 const VARIANTS = [
   {
     opening: "The poor harvest and the hunger around us make the choice harder.",
     fact: "Hunger after the poor harvest is adding pressure to the decision."
   },
   {
-    opening: "My household owes {debtSum} silver pennies to {creditor}, making the profitable choice difficult to refuse.",
-    fact: "{person}'s household owes {debtSum} silver pennies to {creditor}."
+    opening: "My household depends upon the outcome, so I cannot treat this as someone else's trouble.",
+    fact: "{person}'s household has a direct practical stake in the outcome."
   },
   {
     opening: "A private promise I made to my family complicates the honest course.",
     fact: "{person} made a private promise to protect the household from this loss."
   }
 ];
+
+function occupationPerspective(context, familyId) {
+  const occupation = context.occupation || "";
+  if (familyId === "contaminated_well") {
+    if (["healer", "herbalist", "midwife"].includes(occupation)) return "I noticed the same sickness among people drawing from that water.";
+    if (occupation === "tanner") return "I know how tanning runoff moves, and I fear what nearby waste may be doing.";
+    if (["farmer", "shepherd", "goatherd"].includes(occupation)) return "The animals and field hands use that water every day.";
+    if (occupation === "peddler") return "People along my route spoke of the same symptoms after drinking there.";
+    return "Someone in my household uses that well, and the pattern of illness frightened me.";
+  }
+  if (familyId === "embezzled_grain") {
+    if (["miller", "farmer", "merchant", "clerk", "bailiff", "reeve"].includes(occupation)) return "My work put the stores, measures, or records within my reach.";
+    return "A delivery, household relation, or duty at the manor gave me access to the reserve.";
+  }
+  if (["corrupt_tax", "forged_inheritance", "debt_imprisonment", "orphan_guardianship"].includes(familyId)) {
+    return ["clerk", "scribe", "reeve", "bailiff"].includes(occupation)
+      ? "My work with records showed me where the written terms and the spoken demand no longer matched."
+      : "The demand touches my household or someone close enough that I have seen the receipts and consequences.";
+  }
+  if (["dangerous_apprentice", "exploited_children", "withheld_wages"].includes(familyId)) {
+    return ACCESS.workshop.includes(occupation)
+      ? "I saw the work, hours, or treatment through my own trade."
+      : "A child, worker, or household close to mine told me what was happening.";
+  }
+  if (["panic_rumor", "smuggled_goods", "missing_person"].includes(familyId) && ACCESS.travel.includes(occupation)) {
+    return "My work carries me along the roads, so I heard or witnessed more than most villagers would.";
+  }
+  return "The matter reached me through my household, work, travel, or a person I know well.";
+}
+
+function eligibleForFamily(context, familyId) {
+  if (!context.occupation) return true;
+  const rules = FAMILY_ACCESS[familyId] || { groups: [], public: true };
+  if (Number.isFinite(rules.minimumAge) && context.age < rules.minimumAge) return false;
+  if (rules.groups.some((group) => ACCESS[group]?.includes(context.occupation))) return true;
+  if (rules.groups.some((group) => ACCESS[group]?.includes(context.relationOccupation))) return true;
+  return Boolean(rules.public);
+}
 
 function fill(template, context) {
   return template.replace(/\{(\w+)\}/g, (_match, key) => String(context[key] ?? key));
@@ -83,15 +177,15 @@ function openingLead(kinds) {
 }
 
 export function buildGeneratedScenarioArchetypes(context) {
-  return FAMILIES.flatMap(([id, kinds, premise, harm, alternative]) => (
+  return FAMILIES.filter(([id]) => eligibleForFamily(context, id)).flatMap(([id, kinds, premise, harm, alternative]) => (
     VARIANTS.map((variant, index) => ({
       id: `${id}_${index + 1}`,
       kinds,
-      opening: `${openingLead(kinds)} ${spokenOpening(premise, context)} ${spokenOpening(harm, context)} ${spokenOpening(variant.opening, context)}`,
+      opening: `${openingLead(kinds)} ${spokenOpening(premise, context)} ${spokenOpening(harm, context)} ${spokenOpening(variant.opening, context)} ${occupationPerspective(context, id)}`,
       facts: [
         fill(premise, context),
         fill(harm, context),
-        `${fill(variant.fact, context)} A decision is expected within ${context.deadlineDays} days.`,
+        `${fill(variant.fact, context)} ${occupationPerspective(context, id)} A decision is expected within ${context.deadlineDays} days.`,
         fill(alternative, context)
       ]
     }))

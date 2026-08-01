@@ -73,7 +73,7 @@ await page.route("**/local-ai/v1/chat/completions", async (route) => {
     return;
   }
   if (schemaName === "parish_conversation") {
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 800));
     if (payload.messages?.some((message) => message.content?.includes("FAIL_STALE"))) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ choices: [] }) });
       return;
@@ -210,7 +210,7 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 13);
+  assert.equal(manualState.schemaVersion, 14);
   assert.equal(await page.locator("#open-request-visits").isDisabled(), true);
   assert.match(await page.locator("#church-resources").innerText(), /Bread/i);
   assert.equal(manualState.commandLog.length, 1);

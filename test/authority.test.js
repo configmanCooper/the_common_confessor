@@ -20,6 +20,17 @@ test("reported priest scandal schedules and delivers an ecclesiastical visitor",
   actor.ageDays = 35 * 365;
   actor.trustPriest = 0;
   state.priest.scandal = 60;
+  state.priestReports.push({
+    id: "priest-report-authority-test",
+    reporterId: actor.id,
+    auditIds: ["reaction-authority-test"],
+    allegation: "credible threat by the priest",
+    createdDay: 0,
+    status: "private_complaint",
+    eligibleRecipients: ["archdeacon", "bishop"],
+    visibility: { scope: "private_visit", authorizedPersonIds: [actor.id] }
+  });
+  state.nextPriestReportSequence += 1;
   applyAction(state, {
     actorId: actor.id,
     targetId: "priest",

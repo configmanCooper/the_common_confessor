@@ -83,6 +83,17 @@ test("reports, praise, defense, and scandal mechanically affect the priest", () 
   reporter.trustPriest = 0;
   report.priest.scandal = 50;
   reportVisit.counsel.push("Report the priest to the bishop.");
+  report.priestReports.push({
+    id: "priest-report-test",
+    reporterId: reporter.id,
+    auditIds: ["reaction-test"],
+    allegation: "credible threat by the priest",
+    createdDay: 0,
+    status: "private_complaint",
+    eligibleRecipients: ["archdeacon", "bishop"],
+    visibility: { scope: "private_visit", authorizedPersonIds: [reporter.id] }
+  });
+  report.nextPriestReportSequence += 1;
   const favor = report.priest.bishopFavor;
   finishVisit(report, {
     source: "ai",

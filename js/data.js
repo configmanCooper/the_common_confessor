@@ -234,7 +234,8 @@ export const ACTION_TYPES = Object.freeze([
   "petition_crown", "claim_miracle", "fake_miracle", "claim_prophecy", "play_prank",
   "wear_disguise", "release_livestock_in_church", "stage_public_penance", "start_procession",
   "ring_bells_at_midnight", "steal_church_relic", "return_church_relic", "seek_sanctuary",
-  "improvise"
+  "improvise", "buy_property", "sell_property", "lease_property"
+  , "kill_person"
 ]);
 
 export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
@@ -244,7 +245,8 @@ export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
   "accuse", "gossip", "reveal_secret", "conceal_secret", "return_stolen_goods",
   "report_crime", "make_peace", "celebrate", "mourn", "fast", "repent", "testify", "visit",
   "write_letter", "organize_aid", "protest", "attend_church", "avoid_church", "seek_absolution",
-  "keep_silence", "confess_publicly", "protect", "offer_work", "refuse_work", "improvise"
+  "keep_silence", "confess_publicly", "protect", "offer_work", "refuse_work", "improvise",
+  "buy_property", "sell_property", "lease_property"
 ]);
 
 export const PHASE_TWO_LIFE_ACTIONS = Object.freeze([
@@ -254,7 +256,7 @@ export const PHASE_TWO_LIFE_ACTIONS = Object.freeze([
 
 export const PHASE_THREE_RISK_ACTIONS = Object.freeze([
   "steal", "vandalize", "threaten", "assault", "begin_feud", "evict", "betray",
-  "drink", "gamble", "relapse", "expel", "divorce", "move_household"
+  "drink", "gamble", "relapse", "expel", "divorce", "move_household", "kill_person"
 ]);
 
 export const PHASE_FOUR_PRIEST_ACTIONS = Object.freeze([

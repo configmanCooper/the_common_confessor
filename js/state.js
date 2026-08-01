@@ -1,10 +1,15 @@
 import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradeChurchResources } from "./church.js";
+import {
+  createInitialReactionState,
+  REACTIONS,
+  validateReactionState
+} from "./conversation.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 13;
+export const STATE_SCHEMA_VERSION = 14;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon", "request_visits"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -16,6 +21,107 @@ function cloneJson(value) {
 function upgradeIssueThreadState(state) {
   state.issueThreads ||= [];
   state.nextIssueThreadSequence ||= state.issueThreads.length + 1;
+  return state;
+}
+
+function upgradeReactionState(state) {
+  upgradeVisibilityState(state);
+  upgradeFactProvenanceState(state);
+  state.priestReports ||= [];
+  state.nextPriestReportSequence ||= state.priestReports.length + 1;
+  if (!state.currentVisit) return upgradePropertyState(state);
+  const person = [...(state.residents || []), ...(state.externalActors || [])]
+    .find((resident) => resident.id === state.currentVisit.personId);
+  if (!person) return state;
+  const sourceType = person.id.startsWith("external-")
+    ? "authority"
+    : state.currentVisit.issue?.requestedByPriest ? "requested"
+      : state.currentVisit.issue?.kind === "requested meeting" ? "summoned"
+        : state.currentVisit.issue?.kind?.includes("follow-up") ? "followup" : "ordinary";
+  state.currentVisit.reactionState ||= createInitialReactionState(
+    state,
+    person,
+    state.currentVisit.issue,
+    sourceType
+  );
+  state.currentVisit.turnAudits ||= [];
+  state.currentVisit.reactionStateMigrated ??= state.currentVisit.turnsUsed > 0;
+  state.currentVisit.continuity ||= {
+    unresolvedQuestions: [],
+    agreements: [],
+    retractions: []
+  };
+  return upgradePropertyState(state);
+}
+
+function upgradeFactProvenanceState(state) {
+  for (const thread of state.issueThreads || []) {
+    const visibility = {
+      scope: thread.location === "confessional"
+        ? "private_confession"
+        : thread.location === "office" ? "private_visit" : "public",
+      authorizedPersonIds: [thread.originatorId, "priest"].filter(Boolean)
+    };
+    thread.visibility ||= visibility;
+    thread.facts = (thread.facts || []).map((fact) => ({
+      ...fact,
+      issueId: fact.issueId || thread.id,
+      provenance: fact.provenance || "state",
+      confidence: fact.confidence ?? 100,
+      visibility: fact.visibility || visibility,
+      allowedSpeakers: fact.allowedSpeakers || [thread.originatorId].filter(Boolean)
+    }));
+  }
+  if (state.currentVisit) {
+    const visibility = {
+      scope: state.currentVisit.location === "confessional"
+        ? "private_confession"
+        : state.currentVisit.location === "office" ? "private_visit" : "public",
+      authorizedPersonIds: [state.currentVisit.personId, "priest"]
+    };
+    const issueId = state.currentVisit.issue?.threadId
+      || state.currentVisit.issue?.scenarioId
+      || state.currentVisit.issue?.kind
+      || "legacy";
+    state.currentVisit.scenarioFacts = (state.currentVisit.scenarioFacts || []).map((fact) => ({
+      ...fact,
+      issueId: fact.issueId || issueId,
+      provenance: fact.provenance || "state",
+      confidence: fact.confidence ?? 100,
+      visibility: fact.visibility || visibility,
+      allowedSpeakers: fact.allowedSpeakers || [state.currentVisit.personId]
+    }));
+  }
+  return state;
+}
+
+function upgradeVisibilityState(state) {
+  for (const person of [...(state.residents || []), ...(state.externalActors || [])]) {
+    for (const memory of person.memories || []) {
+      memory.visibility ||= {
+        scope: memory.privateMemory ? "private_visit" : "public",
+        authorizedPersonIds: [person.id, "priest"]
+      };
+    }
+  }
+  return state;
+}
+
+function upgradePropertyState(state) {
+  state.nextPropertySequence ||= 1;
+  for (const household of state.households || []) {
+    household.properties ||= [{
+      id: `property-${household.id}`,
+      type: household.dwelling || "cottage",
+      location: state.town?.name || "the village",
+      value: 20,
+      status: "owned"
+    }];
+    for (const property of household.properties) {
+      const numericId = Number(String(property.id || "").replace(/\D/g, ""));
+      if (Number.isFinite(numericId)) state.nextPropertySequence = Math.max(state.nextPropertySequence, numericId + 1);
+    }
+  }
   return state;
 }
 function upgradeAuthorityState(state) {
@@ -100,6 +206,58 @@ function requireArray(value, label) {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
 }
 
+function validateVisibility(value, label) {
+  requireObject(value, label);
+  if (!["private_confession", "private_visit", "public"].includes(value.scope)) {
+    throw new Error(`${label} scope is invalid`);
+  }
+  requireArray(value.authorizedPersonIds, `${label} authorized people`);
+  if (value.authorizedPersonIds.some((personId) => typeof personId !== "string")) {
+    throw new Error(`${label} authorized people are invalid`);
+  }
+}
+
+function validateReactionAudit(audit, label) {
+  requireObject(audit, label);
+  if (typeof audit.auditId !== "string"
+    || !Number.isInteger(audit.turn) || audit.turn < 1
+    || !REACTIONS.includes(audit.requiredReaction)
+    || !REACTIONS.includes(audit.expressedReaction)
+    || typeof audit.fallbackUsed !== "boolean") {
+    throw new Error(`${label} identity is invalid`);
+  }
+
+  requireObject(audit.classification, `${label} classification`);
+  requireArray(audit.classification.categories, `${label} categories`);
+  requireArray(audit.classification.intents, `${label} intents`);
+  if (!Number.isInteger(audit.classification.intensity)
+    || audit.classification.intensity < 0 || audit.classification.intensity > 5
+    || typeof audit.classification.credibleThreat !== "boolean"
+    || typeof audit.classification.violatedBoundary !== "boolean") {
+    throw new Error(`${label} classification is invalid`);
+  }
+  requireObject(audit.deltas, `${label} deltas`);
+  for (const value of Object.values(audit.deltas)) {
+    if (!Number.isFinite(value) || value < -100 || value > 100) throw new Error(`${label} deltas are invalid`);
+  }
+  validateReactionState(audit.stateAfter);
+  requireArray(audit.thresholdReasons, `${label} threshold reasons`);
+  validateVisibility(audit.visibility, `${label} visibility`);
+}
+
+function validateScenarioFact(fact, label) {
+  requireObject(fact, label);
+  if (typeof fact.id !== "string" || typeof fact.text !== "string"
+    || typeof fact.issueId !== "string"
+    || !["state", "witnessed", "heard_rumor", "inferred"].includes(fact.provenance)
+    || !Number.isFinite(fact.confidence) || fact.confidence < 0 || fact.confidence > 100) {
+    throw new Error(`${label} is invalid`);
+  }
+  requireArray(fact.anchors, `${label} anchors`);
+  requireArray(fact.allowedSpeakers, `${label} allowed speakers`);
+  validateVisibility(fact.visibility, `${label} visibility`);
+}
+
 function requireFinite(value, label, minimum = -Infinity, maximum = Infinity) {
   if (!Number.isFinite(value) || value < minimum || value > maximum) {
     throw new Error(`${label} is outside its valid range`);
@@ -157,6 +315,10 @@ function upgradeConversationState(state) {
       if (memory && typeof memory === "object") {
         const numericId = Number(String(memory.id || "").replace(/\D/g, ""));
         if (Number.isFinite(numericId)) state.nextMemorySequence = Math.max(state.nextMemorySequence, numericId + 1);
+        memory.visibility ||= {
+          scope: memory.privateMemory ? "private_visit" : "public",
+          authorizedPersonIds: [person.id, "priest"]
+        };
         return memory;
       }
       const entry = {
@@ -167,6 +329,10 @@ function upgradeConversationState(state) {
         emotion: "neutral",
         confidence: 60,
         privateMemory: true,
+        visibility: {
+          scope: "private_visit",
+          authorizedPersonIds: [person.id, "priest"]
+        },
         day: 0,
         sourceEventId: null
       };
@@ -213,6 +379,7 @@ function upgradeConversationState(state) {
     state.currentVisit.disclosure ??= 10;
     state.currentVisit.hiddenConcernDisclosed ??= false;
   }
+  upgradeReactionState(state);
   for (const command of state.commandLog || []) {
     if (command.type === "conversation_exchange") {
       command.payload.response.intents ||= ["neutral"];
@@ -414,6 +581,7 @@ export function migrateState(rawState) {
     verifyIntegrity(state);
     upgradePopulationState(state);
     upgradeGroundedConversationState(state);
+    upgradeReactionState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -430,6 +598,7 @@ export function migrateState(rawState) {
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
+    upgradeReactionState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -446,6 +615,7 @@ export function migrateState(rawState) {
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
+    upgradeReactionState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -462,6 +632,7 @@ export function migrateState(rawState) {
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
+    upgradeReactionState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -477,6 +648,7 @@ export function migrateState(rawState) {
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
+    upgradeReactionState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -490,6 +662,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 12) {
     verifyIntegrity(state);
     upgradeIssueThreadState(state);
+    upgradeReactionState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -498,6 +671,19 @@ export function migrateState(rawState) {
     state.aiProposals = [];
     state.nextCommandSequence = 1;
     state.replayBase = { kind: "migration", sourceSchemaVersion: 12, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
+  if (detectedVersion === 13) {
+    verifyIntegrity(state);
+    upgradeReactionState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 13, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -560,6 +746,25 @@ export function validateState(state) {
   requireArray(state.priest.promises, "Priest promises");
   requireArray(state.priest.positions, "Priest positions");
   requireArray(state.priest.confidentialityBreaches, "Priest confidentiality breaches");
+  requireArray(state.priestReports, "Priest reports");
+  if (!Number.isInteger(state.nextPriestReportSequence) || state.nextPriestReportSequence < 1) {
+    throw new Error("Priest report sequence is invalid");
+  }
+  const priestReportIds = new Set();
+  for (const report of state.priestReports) {
+    requireObject(report, "Priest report");
+    if (typeof report.id !== "string" || priestReportIds.has(report.id)
+      || ![...state.residents, ...state.externalActors].some((resident) => resident.id === report.reporterId)
+      || typeof report.allegation !== "string"
+      || !Number.isInteger(report.createdDay) || report.createdDay < 0
+      || !["private_complaint", "submitted", "dismissed"].includes(report.status)) {
+      throw new Error("Priest report is invalid");
+    }
+    requireArray(report.auditIds, "Priest report audits");
+    requireArray(report.eligibleRecipients, "Priest report recipients");
+    validateVisibility(report.visibility, "Priest report visibility");
+    priestReportIds.add(report.id);
+  }
   const promiseIds = new Set();
   for (const promise of state.priest.promises) {
     requireObject(promise, "Priest promise");
@@ -645,6 +850,8 @@ export function validateState(state) {
       throw new Error("Issue thread subjects are invalid");
     }
     requireArray(thread.facts, "Issue thread facts");
+    validateVisibility(thread.visibility, `Issue thread visibility for ${thread.id}`);
+    for (const fact of thread.facts) validateScenarioFact(fact, `Issue fact for ${thread.id}`);
     requireArray(thread.sourceVisitIds, "Issue thread source visits");
     if (thread.relatedPersonId != null
       && !state.residents.some((resident) => resident.id === thread.relatedPersonId)) {
@@ -733,7 +940,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -821,6 +1028,7 @@ export function validateState(state) {
           || !Number.isInteger(memory.day)) {
           throw new Error(`Resident ${person.id} has invalid memory`);
         }
+        validateVisibility(memory.visibility, `Memory visibility for ${person.id}`);
         if (memoryIds.has(memory.id)) throw new Error(`Duplicate memory ID: ${memory.id}`);
         memoryIds.add(memory.id);
         requireFinite(memory.confidence, `Memory confidence for ${person.id}`, 0, 100);
@@ -855,6 +1063,7 @@ export function validateState(state) {
           || !Number.isInteger(memory.day)) {
           throw new Error(`External actor ${person.id} has invalid memory`);
         }
+        validateVisibility(memory.visibility, `Memory visibility for ${person.id}`);
         requireFinite(memory.confidence, `Memory confidence for ${person.id}`, 0, 100);
         if (memoryIds.has(memory.id)) throw new Error(`Duplicate memory ID: ${memory.id}`);
         memoryIds.add(memory.id);
@@ -864,6 +1073,10 @@ export function validateState(state) {
 
   const householdIds = new Set();
   const householdMembership = new Map();
+  const propertyIds = new Set();
+  if (!Number.isInteger(state.nextPropertySequence) || state.nextPropertySequence < 1) {
+    throw new Error("Property sequence is invalid");
+  }
   for (const household of state.households) {
     requireObject(household, "Household");
     if (!household.id || householdIds.has(household.id)) throw new Error(`Duplicate or missing household ID: ${household.id}`);
@@ -877,6 +1090,17 @@ export function validateState(state) {
     requireFinite(household.dailyProduction, `Daily production for ${household.id}`, 0);
     if (!Number.isInteger(household.lastBalanceDay)) throw new Error(`Household ${household.id} has invalid balance day`);
     if (!Number.isInteger(household.lastAdoptionDay)) throw new Error(`Household ${household.id} has invalid adoption day`);
+    requireArray(household.properties, `Properties for ${household.id}`);
+    for (const property of household.properties) {
+      requireObject(property, `Property for ${household.id}`);
+      if (typeof property.id !== "string" || propertyIds.has(property.id)
+        || typeof property.type !== "string" || typeof property.location !== "string"
+        || !Number.isFinite(property.value) || property.value < 0
+        || !["owned", "leased"].includes(property.status)) {
+        throw new Error(`Property for ${household.id} is invalid`);
+      }
+      propertyIds.add(property.id);
+    }
     householdIds.add(household.id);
     requireArray(household.memberIds, `Household members for ${household.id}`);
     for (const memberId of household.memberIds) {
@@ -1050,6 +1274,7 @@ export function validateState(state) {
     requireFinite(state.currentVisit.disclosure, "Current visit disclosure", 0, 100);
     if (typeof state.currentVisit.hiddenConcernDisclosed !== "boolean") throw new Error("Current visit disclosure state is invalid");
     requireArray(state.currentVisit.scenarioFacts, "Current visit scenario facts");
+    for (const fact of state.currentVisit.scenarioFacts) validateScenarioFact(fact, "Current visit scenario fact");
     requireArray(state.currentVisit.revealedFactIds, "Current visit revealed facts");
     requireArray(state.currentVisit.lastVisitorReplies, "Current visit visitor replies");
     if (!Number.isInteger(state.currentVisit.stagnationCount) || state.currentVisit.stagnationCount < 0) {
@@ -1062,6 +1287,34 @@ export function validateState(state) {
     if (typeof state.currentVisit.mood !== "string") throw new Error("Current visit mood is invalid");
     if (!["ordinary", "comic", "outrageous"].includes(state.currentVisit.eventLicense)) {
       throw new Error("Current visit event license is invalid");
+    }
+    validateReactionState(state.currentVisit.reactionState);
+    requireArray(state.currentVisit.turnAudits, "Current visit reaction audits");
+    if (typeof state.currentVisit.reactionStateMigrated !== "boolean") {
+      throw new Error("Current visit reaction migration state is invalid");
+    }
+    let priorAuditTurn = 0;
+    for (const audit of state.currentVisit.turnAudits) {
+      validateReactionAudit(audit, "Current visit reaction audit");
+      if (audit.turn <= priorAuditTurn || audit.turn > state.currentVisit.turnsUsed) {
+        throw new Error("Current visit reaction audit order is invalid");
+      }
+      priorAuditTurn = audit.turn;
+    }
+    if (!state.currentVisit.reactionStateMigrated
+      && state.currentVisit.turnAudits.length !== state.currentVisit.turnsUsed) {
+      throw new Error("Fresh visit reaction audit count does not match turns");
+    }
+    requireObject(state.currentVisit.continuity, "Current visit continuity");
+    for (const field of ["unresolvedQuestions", "agreements", "retractions"]) {
+      requireArray(state.currentVisit.continuity[field], `Current visit ${field}`);
+    }
+    for (const question of state.currentVisit.continuity.unresolvedQuestions) {
+      requireObject(question, "Unresolved question");
+      if (typeof question.turnId !== "string" || typeof question.text !== "string"
+        || typeof question.issueId !== "string" || !["open", "answered", "unknown", "refused"].includes(question.status)) {
+        throw new Error("Unresolved question is invalid");
+      }
     }
     if (!eventIds.has(state.currentVisit.originEventId)) {
       throw new Error("Current visit references a missing origin event");
@@ -1119,6 +1372,9 @@ export function validateState(state) {
       }
       requireObject(command.payload.response, "Conversation command response");
       validateConversation(command.payload.response);
+      if (command.payload.response.reactionAudit != null) {
+        validateReactionAudit(command.payload.response.reactionAudit, "Conversation command reaction audit");
+      }
       if (typeof command.payload.response.mood !== "string") throw new Error("Conversation command mood is invalid");
       for (const field of ["trustDelta", "stressDelta"]) {
         if (!Number.isInteger(command.payload.response[field])
@@ -1388,6 +1644,12 @@ export function registerReplayVerifier(verifier) {
 
 export function compactReplayHistory(state) {
   if (state.currentVisit) throw new Error("Replay history can compact only between appointments");
+  const unresolvedThreads = state.issueThreads.filter((thread) => thread.status !== "resolved");
+  const recentResolvedThreads = state.issueThreads
+    .filter((thread) => thread.status === "resolved")
+    .sort((left, right) => right.lastTouchedDay - left.lastTouchedDay || right.id.localeCompare(left.id))
+    .slice(0, 50);
+  state.issueThreads = [...unresolvedThreads, ...recentResolvedThreads];
   const retainedEventIds = new Set([
     ...state.chronicle.map((entry) => entry.eventId),
     ...state.knowledge.map((entry) => entry.sourceEventId),

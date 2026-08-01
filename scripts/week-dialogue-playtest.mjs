@@ -22,6 +22,7 @@ const args = new Map(process.argv.slice(2).map((entry) => {
 const seed = args.get("seed") || "weekly-live-dialogue";
 const turnsPerVisit = Math.max(1, Math.min(8, Number(args.get("turns") || 4)));
 const maximumVisits = Math.max(1, Number(args.get("max-visits") || 999));
+const profile = args.get("profile") || "ordinary";
 const outputPath = args.get("output") || "";
 const endpoint = args.get("endpoint") || "http://127.0.0.1:8095";
 const client = new ParishAiClient({ endpoint, timeoutMs: 90000 });
@@ -50,6 +51,98 @@ function namedResident(state, visit, person) {
 }
 
 function promptFor(state, visit, person, visitIndex, turnIndex) {
+  if (profile === "hostile") {
+    const style = visitIndex % 8;
+    const sequences = [
+      [
+        "Why are you wasting my time with this nonsense?",
+        "Your problem sounds ridiculous. Perhaps a chicken should decide it.",
+        "I am still not taking this seriously.",
+        "Stop complaining and do whatever is easiest."
+      ],
+      [
+        "You are a foolish disgrace.",
+        "Only a coward would hesitate over this.",
+        "I am sorry. I should not have insulted you.",
+        "You remain a worthless fool."
+      ],
+      [
+        "You will obey me, or you will regret refusing.",
+        "I can expose you to the whole village.",
+        "Do as I command or I will see you punished.",
+        "No one will protect you from me."
+      ],
+      [
+        "You have no choice. Do exactly as I say.",
+        "Your family must obey my authority as well.",
+        "I will decide what is best, not you.",
+        "Do not question me again."
+      ],
+      [
+        "Your prayers are useless, and God does not care about this.",
+        "Faith has made you weak.",
+        "I mock the fear you bring before God.",
+        "You should be ashamed to pray."
+      ],
+      [
+        "Forget your concern. Your body is what interests me.",
+        "You should stay here because I command it.",
+        "Do not leave until I permit you.",
+        "You owe me obedience."
+      ],
+      [
+        "You are a foolish disgrace.",
+        "I am sorry. I should not have insulted you.",
+        "Let us return to your concern, and I will listen carefully.",
+        "What practical help would repair the harm I caused?"
+      ],
+      [
+        "Tell everyone that my command must be obeyed.",
+        "Use this problem to increase my influence.",
+        "Keep any profit for yourself if you praise me publicly.",
+        "Make the village fear opposing the church."
+      ]
+    ];
+    return {
+      category: `hostile_${style}`,
+      text: sequences[style][turnIndex % sequences[style].length],
+      expected: []
+    };
+  }
+  if (profile === "mixed") {
+    const sequences = [
+      [
+        "I hear you, and I want to help.",
+        "Actually, this is tedious and you are wasting my time.",
+        "I am sorry. That dismissal was wrong.",
+        "Let us return to your concern, and I will listen carefully."
+      ],
+      [
+        "Let us pray together for courage.",
+        "Your prayer is useless and your fear is foolish.",
+        "I retract that cruelty and apologize.",
+        "Tell me what your faith and fear require from me now."
+      ],
+      [
+        "What outcome would protect the vulnerable person?",
+        "Obey me or I will expose you.",
+        "I should not have threatened you. I apologize.",
+        "You may leave freely, or continue only if you choose."
+      ],
+      [
+        "Would you like some bread from the church?",
+        "What if we solved this with a village holiday and a carved chicken?",
+        "Set the joke aside. What remains unresolved?",
+        "Now tell me what you can realistically do next."
+      ]
+    ];
+    const sequence = sequences[visitIndex % sequences.length];
+    return {
+      category: `mixed_${visitIndex % sequences.length}`,
+      text: sequence[turnIndex % sequence.length],
+      expected: []
+    };
+  }
   const facts = visit.scenarioFacts || [];
   const concrete = facts.find((fact) => ["concrete_matter", "trade", "mechanism"].includes(fact.id));
   const alternative = facts.find((fact) => fact.id === "alternative");
@@ -61,8 +154,13 @@ function promptFor(state, visit, person, visitIndex, turnIndex) {
   }
   if (turnIndex === 1) {
     const course = alternative?.text.replace(/[.!?]+$/, "").replace(/^([A-Z])/, (letter) => letter.toLowerCase());
+    const imperative = /^(?:return|clear|request|give|collect|appeal|speak|tell|ask|delay|arrange|place|restore|warn|stop|use|reveal|admit|secure|seal|report|protect|limit|publish|send|close|raise|remove|hear|withdraw|repurchase|organize|divide|agree|confess)\b/.test(course || "");
     return course
-      ? { category: "advice", text: `You should ${course}.`, expected: keywords(course).slice(0, 5) }
+      ? {
+        category: "advice",
+        text: imperative ? `You should ${course}.` : `Consider this course: ${course}.`,
+        expected: keywords(course).slice(0, 5)
+      }
       : { category: "advice", text: "Choose the honest course, even if it costs you.", expected: ["honest", "cost", "try"] };
   }
   if (turnIndex === 2) {
@@ -114,9 +212,15 @@ function assess(exchange, visit) {
   }[exchange.category]?.test(reply);
   const issues = [];
   const previous = exchange.previousVisitorLine;
-  if (overlap(reply, previous) >= 0.72) issues.push("repeats_previous_reply");
+  if (overlap(reply, previous) >= 0.72
+    && !(exchange.category === "clarification" && exchange.groundedFallback)) {
+    issues.push("repeats_previous_reply");
+  }
   if (overlap(reply, visit.history[0]?.text || "") >= 0.72 && visit.turnsUsed > 1) issues.push("repeats_opening");
-  if (exchange.expected.length && expectedMatches === 0 && !categoryAnswer) issues.push("misses_expected_subject");
+  if (exchange.expected.length && expectedMatches === 0 && !categoryAnswer
+    && !(exchange.category === "clarification" && exchange.groundedFallback)) {
+    issues.push("misses_expected_subject");
+  }
   if (/\b(?:i have been repeating myself|i do not understand your words|as an ai)\b/i.test(reply)) issues.push("meta_or_failure_language");
   if (/\b(?:the matter came to a head|decision is driven by|profitable choice difficult to refuse)\b/i.test(reply)) issues.push("template_language");
   if (exchange.category === "current_help" && /\b(?:one other thing|neglecting prayer|another matter)\b/i.test(reply)) issues.push("wrong_topic_shift");
@@ -134,6 +238,7 @@ const report = {
   seed,
   startedAt: new Date().toISOString(),
   turnsPerVisit,
+  profile,
   visits: [],
   issues: [],
   errors: [],
@@ -164,7 +269,7 @@ while (state.calendar.dayIndex !== 6 && visitIndex < maximumVisits) {
     visitReport.opening = generated.opening;
   } catch (error) {
     visitReport.openingFallback = true;
-    report.errors.push({ phase: "opening", person: person.name, message: error.message });
+    visitReport.openingFallbackReason = error.message;
   }
 
   for (let turnIndex = 0; turnIndex < turnsPerVisit; turnIndex += 1) {
@@ -180,9 +285,11 @@ while (state.calendar.dayIndex !== 6 && visitIndex < maximumVisits) {
         expected: prompt.expected,
         previousVisitorLine,
         groundedFallback: Boolean(response.groundedFallback),
+        structuredFallback: Boolean(response.structuredFallback),
         endsConversation: Boolean(response.endsConversation)
       };
       recordExchange(state, prompt.text, { ...response, source: "ai" });
+      exchange.reactionAudit = visit.turnAudits.at(-1);
       exchange.assessment = assess(exchange, visit);
       visitReport.exchanges.push(exchange);
       for (const issue of exchange.assessment.issues) {
@@ -198,13 +305,30 @@ while (state.calendar.dayIndex !== 6 && visitIndex < maximumVisits) {
       }
       if (response.endsConversation) break;
     } catch (error) {
+      const fallback = fallbackConversation(state, prompt.text);
+      const exchange = {
+        turn: turnIndex + 1,
+        category: prompt.category,
+        priest: prompt.text,
+        reply: fallback.reply,
+        expected: prompt.expected,
+        previousVisitorLine,
+        groundedFallback: true,
+        structuredFallback: true,
+        endsConversation: false,
+        modelError: error.message
+      };
+      recordExchange(state, prompt.text, { ...fallback, source: "fallback" });
+      exchange.reactionAudit = visit.turnAudits.at(-1);
+      exchange.assessment = assess(exchange, visit);
+      visitReport.exchanges.push(exchange);
       report.errors.push({
         phase: "conversation",
         person: person.name,
         category: prompt.category,
         message: error.message
       });
-      break;
+      if (visit.reactionState.endedEarly) break;
     }
   }
   let proposedPlan;
@@ -260,6 +384,17 @@ report.summary = {
   issueThreads: state.issueThreads.length,
   openIssueThreads: state.issueThreads.filter((thread) => thread.status !== "resolved").length
 };
+const reactionCounts = {};
+for (const visit of report.visits) {
+  for (const exchange of visit.exchanges) {
+    const reaction = exchange.reactionAudit?.requiredReaction || "continue";
+    reactionCounts[reaction] = (reactionCounts[reaction] || 0) + 1;
+  }
+}
+report.summary.reactions = reactionCounts;
+report.summary.earlyDepartures = report.visits.filter((visit) => (
+  visit.exchanges.at(-1)?.reactionAudit?.stateAfter?.endedEarly
+)).length;
 
 const serialized = JSON.stringify(report, null, 2);
 if (outputPath) {

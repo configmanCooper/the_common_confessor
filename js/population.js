@@ -117,6 +117,9 @@ export function upgradePopulationState(state) {
   state.nextVisitRequestSequence ||= state.visitRequests.length + 1;
   state.issueThreads ||= [];
   state.nextIssueThreadSequence ||= state.issueThreads.length + 1;
+  state.nextPropertySequence ||= 1;
+  state.priestReports ||= [];
+  state.nextPriestReportSequence ||= state.priestReports.length + 1;
   state.material ||= {
     season: "Spring",
     weather: "mild",
@@ -146,6 +149,17 @@ export function upgradePopulationState(state) {
     household.dailyProduction ??= 0;
     household.lastBalanceDay ??= -1;
     household.lastAdoptionDay ??= -999;
+    household.properties ||= [{
+      id: `property-${household.id}`,
+      type: household.dwelling || "cottage",
+      location: state.town?.name || "the village",
+      value: 20,
+      status: "owned"
+    }];
+    for (const property of household.properties) {
+      const numericId = Number(String(property.id || "").replace(/\D/g, ""));
+      if (Number.isFinite(numericId)) state.nextPropertySequence = Math.max(state.nextPropertySequence, numericId + 1);
+    }
   }
 
   for (const person of state.residents || []) {
@@ -424,7 +438,8 @@ export function createPopulationResident(state, {
       dwelling: "cottage",
       dailyProduction: 0,
       lastBalanceDay: -1,
-      lastAdoptionDay: -999
+      lastAdoptionDay: -999,
+      properties: []
     };
     state.households.push(household);
   }

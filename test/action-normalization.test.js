@@ -117,7 +117,7 @@ test("bounded improvised actions preserve unusual prose without bypassing mechan
   assert.doesNotThrow(() => deserializeState(serializeState(state)));
 });
 
-test("improvised actions without concrete detail are rejected", () => {
+test("improvised actions without detail derive a bounded concrete description", () => {
   const state = createGame("reject-empty-improvisation");
   const visit = beginVisit(state);
   finishVisit(state, {
@@ -131,5 +131,7 @@ test("improvised actions without concrete detail are rejected", () => {
     }]
   });
   const command = state.commandLog.at(-1);
-  assert.equal(command.payload.evaluation.submittedRejection.gate, "detail_required");
+  assert.equal(command.payload.resolution, "accepted_ai");
+  assert.ok(command.payload.plan.steps[0].detail.length >= 3);
+  assert.ok(command.payload.evaluation.normalizations.some((entry) => entry.reason === "derive_improvised_detail"));
 });
