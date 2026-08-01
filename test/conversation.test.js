@@ -91,6 +91,128 @@ test("explicit destinations move conversations to the confessional, shrine, or n
   }
 });
 
+test("an accepted summons schedules the named villager to come to church", () => {
+  const state = createGame("accepted-priest-summons");
+  const visit = beginVisit(state);
+  const messenger = materializeResident(state, visit.personId, true);
+  const idas = state.residents.find((resident) => resident.id !== messenger.id);
+  idas.firstName = "Idas";
+  idas.surname = "Strongmill";
+  idas.name = "Idas Strongmill";
+  recordExchange(state, "Please tell Master Strongmill to come speak with me at the church.", {
+    reply: "I will tell Idas Strongmill to come to you, Father.",
+    memory: "The visitor agreed to carry the priest's summons."
+  });
+  const summons = state.eventQueue.find((event) => event.type === "priest_summons");
+  assert.equal(summons?.sourcePersonId, idas.id);
+  finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
+  state.calendar.absoluteDay = summons.dueDay;
+  state.calendar.dayIndex = summons.dueDay % 7;
+  state.calendar.week = Math.floor(summons.dueDay / 7) + 1;
+  state.calendar.slot = 0;
+  const summonedVisit = beginVisit(state);
+  assert.equal(summonedVisit.personId, idas.id);
+  assert.equal(summonedVisit.issue.kind, "requested meeting");
+});
+
+test("a refused summons and an ambiguous titled surname schedule nobody", () => {
+  const refused = createGame("refused-priest-summons");
+  const refusedVisit = beginVisit(refused);
+  const refusedMessenger = materializeResident(refused, refusedVisit.personId, true);
+  const idas = refused.residents.find((resident) => resident.id !== refusedMessenger.id);
+  idas.firstName = "Idas";
+  idas.surname = "Strongmill";
+  idas.name = "Idas Strongmill";
+  recordExchange(refused, "Tell Master Strongmill to come to the church.", {
+    reply: "Yes, Father, but I will not tell him to come.",
+    memory: "The visitor refused the summons."
+  });
+  assert.equal(refused.eventQueue.some((event) => event.type === "priest_summons"), false);
+
+  const ambiguous = createGame("ambiguous-priest-summons");
+  const ambiguousVisit = beginVisit(ambiguous);
+  const ambiguousMessenger = materializeResident(ambiguous, ambiguousVisit.personId, true);
+  const matches = ambiguous.residents.filter((resident) => resident.id !== ambiguousMessenger.id).slice(0, 2);
+  matches[0].surname = "Strongmill";
+  matches[0].name = `${matches[0].firstName} Strongmill`;
+  matches[1].surname = "Strongmill";
+  matches[1].name = `${matches[1].firstName} Strongmill`;
+  recordExchange(ambiguous, "Tell Master Strongmill to come to the church.", {
+    reply: "I will tell him, Father.",
+    memory: "The visitor heard an ambiguous request."
+  });
+  assert.equal(ambiguous.eventQueue.some((event) => event.type === "priest_summons"), false);
+});
+
+test("visitor promises drive fallback actions instead of collapsing to silence", () => {
+  const state = createGame("promised-action-fallback");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const target = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
+  target.firstName = "Idas";
+  target.surname = "Strongmill";
+  target.name = "Idas Strongmill";
+  visit.issue.relatedPersonId = target.id;
+  recordExchange(state, "Speak with Idas first about making the work safe.", {
+    reply: "I will speak with Idas first and insist that the work be made safer.",
+    memory: "The visitor promised to speak with Idas."
+  });
+  const plan = fallbackDeparturePlan(state);
+  assert.equal(plan.steps[0].actionType, "visit");
+  assert.equal(plan.steps[0].targetId, target.id);
+  assert.equal(validateDeparturePlan(state, plan).complete, true);
+});
+
+test("visitor commitments survive thanks but explicit retractions cancel them", () => {
+  const state = createGame("commitment-lifecycle");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const target = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
+  visit.issue.relatedPersonId = target.id;
+  recordExchange(state, `Speak with ${target.firstName} about this.`, {
+    reply: `I will speak with ${target.firstName}, Father.`,
+    memory: "The visitor promised to speak."
+  });
+  recordExchange(state, "Go with care.", {
+    reply: "Thank you, Father.",
+    memory: "The visitor thanked the priest."
+  });
+  assert.equal(fallbackDeparturePlan(state).steps[0].actionType, "visit");
+  recordExchange(state, "Do what conscience requires.", {
+    reply: "I changed my mind. I will not speak with them.",
+    memory: "The visitor retracted the promise."
+  });
+  assert.notEqual(fallbackDeparturePlan(state).steps[0].actionType, "visit");
+});
+
+test("completed visits and interpersonal actions create durable summary memories", () => {
+  const state = createGame("visit-summary-memories");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const target = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
+  visit.issue.relatedPersonId = target.id;
+  recordExchange(state, `Speak honestly with ${target.firstName} and seek a peaceful answer.`, {
+    reply: `I will speak with ${target.firstName} and try to make peace.`,
+    memory: "The visitor agreed to seek peace."
+  });
+  finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
+  assert.ok(person.memories.some((memory) => (
+    memory.type === "visit_summary"
+    && memory.summary.includes("Agreed next action")
+  )));
+  assert.ok(person.memories.some((memory) => memory.type === "interaction"));
+  assert.ok(target.memories.some((memory) => (
+    memory.type === "interaction" && memory.subjectId === person.id
+  )));
+  for (let index = 0; index < 30; index += 1) {
+    addStructuredMemory(state, person, {
+      summary: `Ordinary later memory ${index}.`,
+      emotion: "neutral"
+    });
+  }
+  assert.ok(person.memories.some((memory) => memory.type === "visit_summary"));
+});
+
 test("candid opening confessions immediately create canonical secret memory", () => {
   let found = null;
   for (let index = 0; index < 300 && !found; index += 1) {
@@ -492,7 +614,7 @@ test("schema-v3 saves migrate strings into structured conversation state", () =>
   delete legacy.integrityHash;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 12);
+  assert.equal(migrated.schemaVersion, 13);
   assert.equal(typeof migrated.residents[0].memories[0], "object");
   assert.equal(migrated.residents[0].memories[0].privateMemory, true);
   assert.equal(typeof migrated.priest.promises[0], "object");

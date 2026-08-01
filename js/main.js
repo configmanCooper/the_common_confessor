@@ -325,6 +325,8 @@ async function showVisit() {
   setHidden(elements["dialogue-panel"], false);
   setHidden(elements["sermon-panel"], true);
   elements["dialogue-log"].replaceChildren();
+  renderCommon();
+  renderVisit();
   if (!existingVisit && aiReady && state.settings.aiEnabled) {
     conversationInFlight = true;
     setBusy(true, `${person.firstName} gathers their thoughts`, "Gemma is shaping the visitor's first words from the facts of their life.");

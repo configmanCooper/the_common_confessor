@@ -199,11 +199,13 @@ test("AI chains cannot reuse participants for conflicting marriages", () => {
     ]
   };
   const validated = validateDeparturePlan(state, plan, departureCandidates(state));
-  assert.equal(validated.complete, false);
+  assert.equal(validated.complete, true);
+  assert.equal(validated.fullyAccepted, false);
   assert.equal(validated.steps.length, 1);
   finishVisit(state, { ...plan, source: "ai" });
-  assert.equal(first.spouseId, null);
-  assert.equal(second.spouseId, null);
+  assert.equal(first.spouseId, second.id);
+  assert.equal(second.spouseId, first.id);
+  assert.equal(third.spouseId, null);
   assert.doesNotThrow(() => serializeState(state));
 });
 
@@ -256,6 +258,10 @@ test("rejected proposals do not materialize hidden profiles or break replay", ()
     .map((id) => state.residents.find((person) => person.id === id))
     .find((person) => person && !person.materialized);
   const beforeMaterialized = target.materialized;
+  recordExchange(state, "Keep silent and take no action.", {
+    reply: "I will say nothing, Father.",
+    memory: "The priest advised silence."
+  });
   finishVisit(state, {
     source: "ai",
     steps: [{
@@ -350,7 +356,7 @@ test("conversation-driven AI proposals can change work, migration, and family st
     const creationStep = forged.commandLog.find((entry) => entry.type === "finish_visit").payload.plan.steps[0];
     creationStep.createdResidentId = forged.residents[0].id;
     sealState(forged);
-    assert.throws(() => deserializeState(JSON.stringify(forged)), /created resident mismatch|canonical replay/);
+    assert.throws(() => deserializeState(JSON.stringify(forged)), /created resident mismatch|departure evaluation|canonical replay/);
 
     state.calendar.absoluteDay = 1;
     state.calendar.dayIndex = 1;

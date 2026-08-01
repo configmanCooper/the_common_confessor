@@ -210,7 +210,7 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 12);
+  assert.equal(manualState.schemaVersion, 13);
   assert.equal(await page.locator("#open-request-visits").isDisabled(), true);
   assert.match(await page.locator("#church-resources").innerText(), /Bread/i);
   assert.equal(manualState.commandLog.length, 1);
@@ -313,6 +313,23 @@ try {
   await page.waitForFunction((name) => document.querySelector("#town-name")?.textContent === name, importedTown);
   const quotaProbe = await page.evaluate(async () => {
     const storage = await import("/js/storage.js");
+    await new Promise((resolve) => {
+      const request = indexedDB.open("the-common-confessor", 1);
+      request.onsuccess = () => {
+        const database = request.result;
+        const transaction = database.transaction("autosaves", "readwrite");
+        transaction.objectStore("autosaves").clear();
+        transaction.oncomplete = () => {
+          database.close();
+          resolve();
+        };
+        transaction.onerror = () => {
+          database.close();
+          resolve();
+        };
+      };
+      request.onerror = resolve;
+    });
     const snapshots = ["a", "b", "c", "d"].map((letter) => letter.repeat(1_500_000));
     localStorage.setItem("quota-probe-primary", snapshots[0]);
     await storage.queueAutosave(snapshots[0]);

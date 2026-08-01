@@ -4,13 +4,19 @@ import { upgradeChurchResources } from "./church.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
 
-export const STATE_SCHEMA_VERSION = 12;
+export const STATE_SCHEMA_VERSION = 13;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon", "request_visits"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
 
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function upgradeIssueThreadState(state) {
+  state.issueThreads ||= [];
+  state.nextIssueThreadSequence ||= state.issueThreads.length + 1;
+  return state;
 }
 function upgradeAuthorityState(state) {
   state.outsideAttention ||= { church: 0, rome: 0, crown: 0, legal: 0 };
@@ -423,6 +429,7 @@ export function migrateState(rawState) {
     upgradeGroundedConversationState(state);
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
+    upgradeIssueThreadState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -438,6 +445,7 @@ export function migrateState(rawState) {
     upgradeGroundedConversationState(state);
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
+    upgradeIssueThreadState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -453,6 +461,7 @@ export function migrateState(rawState) {
     upgradeChurchResources(state);
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
+    upgradeIssueThreadState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -467,6 +476,7 @@ export function migrateState(rawState) {
     verifyIntegrity(state);
     state.visitRequests ||= [];
     state.nextVisitRequestSequence ||= 1;
+    upgradeIssueThreadState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -475,6 +485,19 @@ export function migrateState(rawState) {
     state.aiProposals = [];
     state.nextCommandSequence = 1;
     state.replayBase = { kind: "migration", sourceSchemaVersion: 11, source: cloneJson(rawState), snapshot: migrationSnapshot };
+    sealState(state);
+  }
+  if (detectedVersion === 12) {
+    verifyIntegrity(state);
+    upgradeIssueThreadState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = { kind: "migration", sourceSchemaVersion: 12, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -593,6 +616,42 @@ export function validateState(state) {
   if (state.calendar.dayIndex !== 6 && state.calendar.slot >= 4 + acceptedRequestsToday) {
     throw new Error("Calendar slot exceeds the day's scheduled appointments");
   }
+  requireArray(state.issueThreads, "Issue threads");
+  if (!Number.isInteger(state.nextIssueThreadSequence) || state.nextIssueThreadSequence < 1) {
+    throw new Error("Issue thread sequence is invalid");
+  }
+  const issueThreadIds = new Set();
+  for (const thread of state.issueThreads) {
+    requireObject(thread, "Issue thread");
+    if (typeof thread.id !== "string" || issueThreadIds.has(thread.id)
+      || typeof thread.kind !== "string" || typeof thread.scenarioId !== "string"
+      || typeof thread.summary !== "string"
+      || !state.residents.some((resident) => resident.id === thread.originatorId)
+      || !["open", "escalating", "festering", "resolved"].includes(thread.status)
+      || !Number.isInteger(thread.createdDay) || thread.createdDay < 0
+      || !Number.isInteger(thread.lastTouchedDay) || thread.lastTouchedDay < thread.createdDay
+      || !Number.isInteger(thread.deadlineDay) || thread.deadlineDay < thread.createdDay
+      || !Number.isInteger(thread.lastFollowupDay)
+      || !Number.isInteger(thread.authorityStage) || thread.authorityStage < 0 || thread.authorityStage > 3) {
+      throw new Error("Issue thread identity is invalid");
+    }
+    for (const field of ["pressure", "publicAwareness", "danger", "momentum"]) {
+      requireFinite(thread[field], `Issue thread ${field}`, 0, 100);
+    }
+    requireArray(thread.subjectIds, "Issue thread subjects");
+    if (!thread.subjectIds.length
+      || !thread.subjectIds.includes(thread.originatorId)
+      || thread.subjectIds.some((personId) => !state.residents.some((resident) => resident.id === personId))) {
+      throw new Error("Issue thread subjects are invalid");
+    }
+    requireArray(thread.facts, "Issue thread facts");
+    requireArray(thread.sourceVisitIds, "Issue thread source visits");
+    if (thread.relatedPersonId != null
+      && !state.residents.some((resident) => resident.id === thread.relatedPersonId)) {
+      throw new Error("Issue thread related person is invalid");
+    }
+    issueThreadIds.add(thread.id);
+  }
   requireObject(state.churchResources, "Church resources");
   const churchResourceKeys = ["coin", "grain", "bread", "beans", "onions", "saltedFish", "cheese", "firewood", "medicine"];
   if (Object.keys(state.churchResources).sort().join(",") !== [...churchResourceKeys].sort().join(",")) {
@@ -674,7 +733,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }

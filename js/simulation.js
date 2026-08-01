@@ -441,8 +441,69 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
   }));
 }
 
+function issueFromThread(thread, person) {
+  return {
+    kind: thread.kind,
+    location: thread.location,
+    gravity: Math.max(1, Math.min(5, Math.ceil(thread.pressure / 20))),
+    opening: `Father, I have returned because this matter remains unresolved: ${thread.summary}`,
+    detail: thread.summary,
+    relatedPersonId: thread.relatedPersonId,
+    relatedName: null,
+    scenarioId: thread.scenarioId,
+    scenarioFacts: JSON.parse(JSON.stringify(thread.facts)),
+    openingDisclosesHidden: thread.kind !== "confession" || person.personality.candor >= 55,
+    threadId: thread.id,
+    returningIssue: true
+  };
+}
+
+function attachIssueThread(state, issue, person) {
+  if (issue.threadId) return issue;
+  const subjectIds = new Set([person.id]);
+  if (issue.relatedPersonId) subjectIds.add(issue.relatedPersonId);
+  const factText = (issue.scenarioFacts || []).map((fact) => fact.text).join(" ").toLowerCase();
+  for (const resident of state.residents) {
+    if (factText.includes(resident.name.toLowerCase())) subjectIds.add(resident.id);
+  }
+  const thread = {
+    id: `issue-${String(state.nextIssueThreadSequence++).padStart(6, "0")}`,
+    kind: issue.kind,
+    scenarioId: issue.scenarioId || issue.kind.replaceAll(" ", "_"),
+    summary: String(issue.scenarioFacts?.[0]?.text || issue.detail || issue.opening).slice(0, 220),
+    originatorId: person.id,
+    subjectIds: [...subjectIds].slice(0, 8),
+    relatedPersonId: issue.relatedPersonId || null,
+    location: issue.location,
+    facts: JSON.parse(JSON.stringify(issue.scenarioFacts || [])),
+    pressure: clamp(36 + issue.gravity * 7, 0, 100),
+    publicAwareness: clamp(/whisper|public|market|households/i.test(issue.opening) ? 28 : 10, 0, 100),
+    danger: clamp(issue.gravity * 9 + (/violence|injur|threat|punish|arrest/i.test(issue.opening) ? 18 : 0), 0, 100),
+    momentum: clamp(20 + issue.gravity * 8, 0, 100),
+    deadlineDay: state.calendar.absoluteDay + Math.max(2, issue.scenarioFacts?.find((fact) => fact.id === "stakes") ? 7 : 12),
+    status: "open",
+    authorityStage: 0,
+    createdDay: state.calendar.absoluteDay,
+    lastTouchedDay: state.calendar.absoluteDay,
+    sourceVisitIds: [],
+    rumorCreated: false,
+    lastFollowupDay: -999,
+    authorityRequestedRole: null
+  };
+  state.issueThreads.push(thread);
+  issue.threadId = thread.id;
+  return issue;
+}
+
 function issueForPerson(state, person) {
   const rng = new SeededRng(`${state.seed}:${state.calendar.absoluteDay}:${state.calendar.slot}:${person.id}`);
+  const existingThread = state.issueThreads
+    .filter((thread) => thread.status !== "resolved" && thread.originatorId === person.id)
+    .sort((left, right) => right.pressure - left.pressure)[0];
+  if (existingThread && (existingThread.pressure >= 60 || rng.next() < 0.45)) {
+    existingThread.lastTouchedDay = state.calendar.absoluteDay;
+    return issueFromThread(existingThread, person);
+  }
   const issue = { ...rng.pick(ISSUE_TEMPLATES) };
   const knownRelations = person.relationshipIds
     .map((id) => state.residents.find((resident) => resident.id === id))
@@ -507,11 +568,12 @@ function issueForPerson(state, person) {
       text,
       anchors: (text.toLowerCase().match(/[a-z]{5,}/g) || []).slice(0, 5)
     }));
+    issue.detail = archetype.facts[0];
     issue.openingDisclosesHidden = issue.kind === "confession" && person.personality.candor >= 55;
     if (issue.kind === "confession" && !issue.openingDisclosesHidden) {
       issue.opening = `Forgive me, Father. Something I did ${timing}, ${place}, may cause another person to suffer. ${witness} I am not yet certain I can say every part aloud.`;
     }
-    return issue;
+    return attachIssueThread(state, issue, person);
   }
   const landTrade = ["farmer", "shepherd", "beekeeper", "woodcutter"].includes(trade);
   const workshopTrade = ["blacksmith", "carpenter", "mason", "weaver", "dyer", "tailor", "cobbler", "tanner", "potter", "cooper", "candlemaker"].includes(trade);
@@ -576,7 +638,7 @@ function issueForPerson(state, person) {
       issue.opening = `Father, I came because ${person.privatePressure}. I have tried prayer and ordinary counsel, but the matter has not eased.`;
     }
   }
-  return issue;
+  return attachIssueThread(state, issue, person);
 }
 
 function scheduleExternalVisit(state, role, reason, delayDays, sourcePersonId = null, sourceEventId = null) {
@@ -650,15 +712,15 @@ export function requestVisits(state, personIds, reason = "", { record = true } =
   return results;
 }
 
-function scheduleResidentFollowup(state, personId, reason, sourceEventId) {
+function scheduleResidentFollowup(state, personId, reason, sourceEventId, type = "resident_followup") {
   const person = state.residents.find((resident) => resident.id === personId);
   if (!person?.active || !person.alive) return null;
   if (state.eventQueue.some((event) => (
-    event.type === "resident_followup" && event.sourcePersonId === personId
+    ["resident_followup", "priest_summons"].includes(event.type) && event.sourcePersonId === personId
   ))) return null;
   const event = {
     id: `queue-${String(state.nextQueueSequence++).padStart(6, "0")}`,
-    type: "resident_followup",
+    type,
     role: null,
     reason: String(reason).slice(0, 220),
     dueDay: state.calendar.absoluteDay + 1,
@@ -670,6 +732,134 @@ function scheduleResidentFollowup(state, personId, reason, sourceEventId) {
   };
   state.eventQueue.push(event);
   return event;
+}
+
+function authorityRequestedByCounsel(visit) {
+  const counsel = visit.counsel.join(" ").toLowerCase();
+  if (/\b(?:bishop|diocese|archdeacon)\b/.test(counsel)) return "bishop";
+  if (/\b(?:lord of the manor|summon the lord|bring this to the lord)\b/.test(counsel)) return "lord";
+  if (/\b(?:magistrate|county court)\b/.test(counsel)) return "magistrate";
+  if (/\b(?:steward|manor officer)\b/.test(counsel)) return "steward";
+  return null;
+}
+
+function updateIssueThreadAfterVisit(state, visit, steps) {
+  const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+  if (!thread) return null;
+  const helpful = new Set([
+    "apologize", "forgive", "reconcile", "return_stolen_goods", "report_crime",
+    "make_peace", "testify", "protect", "heal", "shelter", "share_food"
+  ]);
+  const harmful = new Set([
+    "accuse", "gossip", "reveal_secret", "steal", "threaten", "assault",
+    "begin_feud", "evict", "betray", "vandalize"
+  ]);
+  let pressureDelta = steps.some((step) => helpful.has(step.actionType)) ? -25 : 0;
+  if (steps.some((step) => harmful.has(step.actionType))) pressureDelta += 20;
+  if (steps.some((step) => step.actionType === "keep_silence")) pressureDelta += 4;
+  if (steps.some((step) => ["visit", "write_letter", "pray_with", "advise"].includes(step.actionType))) pressureDelta -= 10;
+  thread.pressure = clamp(thread.pressure + pressureDelta);
+  thread.momentum = clamp(thread.momentum + (pressureDelta > 0 ? 7 : -12));
+  thread.publicAwareness = clamp(
+    thread.publicAwareness
+      + (steps.some((step) => ["gossip", "report_crime", "testify", "confess_publicly"].includes(step.actionType)) ? 14 : -2)
+  );
+  thread.danger = clamp(
+    thread.danger
+      + (steps.some((step) => ["threaten", "assault", "begin_feud", "evict"].includes(step.actionType)) ? 18 : -4)
+  );
+  thread.lastTouchedDay = state.calendar.absoluteDay;
+  if (!thread.sourceVisitIds.includes(visit.visitId)) thread.sourceVisitIds.push(visit.visitId);
+  thread.sourceVisitIds = thread.sourceVisitIds.slice(-20);
+  thread.authorityRequestedRole = authorityRequestedByCounsel(visit) || thread.authorityRequestedRole;
+  thread.status = thread.pressure <= 18
+    ? "resolved"
+    : thread.pressure >= 82 ? "escalating"
+      : state.calendar.absoluteDay > thread.deadlineDay ? "festering" : "open";
+  return thread;
+}
+
+function maybeEscalateIssueAuthority(state, thread) {
+  const requested = thread.authorityRequestedRole;
+  let role = null;
+  if (requested === "steward" && thread.pressure >= 52) role = "steward";
+  else if (requested === "magistrate" && thread.pressure >= 68 && thread.publicAwareness >= 25) role = "magistrate";
+  else if (requested === "bishop" && thread.pressure >= 78 && state.priest.moralAuthority >= 35) role = "bishop";
+  else if (requested === "lord" && thread.pressure >= 90 && thread.publicAwareness >= 55 && state.calendar.week >= 2) role = "lord";
+  else if (thread.authorityStage === 0 && thread.pressure >= 78 && thread.publicAwareness >= 40) role = "steward";
+  else if (thread.authorityStage === 1 && thread.pressure >= 89 && thread.danger >= 45) role = "magistrate";
+  else if (thread.authorityStage === 2 && thread.pressure >= 96 && thread.publicAwareness >= 72 && state.calendar.week >= 3) {
+    const rng = new SeededRng(`${state.seed}:thread-lord:${thread.id}:${state.calendar.absoluteDay}`);
+    if (rng.next() < 0.3) role = "lord";
+  }
+  if (!role) return null;
+  const scheduled = scheduleExternalVisit(
+    state,
+    role,
+    `The unresolved matter "${thread.summary}" reached ${role} authority.`,
+    role === "steward" ? 1 : role === "magistrate" ? 2 : 3,
+    thread.subjectIds[0] || null,
+    null
+  );
+  if (scheduled) {
+    thread.authorityStage = Math.max(thread.authorityStage + 1, role === "lord" ? 3 : role === "magistrate" ? 2 : 1);
+    thread.authorityRequestedRole = null;
+  }
+  return scheduled;
+}
+
+function advanceIssueThreads(state, parentEventId) {
+  for (const thread of state.issueThreads) {
+    if (thread.status === "resolved") continue;
+    const overdue = state.calendar.absoluteDay > thread.deadlineDay;
+    const overduePressure = overdue
+      ? Math.min(3, thread.danger / 40 + thread.publicAwareness / 55)
+      : -3;
+    const staleDecay = state.calendar.absoluteDay - thread.lastTouchedDay > 7 ? -2 : 0;
+    thread.pressure = clamp(thread.pressure + thread.momentum * 0.018 + overduePressure + staleDecay);
+    thread.momentum = clamp(thread.momentum - (overdue ? 3 : 5));
+    if (thread.pressure >= 65) thread.publicAwareness = clamp(thread.publicAwareness + 2);
+    thread.status = thread.pressure <= 20
+      || (state.calendar.absoluteDay - thread.lastTouchedDay > 14 && thread.pressure < 35)
+      ? "resolved"
+      : thread.pressure >= 82 ? "escalating" : overdue ? "festering" : "open";
+    if (thread.status === "resolved") continue;
+    const subjects = thread.subjectIds
+      .map((personId) => state.residents.find((resident) => resident.id === personId))
+      .filter((person) => person?.active && person.alive);
+    for (const person of subjects) {
+      person.stress = clamp(person.stress + Math.max(0, thread.pressure - 55) * 0.035);
+      person.morale = clamp(person.morale - Math.max(0, thread.danger - 50) * 0.025);
+    }
+    if (!thread.rumorCreated
+      && thread.kind !== "confession"
+      && thread.location !== "confessional"
+      && thread.publicAwareness >= 48
+      && subjects.length >= 2) {
+      createRumor(state, {
+        originatorId: subjects[0].id,
+        subjectId: subjects[1].id,
+        claim: thread.summary,
+        truth: 70,
+        intensity: Math.max(1, Math.min(5, Math.ceil(thread.pressure / 20))),
+        sourceEventId: parentEventId
+      });
+      thread.rumorCreated = true;
+    }
+    if (thread.pressure >= 66
+      && subjects.length
+      && state.calendar.absoluteDay - thread.lastFollowupDay >= 4) {
+      const next = [...subjects].sort((left, right) => left.lastVisitDay - right.lastVisitDay)[0];
+      const scheduled = scheduleResidentFollowup(
+        state,
+        next.id,
+        `The unresolved issue has grown more urgent: ${thread.summary}`,
+        parentEventId
+      );
+      if (scheduled) thread.lastFollowupDay = state.calendar.absoluteDay;
+    }
+    maybeEscalateIssueAuthority(state, thread);
+  }
 }
 
 function escalateAuthority(state, actionType, actor, sourceEventId) {
@@ -843,12 +1033,17 @@ export function beginVisit(state, { record = true } = {}) {
     return state.currentVisit;
   }
   state.eventQueue = state.eventQueue.filter((event) => {
-    if (!["sermon_followup", "resident_followup"].includes(event.type) || event.dueDay > state.calendar.absoluteDay) return true;
+    if (!["sermon_followup", "resident_followup", "priest_summons"].includes(event.type) || event.dueDay > state.calendar.absoluteDay) return true;
     const actor = state.residents.find((person) => person.id === event.sourcePersonId);
     return Boolean(actor?.active && actor.alive);
   });
+  const hasDueExternalVisit = state.eventQueue.some((event) => (
+    event.type === "external_visit" && event.dueDay <= state.calendar.absoluteDay
+  ));
   const followupIndex = state.eventQueue.findIndex((event) => (
-    ["sermon_followup", "resident_followup"].includes(event.type) && event.dueDay <= state.calendar.absoluteDay
+    !hasDueExternalVisit
+    && ["sermon_followup", "resident_followup", "priest_summons"].includes(event.type)
+    && event.dueDay <= state.calendar.absoluteDay
   ));
   if (followupIndex >= 0) {
     const queued = state.eventQueue.splice(followupIndex, 1)[0];
@@ -856,18 +1051,24 @@ export function beginVisit(state, { record = true } = {}) {
     person.visitCount += 1;
     person.lastVisitDay = state.calendar.absoluteDay;
     const issue = {
-      kind: queued.type === "sermon_followup" ? "sermon follow-up" : "consequence follow-up",
+      kind: queued.type === "sermon_followup"
+        ? "sermon follow-up"
+        : queued.type === "priest_summons" ? "requested meeting" : "consequence follow-up",
       location: "nave",
       gravity: 3,
       opening: queued.type === "sermon_followup"
         ? `Father, I have come because of what happened after Sunday's sermon.`
+        : queued.type === "priest_summons"
+          ? `Father, I was told that you asked me to come and speak with you. ${queued.reason}`
         : `Father, I have come because of what happened in the village: ${queued.reason}`,
       detail: queued.reason,
       relatedPersonId: null,
       relatedName: null
     };
     const originEvent = appendEvent(state, {
-      type: "sermon_followup_started",
+      type: queued.type === "sermon_followup"
+        ? "sermon_followup_started"
+        : queued.type === "priest_summons" ? "requested_visit_started" : "resident_followup_started",
       parentId: queued.sourceEventId,
       actorId: person.id,
       targetId: "priest",
@@ -1039,6 +1240,39 @@ function requestedConversationLocation(text) {
   return null;
 }
 
+function residentMentionedInText(state, text) {
+  const speech = String(text || "").toLowerCase();
+  const fullMatches = state.residents.filter((resident) => speech.includes(resident.name.toLowerCase()));
+  if (fullMatches.length === 1) return fullMatches[0];
+  const firstMatches = state.residents.filter((resident) => (
+    resident.firstName.length >= 4
+    && new RegExp(`\\b${resident.firstName.toLowerCase()}\\b`).test(speech)
+  ));
+  if (firstMatches.length === 1) return firstMatches[0];
+  const titledSurnameMatches = state.residents.filter((resident) => (
+    new RegExp(`\\b(?:master|mistress|lord|lady|steward|bailiff)\\s+${resident.surname.toLowerCase()}\\b`).test(speech)
+  ));
+  return titledSurnameMatches.length === 1 ? titledSurnameMatches[0] : null;
+}
+
+function summonedResident(state, visit, priestText) {
+  if (!/\b(?:send (?:him|her)|tell .{0,35} to come|ask .{0,35} to come|have .{0,35} come|come (?:talk|speak) to me|come see me)\b/i.test(priestText)) {
+    return null;
+  }
+  const titledSurname = String(priestText).toLowerCase()
+    .match(/\b(?:master|mistress|lord|lady|steward|bailiff)\s+([a-z'-]+)\b/)?.[1];
+  if (titledSurname && state.residents.filter((resident) => resident.surname.toLowerCase() === titledSurname).length !== 1) {
+    return null;
+  }
+  const direct = residentMentionedInText(state, priestText);
+  if (direct) return direct;
+  for (const line of [...visit.history].reverse()) {
+    const resident = residentMentionedInText(state, line.text);
+    if (resident) return resident;
+  }
+  return null;
+}
+
 function conversationLocationChange(visit, priestText) {
   const previousVisitorLine = [...visit.history].reverse()
     .find((line) => line.speaker === "visitor")?.text || "";
@@ -1070,6 +1304,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
   const resolution = resolvePriestSpeech(state, person, visit, cleanText);
   const clarifiedFacts = clarificationFacts(visit, cleanText);
   const nextLocation = conversationLocationChange(visit, cleanText);
+  const summonsTarget = summonedResident(state, visit, cleanText);
   for (const fact of clarifiedFacts) {
     if (!visit.revealedFactIds.includes(fact.id)) visit.revealedFactIds.push(fact.id);
   }
@@ -1086,6 +1321,18 @@ export function recordExchange(state, playerText, response, { record = true } = 
   }
   visit.mood = resolution.mood;
   visit.disclosure = resolution.disclosure;
+  if (summonsTarget
+    && summonsTarget.id !== person.id
+    && /\b(?:i will|i'll|yes|tell|ask|send)\b/i.test(reply)
+    && !/\b(?:will not|won't|cannot|can't|do not|don't)\b/i.test(reply)) {
+    scheduleResidentFollowup(
+      state,
+      summonsTarget.id,
+      `${person.name} carried Father Benedict's request that ${summonsTarget.name} come to the church.`,
+      visit.originEventId,
+      "priest_summons"
+    );
+  }
   const churchAid = applyChurchAid(state, person, cleanText);
   if (churchAid) {
     appendEvent(state, {
@@ -1269,6 +1516,7 @@ function resolvePopulationDay(state) {
       facts: { populationEvent: true }
     });
   }
+  advanceIssueThreads(state, tick.id);
 }
 
 function maximumIntensityForLicense(license) {
@@ -1352,6 +1600,24 @@ export function applyAction(state, step) {
     && (!sourceHousehold || (sourceHousehold.food < intensity * 2 && sourceHousehold.wealth < intensity)
       || !occupiedHouseholds.some((household) => household.id !== sourceHousehold.id))) return null;
   const deltas = metricDeltaForAction(step.actionType);
+  if (step.actionType === "improvise") {
+    const motive = step.motive || "practical";
+    const improvised = {
+      benevolent: { harmony: 1, mercy: 1 },
+      faithful: { faith: 1, harmony: 0.5 },
+      practical: { prosperity: 0.5, harmony: 0.5 },
+      selfish: { prosperity: 0.5, harmony: -1 },
+      political: { harmony: -0.5, safety: 0.5 },
+      power_seeking: { harmony: -1, safety: 0.5 },
+      cruel: { harmony: -1.5, mercy: -1 },
+      absurd: { harmony: 0.5 },
+      fearful: { harmony: -0.5 }
+    }[motive] || {};
+    Object.assign(deltas, improvised);
+    if (target && !targetIsPriest) {
+      target.stress = clamp(target.stress + (["cruel", "power_seeking"].includes(motive) ? intensity * 2 : 0));
+    }
+  }
   for (const [metric, delta] of Object.entries(deltas)) {
     state.town.metrics[metric] = clamp(state.town.metrics[metric] + delta * (intensity / 2));
   }
@@ -1653,6 +1919,30 @@ export function applyAction(state, step) {
       isTrue: true,
       privateKnowledge: step.actionType === "reveal_secret"
     });
+    addStructuredMemory(state, target, {
+      type: "interaction",
+      subjectId: actor.id,
+      summary: description,
+      emotion: ["comfort", "forgive", "reconcile", "share_food", "protect"].includes(step.actionType)
+        ? "grateful"
+        : ["accuse", "threaten", "assault", "betray"].includes(step.actionType) ? "troubled" : "watchful",
+      confidence: 90,
+      privateMemory: ["reveal_secret", "conceal_secret"].includes(step.actionType),
+      sourceEventId: eventId
+    });
+  }
+  if (step.actionType !== "keep_silence") {
+    addStructuredMemory(state, actor, {
+      type: target ? "interaction" : "action",
+      subjectId: target?.id || actor.id,
+      summary: description,
+      emotion: ["comfort", "forgive", "reconcile", "share_food", "protect"].includes(step.actionType)
+        ? "resolved"
+        : ["accuse", "threaten", "assault", "betray"].includes(step.actionType) ? "angry" : "determined",
+      confidence: 95,
+      privateMemory: ["reveal_secret", "conceal_secret"].includes(step.actionType),
+      sourceEventId: eventId
+    });
   }
   return {
     actor,
@@ -1666,7 +1956,7 @@ export function applyAction(state, step) {
 export function fallbackDeparturePlan(state) {
   const visit = state.currentVisit;
   const person = materializeResident(state, visit.personId, true);
-  const combined = visit.counsel.join(". ").toLowerCase();
+  const commitment = currentVisitorCommitment(state, visit, person);
   const latestIntent = (intent, pattern) => {
     const latest = [...visit.counsel].reverse().find((entry) => pattern.test(entry.toLowerCase()));
     return Boolean(latest && classifyPriestSpeech(latest).includes(intent));
@@ -1679,7 +1969,9 @@ export function fallbackDeparturePlan(state) {
   const visitorAcceptedDonation = [...visit.history].reverse()
     .find((entry) => entry.speaker === "visitor")?.text
     .match(/\b(?:yes|i will|i can|gladly|bring|give|donate|contribute)\b/i);
-  if (donationIntent && visitorAcceptedDonation) actionType = "donate";
+  const latestCounsel = visit.counsel.at(-1)?.toLowerCase() || "";
+  if (commitment) actionType = commitment.actionType;
+  else if (donationIntent && visitorAcceptedDonation) actionType = "donate";
   else if (latestIntent("apology", /\b(?:apologize|make amends|say sorry)\b/)) actionType = "apologize";
   else if (latestIntent("forgiveness", /\b(?:forgiv\w*|pardon|mercy|make amends)\b/)) actionType = "forgive";
   else if (latestIntent("truth", /\b(?:truth|confess|admit|honest)\b/)) actionType = "seek_absolution";
@@ -1687,10 +1979,31 @@ export function fallbackDeparturePlan(state) {
   else if (latestIntent("prayer", /\b(?:pray\w*|faith|scripture|grace)\b/)) actionType = "pray_with";
   else if (latestIntent("report", /\b(?:report|reeve|justice)\b/)) actionType = "report_crime";
   else if (latestIntent("charity", /\b(?:help|charity|give|share|food|alms)\b/)) actionType = "share_food";
+  else if (/\b(?:threaten|frighten|intimidate|make .* afraid)\b/.test(latestCounsel)) actionType = "threaten";
+  else if (/\b(?:punish|shame|denounce|blame)\b/.test(latestCounsel)) actionType = "accuse";
+  else if (/\b(?:spread|start)\b.*\b(?:rumor|gossip)\b|\btell everyone\b/.test(latestCounsel)) actionType = "gossip";
+  else if (/\b(?:steal|take .* for yourself|keep the money|keep the goods)\b/.test(latestCounsel)) actionType = "steal";
   const relationIds = person.relationshipIds.filter((id) => state.residents.some((resident) => resident.id === id && resident.active));
-  const targetId = actionType === "donate" && donationIntent
-    ? "priest"
-    : TARGET_REQUIRED_ACTIONS.has(actionType) ? (relationIds[0] || null) : null;
+  const issueThread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+  const materialTargetId = [...new Set([...(issueThread?.subjectIds || []), ...relationIds])]
+    .find((id) => {
+    const target = state.residents.find((resident) => resident.id === id);
+      return target?.active && target.id !== person.id && target.householdId !== person.householdId;
+    }) || null;
+  const latestVisitorReply = [...visit.history].reverse().find((line) => line.speaker === "visitor")?.text.toLowerCase() || "";
+  const deliberateRestraint = /\b(?:keep silent|say nothing|tell no one|keep this secret|do not|don't|never)\b/.test(latestCounsel)
+    || /\b(?:i will not|i won't|i cannot|i can't|i changed my mind|i no longer intend)\b/.test(latestVisitorReply);
+  if (actionType === "keep_silence" && !deliberateRestraint) {
+    actionType = relationIds.length
+      ? "visit"
+      : ["confession", "faith", "grave conscience"].includes(visit.issue.kind) ? "repent" : "attend_church";
+  }
+  const targetId = commitment?.targetId
+    ?? (actionType === "donate" && donationIntent
+      ? "priest"
+      : ["share_food", "lend_money"].includes(actionType)
+        ? materialTargetId
+        : TARGET_REQUIRED_ACTIONS.has(actionType) ? (relationIds[0] || null) : null);
   const steps = [{
     depth: 1,
     actorId: person.id,
@@ -1701,12 +2014,12 @@ export function fallbackDeparturePlan(state) {
     description: actionType === "donate" && targetId === "priest"
       ? `${person.name} brings a donation to the church.`
       : `${person.name} leaves the church and chooses to ${actionType.replaceAll("_", " ")}${targetId ? ` in dealing with ${state.residents.find((resident) => resident.id === targetId).name}` : ""}.`,
-    detail: actionType === "donate" && donationIntent
+    detail: commitment?.detail || (actionType === "donate" && donationIntent
       ? `${donationIntent.resource}:${donationIntent.amount}`
-      : ""
+      : "")
   }];
   if (targetId && ["forgive", "apologize", "share_food", "report_crime"].includes(actionType)) {
-    const target = materializeResident(state, targetId, false);
+    const target = state.residents.find((resident) => resident.id === targetId);
     const thirdId = target.relationshipIds.find((id) => id !== person.id) || null;
     steps.push({
       depth: 2,
@@ -1724,6 +2037,77 @@ export function fallbackDeparturePlan(state) {
   };
 }
 
+function visitorCommitmentAction(state, visit, person) {
+  const indexedHistory = visit.history.map((line, index) => ({ ...line, index }));
+  const lastRetractionIndex = indexedHistory
+    .filter((line) => line.speaker === "visitor"
+      && /\b(?:i will not|i won't|i cannot|i can't|i shall not|i changed my mind|i no longer intend)\b/i.test(line.text))
+    .at(-1)?.index ?? -1;
+  const committedLine = [...indexedHistory].reverse().find((line) => (
+    line.speaker === "visitor"
+    && line.index > 0
+    && line.index > lastRetractionIndex
+    && /\b(?:i will|i'll|i shall|i intend|i am going to|i can)\b/i.test(line.text)
+    && !/\b(?:i will not|i won't|i cannot|i can't|i shall not)\b/i.test(line.text)
+  ));
+  if (!committedLine) return null;
+  const text = committedLine.text.toLowerCase();
+  const related = state.residents.find((resident) => resident.id === visit.issue.relatedPersonId);
+  const mentioned = residentMentionedInText(state, committedLine.text);
+  const summons = state.eventQueue.find((event) => (
+    event.type === "priest_summons" && event.dueDay > state.calendar.absoluteDay
+  ));
+  const validTarget = [mentioned, related]
+    .find((target) => target && person.relationshipIds.includes(target.id));
+  const targetId = validTarget?.id || person.relationshipIds.find((id) => (
+    state.residents.some((resident) => resident.id === id && resident.active && resident.alive)
+  )) || null;
+  if (/\b(?:tell|ask|send)\b.*\bcome\b/.test(text) && summons) {
+    return { actionType: "visit", targetId: summons.sourcePersonId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\b(?:gather|collect)\b.*\b(?:receipt|evidence|witness)|\b(?:appeal|report|magistrate|reeve|testify)\b/.test(text)) {
+    return { actionType: "report_crime", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\breturn\b.*\b(?:grain|flour|goods|money|coin|stolen)\b/.test(text)) {
+    return { actionType: "return_stolen_goods", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\b(?:speak|talk|confront|meet|ask)\b/.test(text) && targetId) {
+    return { actionType: "visit", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\b(?:apologize|say sorry|make amends)\b/.test(text)) {
+    return { actionType: "apologize", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\bforgive\b/.test(text)) return { actionType: "forgive", targetId, detail: "", historyIndex: committedLine.index };
+  if (/\b(?:share|give|bring)\b.*\b(?:food|bread|grain|cheese)\b/.test(text)) {
+    return { actionType: "share_food", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\bpray\b/.test(text) && targetId) return { actionType: "pray_with", targetId, detail: "", historyIndex: committedLine.index };
+  if (/\b(?:protect|shelter|keep .* safe)\b/.test(text)) return { actionType: "protect", targetId, detail: "", historyIndex: committedLine.index };
+  if (/\b(?:refuse|decline|reject)\b.*\b(?:work|offer|trade)\b/.test(text)) {
+    return { actionType: "refuse_work", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\b(?:work harder|return to work|do the work)\b/.test(text)) {
+    return { actionType: "work_harder", targetId: null, detail: "", historyIndex: committedLine.index };
+  }
+  if (/\b(?:leave|depart|flee)\b/.test(text)) return { actionType: "leave_village", targetId: null, detail: "", historyIndex: committedLine.index };
+  return null;
+}
+
+function currentVisitorCommitment(state, visit, person) {
+  const commitment = visitorCommitmentAction(state, visit, person);
+  if (!commitment) return null;
+  const counselBeforeCommitment = visit.history
+    .slice(0, commitment.historyIndex)
+    .filter((line) => line.speaker === "priest").length;
+  const actionableIntents = new Set([
+    "apology", "forgiveness", "truth", "work", "prayer", "report", "charity", "departure"
+  ]);
+  const superseded = visit.counsel.slice(counselBeforeCommitment).some((line) => (
+    classifyPriestSpeech(line).some((intent) => actionableIntents.has(intent))
+  ));
+  return superseded ? null : commitment;
+}
+
 export function departureCandidates(state) {
   const person = materializeResident(state, state.currentVisit.personId, true);
   const people = [...state.residents, ...state.externalActors];
@@ -1731,7 +2115,16 @@ export function departureCandidates(state) {
   const second = first.flatMap((resident) => resident.relationshipIds)
     .map((id) => people.find((resident) => resident.id === id))
     .filter((resident) => resident?.active);
-  return [...new Map([person, ...first, ...second].map((resident) => [resident.id, resident])).values()].slice(0, 18);
+  const thread = state.issueThreads.find((entry) => entry.id === state.currentVisit.issue.threadId);
+  const threadPeople = (thread?.subjectIds || [])
+    .map((id) => people.find((resident) => resident.id === id))
+    .filter((resident) => resident?.active);
+  const mentionedPeople = state.residents.filter((resident) => (
+    state.currentVisit.history.some((line) => line.text.toLowerCase().includes(resident.name.toLowerCase()))
+  ));
+  return [...new Map(
+    [person, ...threadPeople, ...mentionedPeople, ...first, ...second].map((resident) => [resident.id, resident])
+  ).values()].slice(0, 24);
 }
 
 const TARGET_REQUIRED_ACTIONS = new Set([
@@ -1741,7 +2134,8 @@ const TARGET_REQUIRED_ACTIONS = new Set([
   "visit", "write_letter", "protect", "offer_work", "refuse_work", "court", "marry",
   "separate", "conceive_child", "adopt_child", "flirt_with_priest", "proposition_priest",
   "attempt_seduction", "blackmail_priest", "report_priest_to_bishop", "praise_priest_to_bishop",
-  "attack_priest", "poison_priest", "kill_priest", "defend_priest", "challenge_priest"
+  "attack_priest", "poison_priest", "kill_priest", "defend_priest", "challenge_priest",
+  "threaten", "assault", "betray", "evict", "begin_feud", "expel", "divorce"
 ]);
 
 const HEALING_OCCUPATIONS = new Set(["healer", "herbalist", "midwife"]);
@@ -1938,6 +2332,51 @@ function hasLifeCourseEligibility(state, visit, actor, target, actionType, detai
     }
     return /\b(?:village|town|parish|settlement)\b/.test(counsel);
   }
+  if (actionType === "keep_silence") {
+    const visitorWords = visit.history
+      .slice(1)
+      .filter((line) => line.speaker === "visitor")
+      .map((line) => line.text)
+      .join(" ")
+      .toLowerCase();
+    return /\b(?:keep silent|say nothing|tell no one|not ready|cannot decide|can't decide|refuse|will not|won't|need more time)\b/.test(
+      `${counsel} ${visitorWords}`
+    );
+  }
+  if (["threaten", "assault", "begin_feud", "evict", "betray", "expel", "divorce"].includes(actionType)) {
+    if (!target || actor.age < ADULT_AGE) return false;
+    const relationship = getRelationship(state, actor.id, target.id, false);
+    const personality = actor.personality || deriveResidentProfile(state, actor).personality;
+    const directSupport = {
+      threaten: /\bthreaten|frighten|intimidate|make .* afraid\b/,
+      assault: /\battack|strike|beat|hurt|assault\b/,
+      begin_feud: /\bfeud|revenge|retaliate\b/,
+      evict: /\bevict|remove .* home|drive .* out\b/,
+      betray: /\bbetray|deceive|turn against\b/,
+      expel: /\bexpel|banish|drive .* village\b/,
+      divorce: /\bdivorce|end .* marriage\b/
+    }[actionType]?.test(counsel);
+    if (actionType === "divorce") return actor.spouseId === target.id && Boolean(directSupport);
+    if (actionType === "expel") {
+      return ["reeve", "bailiff"].includes(actor.occupation) && Boolean(directSupport);
+    }
+    const independentPressure = actor.stress >= 72
+      && personality.boldness >= 58
+      && ((relationship?.resentment || 0) >= 65 || (relationship?.fear || 0) >= 70);
+    return Boolean(directSupport || independentPressure);
+  }
+  if (["steal", "vandalize", "drink", "gamble", "relapse", "move_household"].includes(actionType)) {
+    if (actor.age < ADULT_AGE && actionType === "move_household") return false;
+    const support = {
+      steal: /\bsteal|take .* for yourself|keep the money|keep the goods\b/,
+      vandalize: /\bvandalize|damage|break|burn\b/,
+      drink: /\bdrink|ale|wine\b/,
+      gamble: /\bgamble|dice|cards|wager\b/,
+      relapse: /\brelapse|return to .* vice\b/,
+      move_household: /\bmove|new home|new room|relocate\b/
+    }[actionType]?.test(counsel);
+    return Boolean(support || (actor.stress >= 78 && actor.morale <= 25));
+  }
   return true;
 }
 
@@ -1983,6 +2422,11 @@ function decisionScore(state, visit, actor, target, actionType) {
   score -= state.priest.scandal * 0.16;
   score += visit.issue.gravity * 3;
   score += Math.min(8, visit.counsel.join(". ").split(/\s+/).filter(Boolean).length / 10);
+  const commitment = currentVisitorCommitment(state, visit, actor);
+  if (commitment?.actionType === actionType
+    && (!commitment.targetId || commitment.targetId === target?.id)) {
+    score += 30;
+  }
   if (household?.food < 20 || household?.wealth < 20) {
     if (["change_job", "leave_village", "invite_migrant", "work_harder"].includes(actionType)) score += 10;
     if (["marry", "conceive_child", "adopt_child"].includes(actionType)) score -= 8;
@@ -2025,6 +2469,15 @@ function decisionScore(state, visit, actor, target, actionType) {
     score += (personality.boldness - 50) * 0.3;
     score += (actor.trustPriest - 50) * 0.15;
   }
+  if (["steal", "vandalize", "threaten", "assault", "begin_feud", "evict", "betray", "expel"].includes(actionType)) {
+    score += (personality.boldness - 50) * 0.25;
+    score += Math.max(0, actor.stress - 50) * 0.22;
+    const relationship = target ? getRelationship(state, actor.id, target.id, false) : null;
+    score += (relationship?.resentment || 0) * 0.18;
+    if (/\b(?:steal|take .* yourself|threaten|frighten|attack|hurt|revenge|evict|betray|expel|punish)\b/.test(counsel)) {
+      score += 24;
+    }
+  }
   const relevantRumors = state.rumors.filter((rumor) => (
     rumor.active && rumor.heardByIds.includes(actor.id) && (!target || rumor.subjectId === target.id)
   ));
@@ -2040,6 +2493,9 @@ function requiredDecisionScore(actionType) {
   if (["kill_priest", "poison_priest"].includes(actionType)) return 85;
   if (["attack_priest", "blackmail_priest", "attempt_seduction"].includes(actionType)) return 70;
   if (["report_priest_to_bishop", "proposition_priest"].includes(actionType)) return 55;
+  if (["assault", "begin_feud", "evict", "betray", "expel"].includes(actionType)) return 60;
+  if (["steal", "vandalize"].includes(actionType)) return 48;
+  if (actionType === "threaten") return 35;
   if (["marry", "conceive_child", "adopt_child", "leave_village"].includes(actionType)) return 55;
   if (["court", "separate", "change_job", "invite_migrant"].includes(actionType)) return 45;
   return 25;
@@ -2065,6 +2521,25 @@ function resolveExternalJudgment(state, person, parentEventId) {
     state.priest.bishopFavor = clamp(state.priest.bishopFavor + (state.priest.scandal < 45 ? 10 : -15));
     title = "The papal legate issues a ruling";
     text = state.priest.scandal < 45 ? "Rome leaves the parish under ordinary oversight." : "Rome places the parish under strict examination.";
+  } else if (role === "steward") {
+    state.town.metrics.harmony = clamp(state.town.metrics.harmony + (state.priest.localTrust >= 55 ? 3 : -2));
+    state.priest.localTrust = clamp(state.priest.localTrust + (state.priest.scandal < 40 ? 2 : -3));
+    title = "The manor steward sets terms for cooperation";
+    text = state.priest.scandal < 40
+      ? "The steward agrees to compare written evidence with the church before enforcing disputed demands."
+      : "The steward warns that further unsupported promises from the church will be treated as interference.";
+  } else if (role === "magistrate") {
+    state.town.metrics.safety = clamp(state.town.metrics.safety + 4);
+    state.material.crime = clamp(state.material.crime - 4);
+    title = "The magistrate opens a formal inquiry";
+    text = "Witnesses, receipts, injuries, and property claims will be examined under county authority.";
+  } else if (role === "lord") {
+    state.priest.royalNotice = clamp(state.priest.royalNotice + 5);
+    state.priest.localTrust = clamp(state.priest.localTrust + (state.priest.moralAuthority >= 55 ? 4 : -4));
+    title = "The lord of the manor defines the boundary of counsel";
+    text = state.priest.moralAuthority >= 55
+      ? "The lord permits the priest to advocate and accompany villagers while reserving compulsory judgment to lawful authority."
+      : "The lord restricts the church from making promises that bind manor officers or property.";
   } else if (role === "sheriff") {
     state.authorityStages.sheriffCompleted = true;
     state.town.metrics.safety = clamp(state.town.metrics.safety + 6);
@@ -2106,10 +2581,27 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
     return {
       summary: `${candidateMap.get(visit.personId)?.name || "The visitor"} acted after the hour's counsel.`,
       steps: [],
-      complete: false
+      complete: false,
+      fullyAccepted: false,
+      rejection: {
+        stepIndex: 0,
+        gate: "chain_length",
+        detail: "A departure chain must contain one to three steps."
+      }
     };
   }
   const steps = [];
+  let rejection = null;
+  const reject = (index, raw, gate, detail) => {
+    rejection = {
+      stepIndex: index,
+      actionType: typeof raw?.actionType === "string" ? raw.actionType : null,
+      actorId: typeof raw?.actorId === "string" ? raw.actorId : null,
+      targetId: typeof raw?.targetId === "string" ? raw.targetId : null,
+      gate,
+      detail
+    };
+  };
   let expectedActorId = visit.personId;
   const maximumIntensity = maximumIntensityForLicense(visit.eventLicense);
   const reservedRelationshipParticipants = new Set();
@@ -2119,30 +2611,97 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
     const actor = candidateMap.get(raw.actorId);
     const target = raw.targetId == null ? null : candidateMap.get(raw.targetId);
     const requestedIntensity = Number(raw.intensity);
-    if (!actor || actor.id !== expectedActorId) break;
-    if (relationshipChangingActions.has(raw.actionType)
-      && (reservedRelationshipParticipants.has(actor.id) || (target && reservedRelationshipParticipants.has(target.id)))) {
+    if (!actor || actor.id !== expectedActorId) {
+      reject(index, raw, "causal_actor", `Expected actor ${expectedActorId}.`);
       break;
     }
-    if (!AI_ALLOWED_ACTIONS.includes(raw.actionType)) break;
-    if (target?.id === "priest" && !PRIEST_TARGET_ACTIONS.has(raw.actionType)) break;
-    if (target?.id !== "priest" && PRIEST_TARGET_ACTIONS.has(raw.actionType) && raw.actionType !== "donate") break;
-    if (raw.targetId != null && (!target || target.id === actor.id)) break;
-    if (target && target.id !== "priest" && !actor.relationshipIds.includes(target.id)) break;
-    if (TARGET_REQUIRED_ACTIONS.has(raw.actionType) && !target) break;
-    if (!TARGET_REQUIRED_ACTIONS.has(raw.actionType) && target && raw.actionType !== "donate") break;
-    if (!hasPhaseZeroCapability(actor, raw.actionType)) break;
+    if (relationshipChangingActions.has(raw.actionType)
+      && (reservedRelationshipParticipants.has(actor.id) || (target && reservedRelationshipParticipants.has(target.id)))) {
+      reject(index, raw, "relationship_conflict", "A participant was already used by an incompatible relationship-changing step.");
+      break;
+    }
+    if (!AI_ALLOWED_ACTIONS.includes(raw.actionType)) {
+      reject(index, raw, "action_enum", "The action type is not allowed.");
+      break;
+    }
+    if (target?.id === "priest" && !PRIEST_TARGET_ACTIONS.has(raw.actionType)) {
+      reject(index, raw, "priest_target", "This action cannot target the priest.");
+      break;
+    }
+    if (target?.id !== "priest" && PRIEST_TARGET_ACTIONS.has(raw.actionType) && raw.actionType !== "donate") {
+      reject(index, raw, "priest_target", "This action requires the priest as its target.");
+      break;
+    }
+    if (raw.targetId != null && (!target || target.id === actor.id)) {
+      reject(index, raw, "target_identity", "The target is missing or is the actor.");
+      break;
+    }
+    const carriesPriestSummons = raw.actionType === "visit" && state.eventQueue.some((event) => (
+      event.type === "priest_summons"
+      && event.sourcePersonId === target?.id
+      && event.dueDay > state.calendar.absoluteDay
+    ));
+    const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+    const storyRelevantTarget = target && (
+      thread?.subjectIds.includes(target.id)
+      || visit.history.some((line) => line.text.toLowerCase().includes(target.name.toLowerCase()))
+    );
+    if (target && target.id !== "priest" && !actor.relationshipIds.includes(target.id)
+      && !carriesPriestSummons && !storyRelevantTarget) {
+      reject(index, raw, "target_graph", "The actor has no established path to the target.");
+      break;
+    }
+    if (TARGET_REQUIRED_ACTIONS.has(raw.actionType) && !target) {
+      reject(index, raw, "target_required", "This action requires a target.");
+      break;
+    }
+    if (!TARGET_REQUIRED_ACTIONS.has(raw.actionType) && target
+      && !["donate", "improvise"].includes(raw.actionType)) {
+      reject(index, raw, "target_forbidden", "This action must not have a target.");
+      break;
+    }
+    if (!hasPhaseZeroCapability(actor, raw.actionType)) {
+      reject(index, raw, "capability", "The actor lacks the required occupation or capability.");
+      break;
+    }
     const detail = String(
       raw.detail || (["change_job", "offer_work"].includes(raw.actionType) ? "laborer" : "")
     ).trim().slice(0, 40);
-    if (!hasLifeCourseEligibility(state, visit, actor, target, raw.actionType, detail)) break;
-    if (counselContradictsAction(visit, raw.actionType)) break;
+    if (raw.actionType === "improvise" && detail.length < 3) {
+      reject(index, raw, "detail_required", "An improvised action requires a concrete detail.");
+      break;
+    }
+    if (raw.actionType === "improvise"
+      && /\b(?:electricity|pistol|rifle|telephone|radio|engine|automobile|airplane|pope|king)\b/i.test(
+        `${detail} ${raw.title || ""} ${raw.description || ""}`
+      )) {
+      reject(index, raw, "historical_plausibility", "The improvised action contains impossible technology or unsupported supreme authority.");
+      break;
+    }
+    if (!hasLifeCourseEligibility(state, visit, actor, target, raw.actionType, detail)) {
+      reject(index, raw, "eligibility", "The action violates a life-course, consent, authority, or event-license rule.");
+      break;
+    }
+    if (counselContradictsAction(visit, raw.actionType)) {
+      reject(index, raw, "contradiction", "The latest relevant counsel contradicts this action.");
+      break;
+    }
     const resolvedDecisionScore = decisionScore(state, visit, actor, target, raw.actionType);
-    if (resolvedDecisionScore < requiredDecisionScore(raw.actionType)) break;
-    if (!Number.isInteger(requestedIntensity) || requestedIntensity < 1 || requestedIntensity > maximumIntensity) break;
+    if (resolvedDecisionScore < requiredDecisionScore(raw.actionType)) {
+      reject(index, raw, "decision_score", `Decision score ${resolvedDecisionScore} is below ${requiredDecisionScore(raw.actionType)}.`);
+      break;
+    }
+    const maximumStepIntensity = raw.actionType === "improvise" ? Math.min(2, maximumIntensity) : maximumIntensity;
+    if (!Number.isInteger(requestedIntensity) || requestedIntensity < 1 || requestedIntensity > maximumStepIntensity) {
+      reject(index, raw, "intensity", `Intensity must be between 1 and ${maximumStepIntensity}.`);
+      break;
+    }
     if (["repair", "build"].includes(raw.actionType)) {
       const household = state.households.find((entry) => entry.id === actor.householdId);
-      if (!household || household.wealth < requestedIntensity * 2 || household.food < requestedIntensity) break;
+      if (!household || household.wealth < requestedIntensity * 2 || household.food < requestedIntensity) {
+        reject(index, raw, "affordability", "The household cannot afford the building action.");
+        break;
+      }
     }
     if (["share_food", "lend_money", "donate", "lower_prices", "organize_aid"].includes(raw.actionType)) {
       const occupied = state.households.filter((household) => household.memberIds.some((id) => {
@@ -2155,23 +2714,41 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
         : null;
       if (raw.actionType === "share_food"
         && (!source || !destination || !occupied.includes(destination)
-          || source.id === destination.id || source.food < requestedIntensity * 2)) break;
+          || source.id === destination.id || source.food < requestedIntensity * 2)) {
+        reject(index, raw, "affordability", "The food transfer is impossible or unfunded.");
+        break;
+      }
       if (raw.actionType === "lend_money"
         && (!source || !destination || !occupied.includes(destination)
-          || source.id === destination.id || source.wealth < requestedIntensity * 2)) break;
+          || source.id === destination.id || source.wealth < requestedIntensity * 2)) {
+        reject(index, raw, "affordability", "The loan is impossible or unfunded.");
+        break;
+      }
       if (raw.actionType === "donate"
         && target?.id === "priest") {
         const donation = parseChurchDonationDetail(detail, requestedIntensity * 2);
         const available = churchDonationCapacity(state, actor, donation.resource);
-        if (!source || available < donation.amount) break;
+        if (!source || available < donation.amount) {
+          reject(index, raw, "affordability", "The church donation exceeds available household resources.");
+          break;
+        }
       } else if (raw.actionType === "donate"
         && (!source || source.wealth < requestedIntensity * 2
           || (destination && (!occupied.includes(destination) || destination.id === source.id))
-          || !(destination || occupied.some((household) => household.id !== source.id)))) break;
-      if (raw.actionType === "lower_prices" && (!source || source.wealth < requestedIntensity)) break;
+          || !(destination || occupied.some((household) => household.id !== source.id)))) {
+        reject(index, raw, "affordability", "The donation is impossible or unfunded.");
+        break;
+      }
+      if (raw.actionType === "lower_prices" && (!source || source.wealth < requestedIntensity)) {
+        reject(index, raw, "affordability", "The actor cannot afford to subsidize lower prices.");
+        break;
+      }
       if (raw.actionType === "organize_aid"
         && (!source || (source.food < requestedIntensity * 2 && source.wealth < requestedIntensity)
-          || !occupied.some((household) => household.id !== source.id))) break;
+          || !occupied.some((household) => household.id !== source.id))) {
+        reject(index, raw, "affordability", "The aid effort lacks resources or recipients.");
+        break;
+      }
     }
     steps.push({
       depth: index + 1,
@@ -2179,9 +2756,19 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       targetId: target?.id ?? null,
       actionType: raw.actionType,
       intensity: requestedIntensity,
-      title: raw.actionType.replaceAll("_", " "),
-      description: `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`,
-      detail: ["change_job", "offer_work", "donate"].includes(raw.actionType) ? detail : "",
+      title: String(
+        raw.actionType === "improvise" && raw.title
+          ? raw.title
+          : raw.actionType.replaceAll("_", " ")
+      ).slice(0, 100),
+      description: String(
+        raw.actionType === "improvise" && raw.description
+          ? raw.description
+          : `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`
+      ).slice(0, 400),
+      detail: ["change_job", "offer_work", "donate", "improvise"].includes(raw.actionType) ? detail : "",
+      motive: typeof raw.motive === "string" ? raw.motive.slice(0, 30) : "practical",
+      evidence: typeof raw.evidence === "string" ? raw.evidence.slice(0, 180) : "",
       decisionScore: resolvedDecisionScore,
       expectedCreatedResidentId: typeof raw.createdResidentId === "string" ? raw.createdResidentId : null
     });
@@ -2189,13 +2776,102 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       reservedRelationshipParticipants.add(actor.id);
       if (target) reservedRelationshipParticipants.add(target.id);
     }
-    if (!target) break;
+    if (!target) {
+      if (index < rawSteps.length - 1) {
+        reject(index + 1, rawSteps[index + 1], "causal_chain", "A targetless action cannot lead to another actor step.");
+      }
+      break;
+    }
     expectedActorId = target.id;
   }
+  const fullyAccepted = steps.length === rawSteps.length;
   return {
     summary: `${candidateMap.get(visit.personId)?.name || "The visitor"} acted after the hour's counsel.`,
     steps,
-    complete: rawSteps.length > 0 && steps.length === rawSteps.length
+    complete: steps.length > 0,
+    fullyAccepted,
+    rejection
+  };
+}
+
+function normalizeAiDeparturePlan(state, plan) {
+  const visit = state.currentVisit;
+  const actor = state.residents.find((resident) => resident.id === visit?.personId);
+  const thread = state.issueThreads.find((entry) => entry.id === visit?.issue.threadId);
+  const safeAutoTargetActions = new Set([
+    "comfort", "advise", "apologize", "forgive", "reconcile", "pray_with", "share_food",
+    "lend_money", "shelter", "teach", "heal", "nurse", "hire", "accuse", "gossip",
+    "reveal_secret", "return_stolen_goods", "report_crime", "make_peace", "testify",
+    "visit", "write_letter", "protect", "offer_work", "refuse_work"
+  ]);
+  const candidateIds = [
+    visit?.issue.relatedPersonId,
+    ...(thread?.subjectIds || []),
+    ...(actor?.relationshipIds || [])
+  ].filter((personId, index, values) => (
+    personId && personId !== actor?.id && values.indexOf(personId) === index
+      && state.residents.some((resident) => resident.id === personId && resident.active && resident.alive)
+  ));
+  const normalizations = [];
+  const maximumIntensity = maximumIntensityForLicense(visit?.eventLicense);
+  const steps = (Array.isArray(plan?.steps) ? plan.steps : []).map((raw, index) => {
+    const step = { ...raw };
+    if (Number.isInteger(step.intensity)) {
+      const normalizedIntensity = clamp(step.intensity, 1, maximumIntensity);
+      if (normalizedIntensity !== step.intensity) {
+        normalizations.push({
+          stepIndex: index,
+          field: "intensity",
+          from: step.intensity,
+          to: normalizedIntensity,
+          reason: "event_license"
+        });
+        step.intensity = normalizedIntensity;
+      }
+    }
+    const maximumStepIntensity = step.actionType === "improvise" ? Math.min(2, maximumIntensity) : maximumIntensity;
+    if (Number.isInteger(step.intensity) && step.intensity > maximumStepIntensity) {
+      normalizations.push({
+        stepIndex: index,
+        field: "intensity",
+        from: step.intensity,
+        to: maximumStepIntensity,
+        reason: "bounded_improvisation"
+      });
+      step.intensity = maximumStepIntensity;
+    }
+    if (!TARGET_REQUIRED_ACTIONS.has(step.actionType)
+      && !["donate", "improvise"].includes(step.actionType)
+      && step.targetId != null) {
+      normalizations.push({
+        stepIndex: index,
+        field: "targetId",
+        from: step.targetId,
+        to: null,
+        reason: "targetless_action"
+      });
+      step.targetId = null;
+    } else if (TARGET_REQUIRED_ACTIONS.has(step.actionType)
+      && safeAutoTargetActions.has(step.actionType)
+      && (step.targetId == null || step.targetId === "priest")
+      && candidateIds[0]) {
+      normalizations.push({
+        stepIndex: index,
+        field: "targetId",
+        from: step.targetId ?? null,
+        to: candidateIds[0],
+        reason: "story_relevant_target"
+      });
+      step.targetId = candidateIds[0];
+    }
+    return step;
+  });
+  return {
+    plan: {
+      summary: String(plan?.summary || "").slice(0, 400),
+      steps
+    },
+    normalizations
   };
 }
 
@@ -2204,13 +2880,24 @@ export function finishVisit(state, plan, { record = true } = {}) {
   if (!visit) throw new Error("There is no visit to finish");
   const person = materializeResident(state, visit.personId, true);
   const submittedByAi = plan?.source === "ai";
-  let validated = validateDeparturePlan(state, plan);
-  const acceptedAiProposal = submittedByAi && validated.complete;
-  const rejectedProposal = submittedByAi && !acceptedAiProposal
+  const submittedPlan = {
+    summary: String(plan?.summary || "").slice(0, 400),
+    steps: Array.isArray(plan?.steps) ? plan.steps.slice(0, 10) : []
+  };
+  const normalizedSubmission = submittedByAi
+    ? normalizeAiDeparturePlan(state, submittedPlan)
+    : { plan: submittedPlan, normalizations: [] };
+  const submittedValidation = validateDeparturePlan(state, normalizedSubmission.plan);
+  let validated = submittedValidation;
+  const acceptedAiProposal = submittedByAi && submittedValidation.complete;
+  const fullyAcceptedAiProposal = acceptedAiProposal && submittedValidation.fullyAccepted;
+  const rejectedProposal = submittedByAi && !submittedValidation.fullyAccepted
     ? {
-      summary: String(plan?.summary || "").slice(0, 400),
-      submittedStepCount: Array.isArray(plan?.steps) ? plan.steps.length : 0,
-      steps: Array.isArray(plan?.steps) ? plan.steps.slice(0, 10) : []
+      summary: submittedPlan.summary,
+      submittedStepCount: submittedPlan.steps.length,
+      acceptedPrefixLength: submittedValidation.steps.length,
+      rejection: submittedValidation.rejection,
+      steps: submittedPlan.steps
     }
     : null;
   if (!validated.complete) validated = validateDeparturePlan(state, fallbackDeparturePlan(state));
@@ -2231,7 +2918,34 @@ export function finishVisit(state, plan, { record = true } = {}) {
       }]
     };
   }
+  const resolution = fullyAcceptedAiProposal
+    ? "accepted_ai"
+    : acceptedAiProposal ? "accepted_ai_prefix"
+      : rejectedProposal ? "fallback_after_rejection" : "fallback";
+  const evaluation = {
+    submittedSource: submittedByAi ? "ai" : (plan?.source || "simulation"),
+    submittedStepCount: submittedPlan.steps.length,
+    acceptedSubmittedStepCount: submittedValidation.steps.length,
+    submittedFullyAccepted: Boolean(submittedValidation.fullyAccepted),
+    submittedRejection: submittedValidation.rejection,
+    normalizations: normalizedSubmission.normalizations,
+    finalStepCount: validated.steps.length,
+    resolution
+  };
+  if (plan?.expectedEvaluation && JSON.stringify(plan.expectedEvaluation) !== JSON.stringify(evaluation)) {
+    throw new Error("Replay departure evaluation mismatch");
+  }
   let parentEventId = visit.originEventId;
+  if (record || plan?.expectedEvaluation) {
+    const evaluationEvent = appendEvent(state, {
+      type: "departure_evaluation",
+      parentId: visit.originEventId,
+      actorId: person.id,
+      targetId: null,
+      facts: evaluation
+    });
+    parentEventId = evaluationEvent.id;
+  }
   let followupCandidate = null;
   for (const step of validated.steps) {
     const result = applyAction(state, { ...step, parentEventId });
@@ -2268,6 +2982,7 @@ export function finishVisit(state, plan, { record = true } = {}) {
       );
     }
   }
+  updateIssueThreadAfterVisit(state, visit, validated.steps);
   if (person.id.startsWith("external-")) {
     parentEventId = resolveExternalJudgment(state, person, parentEventId);
   }
@@ -2279,11 +2994,26 @@ export function finishVisit(state, plan, { record = true } = {}) {
     privateMemory: ["confessional", "office"].includes(visit.location) || visit.hiddenConcernDisclosed,
     sourceEventId: parentEventId
   });
+  const importantCounsel = [...visit.counsel].reverse().find((line) => (
+    classifyPriestSpeech(line).some((intent) => intent !== "question" && intent !== "neutral")
+  )) || visit.counsel.at(-1) || "The priest listened.";
+  const finalActions = validated.steps.map((step) => step.actionType.replaceAll("_", " ")).join(", ");
+  addStructuredMemory(state, person, {
+    type: "visit_summary",
+    subjectId: "priest",
+    summary: `Father Benedict counseled: ${importantCounsel.slice(0, 105)} Agreed next action: ${finalActions || "none"}.`,
+    emotion: visit.mood,
+    confidence: 95,
+    privateMemory: ["confessional", "office"].includes(visit.location) || visit.hiddenConcernDisclosed,
+    sourceEventId: parentEventId
+  });
   if (record) {
     appendCommand(state, "finish_visit", {
       plan: { summary: validated.summary, steps: validated.steps },
+      submittedPlan,
+      evaluation,
       rejectedProposal,
-      resolution: acceptedAiProposal ? "accepted_ai" : rejectedProposal ? "fallback_after_rejection" : "fallback"
+      resolution
     }, acceptedAiProposal ? "ai" : (plan?.source || "simulation") === "ai" ? "fallback" : (plan?.source || "simulation"));
   }
   if (person.id.startsWith("external-")) person.active = false;
@@ -2516,7 +3246,11 @@ export function replayGame(seed, commands, replayBase = null) {
         source: command.source
       }, { record: false });
     } else if (command.type === "finish_visit") {
-      finishVisit(state, { ...command.payload.plan, source: command.source }, { record: false });
+      finishVisit(state, {
+        ...(command.payload.submittedPlan || command.payload.plan),
+        source: command.payload.evaluation?.submittedSource || command.source,
+        expectedEvaluation: command.payload.evaluation || null
+      }, { record: false });
     } else if (command.type === "deliver_sermon") {
       const attendees = sundayAttendance(state);
       const validatedOutcome = validateSermonResponse(

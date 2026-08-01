@@ -120,6 +120,26 @@ test("a natural opening receives an explicit advice question when Gemma omits on
   assert.match(response.opening, /should I return the grain and clear Anias Applecombe of blame\?/i);
 });
 
+test("noun-phrase alternatives produce grammatical opening questions", async () => {
+  const { state, visit, person } = groundedDecisionState("noun-alternative-question");
+  visit.intent.desiredOutcome = "guidance";
+  visit.scenarioFacts[3].text = "The immediate need is permission to grieve without pretending certainty.";
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            opening: "Father, grief has made prayer feel hollow, and I am ashamed of my anger."
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.opening(state, person);
+  assert.match(response.opening, /should I allow myself to grieve without pretending certainty\?/i);
+  assert.doesNotMatch(response.opening, /should I the immediate need/i);
+});
+
 test("the model cannot deny a concrete act assigned to the visitor", async () => {
   const { state, visit, person } = groundedDecisionState("self-action-denial");
   visit.scenarioFacts[0] = {
@@ -211,6 +231,14 @@ test("church aid receives an exact grounded acknowledgment without invented peop
   assert.doesNotMatch(response.reply, /Leonce/i);
 });
 
+test("single-item church aid uses a singular unit", async () => {
+  const { state, person } = groundedDecisionState("single-church-aid");
+  const client = repeatingClient();
+  const response = await client.conversation(state, person, "The church will give you 1 loaf of bread.");
+  assert.match(response.reply, /1 loaf from the church/i);
+  assert.doesNotMatch(response.reply, /1 loaves/i);
+});
+
 test("offers and practical advice receive direct, different answers", async () => {
   const { state, person } = groundedDecisionState("social-quality");
   const client = repeatingClient();
@@ -246,6 +274,12 @@ test("anything-else questions introduce a new concern or close the meeting", asy
 test("anything else about the current matter does not invent a new topic", async () => {
   const { state, visit, person } = groundedDecisionState("current-matter-help");
   const oswyn = state.residents.find((resident) => resident.id !== person.id);
+  for (const resident of state.residents) {
+    if (resident.id !== oswyn.id && resident.firstName === "Oswyn") {
+      resident.firstName = `Other${resident.id}`;
+      resident.name = `${resident.firstName} ${resident.surname}`;
+    }
+  }
   oswyn.firstName = "Oswyn";
   oswyn.name = "Oswyn Page";
   visit.scenarioFacts = [
@@ -294,9 +328,18 @@ test("help convincing a named person remains within the current dispute", async 
     person,
     "Is there anything else I can do to help convince Oswyn?"
   );
-  assert.match(response.reply, /Oswyn Page/i);
+  assert.match(response.reply, /Oswyn/i);
   assert.match(response.reply, /evidence|receipts|direct answer/i);
   assert.doesNotMatch(response.reply, /neglecting prayer|one other thing/i);
+});
+
+test("anything else I can help with defaults to the current matter", async () => {
+  const { state, visit, person } = groundedDecisionState("current-help-after-prayer");
+  visit.scenarioFacts[3].text = "Collect copies of receipts and appeal the excess together.";
+  const client = repeatingClient();
+  const response = await client.conversation(state, person, "Anything else I can help with?");
+  assert.match(response.reply, /one more way.*current matter|receipts|appeal/i);
+  assert.doesNotMatch(response.reply, /neglecting prayer|another matter|circling the same words/i);
 });
 
 test("shared prayer is answered as prayer instead of mistaken for a factual question", async () => {
@@ -314,6 +357,109 @@ test("shared prayer is answered as prayer instead of mistaken for a factual ques
   );
   assert.match(response.reply, /Amen|thank you|praying/i);
   assert.doesNotMatch(response.reply, /lose tools before winter/i);
+});
+
+test("advising other people to pray does not pretend the visitor just prayed with the priest", async () => {
+  const { state, person } = groundedDecisionState("third-party-prayer-advice");
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            reply: "I will speak with Master Strongmill about safer work and ask him to pray with the boy, Father.",
+            memory: "The priest advised safety and prayer."
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.conversation(
+    state,
+    person,
+    "Talk to him about improving the boy's safety. Get them to pray together for the boy as well."
+  );
+  assert.match(response.reply, /speak with Master Strongmill/i);
+  assert.doesNotMatch(response.reply, /^Amen, Father/i);
+});
+
+test("identity checks treat first names and titled surnames as one person", async () => {
+  const { state, person } = groundedDecisionState("identity-alias");
+  const idas = state.residents.find((resident) => resident.id !== person.id);
+  idas.firstName = "Idas";
+  idas.surname = "Strongmill";
+  idas.name = "Idas Strongmill";
+  const client = repeatingClient();
+  const response = await client.conversation(
+    state,
+    person,
+    "Aren't Idas and Master Strongmill the same person?"
+  );
+  assert.match(response.reply, /same person/i);
+  assert.match(response.reply, /Idas.*Strongmill/i);
+  assert.doesNotMatch(response.reply, /complicates matters considerably/i);
+});
+
+test("summons requests receive a clear commitment instead of a repetition apology", async () => {
+  const { state, person } = groundedDecisionState("summon-response");
+  const idas = state.residents.find((resident) => resident.id !== person.id);
+  idas.firstName = "Idas";
+  idas.surname = "Strongmill";
+  idas.name = "Idas Strongmill";
+  const client = repeatingClient();
+  const response = await client.conversation(
+    state,
+    person,
+    "Please tell Master Strongmill to come talk to me at the church."
+  );
+  assert.match(response.reply, /tell Idas/i);
+  assert.match(response.reply, /come to the church/i);
+  assert.doesNotMatch(response.reply, /repeating myself/i);
+});
+
+test("full-name questions return the exact registered name", async () => {
+  const { state, person } = groundedDecisionState("full-name-answer");
+  const oswyn = state.residents.find((resident) => resident.id !== person.id);
+  oswyn.firstName = "Oswyn";
+  oswyn.surname = "Page";
+  oswyn.name = "Oswyn Page";
+  for (const resident of state.residents) {
+    if (resident.id !== oswyn.id && resident.firstName === "Oswyn") {
+      resident.firstName = `Other${resident.id}`;
+      resident.name = `${resident.firstName} ${resident.surname}`;
+    }
+  }
+  const client = repeatingClient();
+  const response = await client.conversation(state, person, "What is Oswyn's full name?");
+  assert.equal(response.reply, "Oswyn Page, Father. That is the full name.");
+});
+
+test("ordinary dialogue uses first names while full-name questions remain explicit", async () => {
+  const { state, person } = groundedDecisionState("natural-name-reference");
+  const oswyn = state.residents.find((resident) => resident.id !== person.id);
+  oswyn.firstName = "Oswyn";
+  oswyn.surname = "Page";
+  oswyn.name = "Oswyn Page";
+  for (const resident of state.residents) {
+    if (resident.id !== oswyn.id && resident.firstName === "Oswyn") {
+      resident.firstName = `Other${resident.id}`;
+      resident.name = `${resident.firstName} ${resident.surname}`;
+    }
+  }
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            reply: "I will speak with Oswyn Page tomorrow, Father.",
+            memory: "The visitor plans to speak with Oswyn Page."
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.conversation(state, person, "What will you do next?");
+  assert.match(response.reply, /speak with Oswyn tomorrow/i);
+  assert.doesNotMatch(response.reply, /Oswyn Page/);
 });
 
 test("farewells close naturally instead of reopening or apologizing for repetition", async () => {

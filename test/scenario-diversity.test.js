@@ -73,6 +73,8 @@ test("consecutive visitors avoid recently used scenario archetypes", () => {
     assert.ok(scenarioId);
     assert.ok(!seen.slice(-10).includes(scenarioId), `${scenarioId} repeated too soon`);
     seen.push(scenarioId);
+    const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+    if (thread) thread.status = "resolved";
     state.currentVisit = null;
     state.calendar.slot = (state.calendar.slot + 1) % 4;
     if (state.calendar.slot === 0) {

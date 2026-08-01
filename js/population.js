@@ -115,6 +115,8 @@ export function upgradePopulationState(state) {
   state.lastInvitedMigrationDay ??= -999;
   state.visitRequests ||= [];
   state.nextVisitRequestSequence ||= state.visitRequests.length + 1;
+  state.issueThreads ||= [];
+  state.nextIssueThreadSequence ||= state.issueThreads.length + 1;
   state.material ||= {
     season: "Spring",
     weather: "mild",

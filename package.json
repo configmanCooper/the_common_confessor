@@ -1,6 +1,6 @@
 {
   "name": "the-common-confessor",
-  "version": "0.10.0-playtest",
+  "version": "0.13.0-playtest",
   "private": true,
   "type": "module",
   "description": "A painterly 16th-century parish conversation and village consequence simulation.",
@@ -9,6 +9,7 @@
     "play": "powershell -ExecutionPolicy Bypass -File scripts/play.ps1",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.mjs",
-    "balance:year": "node scripts/one-year-balance.mjs"
+    "balance:year": "node scripts/one-year-balance.mjs",
+    "balance:social-12w": "node scripts/twelve-week-social-balance.mjs"
   }
 }

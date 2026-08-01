@@ -233,7 +233,8 @@ export const ACTION_TYPES = Object.freeze([
   "kill_priest", "defend_priest", "challenge_priest", "petition_bishop", "appeal_to_rome",
   "petition_crown", "claim_miracle", "fake_miracle", "claim_prophecy", "play_prank",
   "wear_disguise", "release_livestock_in_church", "stage_public_penance", "start_procession",
-  "ring_bells_at_midnight", "steal_church_relic", "return_church_relic", "seek_sanctuary"
+  "ring_bells_at_midnight", "steal_church_relic", "return_church_relic", "seek_sanctuary",
+  "improvise"
 ]);
 
 export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
@@ -243,12 +244,17 @@ export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
   "accuse", "gossip", "reveal_secret", "conceal_secret", "return_stolen_goods",
   "report_crime", "make_peace", "celebrate", "mourn", "fast", "repent", "testify", "visit",
   "write_letter", "organize_aid", "protest", "attend_church", "avoid_church", "seek_absolution",
-  "keep_silence", "confess_publicly", "protect", "offer_work", "refuse_work"
+  "keep_silence", "confess_publicly", "protect", "offer_work", "refuse_work", "improvise"
 ]);
 
 export const PHASE_TWO_LIFE_ACTIONS = Object.freeze([
   "court", "marry", "separate", "conceive_child", "adopt_child",
   "invite_migrant", "leave_village", "change_job"
+]);
+
+export const PHASE_THREE_RISK_ACTIONS = Object.freeze([
+  "steal", "vandalize", "threaten", "assault", "begin_feud", "evict", "betray",
+  "drink", "gamble", "relapse", "expel", "divorce", "move_household"
 ]);
 
 export const PHASE_FOUR_PRIEST_ACTIONS = Object.freeze([
@@ -266,6 +272,7 @@ export const PHASE_FIVE_AUTHORITY_ACTIONS = Object.freeze([
 export const AI_ALLOWED_ACTIONS = Object.freeze([
   ...PHASE_ZERO_SAFE_ACTIONS,
   ...PHASE_TWO_LIFE_ACTIONS,
+  ...PHASE_THREE_RISK_ACTIONS,
   ...PHASE_FOUR_PRIEST_ACTIONS,
   ...PHASE_FIVE_AUTHORITY_ACTIONS
 ]);
@@ -312,6 +319,27 @@ export const EXTERNAL_ROLES = Object.freeze({
     opening: "The Crown has heard of violence and disorder in this village. I have come to decide whether arrests or protection are required.",
     location: "nave",
     sprite: 12
+  },
+  steward: {
+    title: "Manor Steward",
+    names: ["Steward Oswyn Page", "Steward Robert Crowe", "Steward Alice Vane"],
+    opening: "Father, concerns from the village have begun to interfere with the manor's work. I have come to hear the accusation and the evidence separately.",
+    location: "office",
+    sprite: 28
+  },
+  magistrate: {
+    title: "County Magistrate",
+    names: ["Magistrate Edmund Hale", "Magistrate Joan Marlow", "Magistrate Walter Fane"],
+    opening: "A village dispute has grown beyond private counsel. I will hear what is known, what is merely believed, and what remedy the law can actually provide.",
+    location: "office",
+    sprite: 28
+  },
+  lord: {
+    title: "Lord of the Manor",
+    names: ["Lord Edmund Alder", "Lady Beatrice Thorn", "Lord Simon Wren"],
+    opening: "Father, your influence now touches matters of land, labor, and order. I have come because this dispute can no longer be governed at a distance.",
+    location: "nave",
+    sprite: 35
   },
   royal_commissioner: {
     title: "Royal Commissioner",

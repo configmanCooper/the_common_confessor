@@ -91,7 +91,7 @@ test("schema-11 parishes gain requested-visit scheduling state", () => {
   legacy.version = 11;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 12);
+  assert.equal(migrated.schemaVersion, 13);
   assert.deepEqual(migrated.visitRequests, []);
   assert.equal(migrated.nextVisitRequestSequence, 1);
 });

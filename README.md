@@ -5,12 +5,16 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 ## Playtest loop
 
 - Four private appointments each ordinary day.
+- From the second day onward, up to four additional named villagers may be requested; they may accept or decline.
 - Up to ten typed statements per visitor.
 - Confessional, office, nave, and shrine meeting locations.
 - Sunday attendance, sermon themes, and 100-word sermons.
 - 200 named starting villagers with households, relationships, knowledge, rumors, health, work, marriage, children, migration, and material conditions.
 - Conversation-driven AI may propose real actions and life changes, but deterministic rules validate every result.
-- Rare bishops, sheriffs, royal officers, papal legates, kings, and popes arise through causal escalation.
+- Persistent issue threads track pressure, awareness, danger, deadlines, memories, rumors, and recurring participants.
+- Church food, coin, medicine, and fuel stores can be given or replenished through donations.
+- Rare stewards, magistrates, lords, bishops, sheriffs, royal officers, papal legates, kings, and popes arise through difficult causal escalation.
+- Exported saves include action normalization, accepted-prefix, rejection-gate, and fallback diagnostics.
 
 ```powershell
 npm run play
@@ -21,6 +25,7 @@ Open the local URL printed in the terminal. `npm run play` starts this game and,
 ```powershell
 npm test
 npm run test:browser
+npm run balance:social-12w
 ```
 
 Final balancing can run a one-year deterministic simulation with:

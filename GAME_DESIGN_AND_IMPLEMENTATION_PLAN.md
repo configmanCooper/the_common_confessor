@@ -11,7 +11,7 @@
 
 ## 1. Product vision
 
-The Common Confessor is a single-player game about influence without direct control. The player is a village priest. Exactly four appointments occur on every ordinary day. If the normal eligibility pool is exhausted, the scheduler backfills from the least-recently-seen active villagers or a causally scheduled outside visitor rather than shortening the day. Each person chooses a part of the church suited to the matter:
+The Common Confessor is a single-player game about influence without direct control. The player is a village priest. Four ordinary appointments occur on every ordinary day. Beginning on the second day, the priest may additionally request up to four named villagers, who may accept or decline. Causal follow-ups and outside visitors can also occupy ordinary appointment hours. If the normal eligibility pool is exhausted, the scheduler backfills from the least-recently-seen active villagers rather than shortening the day. Each person chooses a part of the church suited to the matter:
 
 - The **confessional** for hidden sin, shame, or dangerous secrets.
 - The **parish office** for private practical counsel, disputes, work, money, family arrangements, or official complaints.
@@ -818,7 +818,7 @@ Visitors enter through the south door and follow location-specific paths. Sunday
 - Deferred profiles.
 - Church location routing.
 - Ten-statement limit.
-- Four-hour day.
+- Four ordinary appointments plus accepted requested visits.
 - Sunday transition.
 - Attendance.
 - Sermon word limit.
@@ -1174,6 +1174,39 @@ The independent reviewer must specifically examine:
 - Stale assets.
 - Unclear failure states.
 
+### Phase 9 — Organic flexibility, issue pressure, and diagnostic playtesting
+
+**Scope**
+
+- Preserve the longest valid causal prefix of an AI-proposed action chain instead of discarding a feasible first action because a later response fails validation.
+- Store deterministic rejection gates, accepted-prefix lengths, decision scores, and final resolutions in exported saves.
+- Treat explicit visitor commitments as major evidence while honoring later retractions or superseding counsel.
+- Maintain persistent issue threads with participants, pressure, awareness, danger, momentum, deadlines, memories, rumors, and authority escalation.
+- Allow at most three direct AI-selected actors while deterministic household, relationship, faction, rumor, material, and congregation systems spread broader effects efficiently.
+- Use first names or titles and surnames naturally; provide exact full names when asked.
+- Preserve visit summaries and interaction memories as prioritized context for future dialogue.
+- Support benevolent, selfish, cruel, corrupt, political, absurd, power-seeking, and self-sacrificing priestly playstyles without weakening hard consent, capability, resource, or extraordinary-event gates.
+- Run repeated live-Gemma weekly playthroughs with transcript, relevance, repetition, action-resolution, and replay diagnostics.
+
+**Tests**
+
+- Valid-prefix acceptance with authenticated replay.
+- Explicit promise, retraction, refusal, and summons follow-through.
+- Guarded-confession anti-invention checks.
+- Name-alias ambiguity and full-name requests.
+- Persistent issue pressure, organic follow-ups, broad propagation, and rare authority thresholds.
+- Save diagnostics sufficient to explain every AI rejection or fallback.
+- One-week live dialogue runs and one-year deterministic balance runs.
+
+**Review focus**
+
+- Unexplained `keep_silence` outcomes.
+- Model promises that do not become actions.
+- Invalid tail steps erasing valid first steps.
+- False entity matches and duplicate-name confusion.
+- Authority visits occurring without difficult causal prerequisites.
+- Thread pressure causing repetitive or runaway plots.
+
 ---
 
 ## 18. Commit plan
@@ -1201,7 +1234,7 @@ Every commit must include:
 The game is complete when:
 
 - Every new game begins with exactly 200 named villagers.
-- The player can conduct four appointments per ordinary day.
+- The player can conduct four ordinary appointments per day and request up to four additional commoners after the first day.
 - Each appointment supports ten typed statements.
 - Visitors reliably use the appropriate church location.
 - Sunday gathers a causally determined congregation.

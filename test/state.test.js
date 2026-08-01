@@ -470,10 +470,9 @@ test("rejected AI departures are recorded separately from accepted proposals", (
   assert.equal(state.aiProposals.length, 0);
 });
 
-test("partially invalid AI departure chains are rejected in full", () => {
+test("partially invalid AI departure chains retain their valid causal prefix", () => {
   const state = createGame("partial-ai-rejection-seed");
   const visit = beginVisit(state);
-  visit.eventLicense = "ordinary";
   const actor = state.residents.find((person) => person.id === visit.personId);
   const targetId = actor.relationshipIds[0];
   finishVisit(state, {
@@ -489,35 +488,43 @@ test("partially invalid AI departure chains are rejected in full", () => {
       {
         actorId: targetId,
         targetId: null,
-        actionType: "confess_publicly",
-        intensity: 5
+        actionType: "attack_priest",
+        intensity: 4
       }
     ]
   });
 
-  test("oversized AI departure chains are rejected before truncation", () => {
-    const state = createGame("oversized-ai-rejection-seed");
-    const visit = beginVisit(state);
-    finishVisit(state, {
-      source: "ai",
-      summary: "Four steps are not permitted.",
-      steps: Array.from({ length: 4 }, () => ({
-        actorId: visit.personId,
-        targetId: null,
-        actionType: "keep_silence",
-        intensity: 1
-      }))
-    });
-    const command = state.commandLog.at(-1);
-    assert.equal(command.source, "fallback");
-    assert.equal(command.payload.resolution, "fallback_after_rejection");
-    assert.equal(command.payload.rejectedProposal.submittedStepCount, 4);
-    assert.equal(command.payload.rejectedProposal.steps.length, 4);
-    assert.equal(state.aiProposals.length, 0);
+  const command = state.commandLog.at(-1);
+  assert.equal(command.source, "ai");
+  assert.equal(command.payload.resolution, "accepted_ai_prefix");
+  assert.equal(command.payload.plan.steps.length, 1);
+  assert.equal(command.payload.plan.steps[0].actionType, "visit");
+  assert.equal(command.payload.rejectedProposal.steps.length, 2);
+  assert.equal(command.payload.rejectedProposal.acceptedPrefixLength, 1);
+  assert.equal(command.payload.evaluation.acceptedSubmittedStepCount, 1);
+  assert.ok(command.payload.evaluation.submittedRejection.gate);
+  assert.equal(state.aiProposals.length, 1);
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+});
+
+test("oversized AI departure chains are rejected before truncation", () => {
+  const state = createGame("oversized-ai-rejection-seed");
+  const visit = beginVisit(state);
+  finishVisit(state, {
+    source: "ai",
+    summary: "Four steps are not permitted.",
+    steps: Array.from({ length: 4 }, () => ({
+      actorId: visit.personId,
+      targetId: null,
+      actionType: "keep_silence",
+      intensity: 1
+    }))
   });
   const command = state.commandLog.at(-1);
   assert.equal(command.source, "fallback");
   assert.equal(command.payload.resolution, "fallback_after_rejection");
-  assert.equal(command.payload.rejectedProposal.steps.length, 2);
+  assert.equal(command.payload.rejectedProposal.submittedStepCount, 4);
+  assert.equal(command.payload.rejectedProposal.steps.length, 4);
+  assert.equal(command.payload.evaluation.submittedRejection.gate, "chain_length");
   assert.equal(state.aiProposals.length, 0);
 });

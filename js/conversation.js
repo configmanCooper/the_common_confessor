@@ -101,6 +101,8 @@ export function clarificationFacts(visit, text) {
   let wantedIds = [];
   if (/\b(?:who|whom)\b.*\b(?:debt|debts|owe|owed)\b|\b(?:debt|debts|owe|owed)\b.*\b(?:who|whom)\b/.test(speech)) {
     wantedIds = ["stakes"];
+  } else if (/\bwho\b.*\b(?:must|needs? to|has to)\b.*\b(?:agree|approve|consent|permit)|\bwhose\b.*\b(?:agreement|approval|consent|permission)\b/.test(speech)) {
+    wantedIds = ["alternative", "mechanism"];
   } else if (/\bwhat\b.*\b(?:trade|work|job|business)\b|\bwhich trade\b/.test(speech)) {
     wantedIds = ["trade", "mechanism"];
   } else if (/\b(?:what (?:was|is) your role|what did you do|were you involved|did you (?:take|steal|move|hide|divert)|who took|tell me what happened|what happened)\b/.test(speech)) {
@@ -207,7 +209,7 @@ export function createVisitIntent(state, person, issue) {
   return {
     primaryMatter: issue.kind,
     desiredOutcome: issue.kind === "confession" ? "absolution" : issue.kind === "grief" ? "comfort" : "guidance",
-    hiddenConcern: person.privatePressure,
+    hiddenConcern: issue.detail || person.privatePressure,
     disclosureThreshold: clamp(baseThreshold - person.personality.candor / 4, 35, 90),
     urgency: issue.gravity,
     risk: Math.max(1, issue.gravity - 1)
@@ -229,8 +231,12 @@ export function addStructuredMemory(state, person, memory) {
   state.nextMemorySequence += 1;
   person.memories.push(entry);
   const durable = person.memories.filter((memory) => memory.type === "disclosed_secret");
-  const ordinary = person.memories.filter((memory) => memory.type !== "disclosed_secret").slice(-20);
-  person.memories = [...durable, ...ordinary];
+  const visitSummaries = person.memories.filter((memory) => memory.type === "visit_summary").slice(-12);
+  const interactions = person.memories.filter((memory) => memory.type === "interaction").slice(-24);
+  const ordinary = person.memories.filter((memory) => (
+    !["disclosed_secret", "visit_summary", "interaction"].includes(memory.type)
+  )).slice(-20);
+  person.memories = [...durable, ...visitSummaries, ...interactions, ...ordinary];
   return entry;
 }
 
