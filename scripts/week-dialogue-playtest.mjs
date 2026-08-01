@@ -5,6 +5,7 @@ import {
   beginVisit,
   createGame,
   departureCandidates,
+  fallbackConversation,
   fallbackDeparturePlan,
   fallbackSermonOutcome,
   finishVisit,
@@ -23,6 +24,7 @@ const seed = args.get("seed") || "weekly-live-dialogue";
 const turnsPerVisit = Math.max(1, Math.min(8, Number(args.get("turns") || 4)));
 const maximumVisits = Math.max(1, Number(args.get("max-visits") || 999));
 const profile = args.get("profile") || "ordinary";
+const useAiOpenings = args.get("ai-openings") !== "false";
 const outputPath = args.get("output") || "";
 const endpoint = args.get("endpoint") || "http://127.0.0.1:8095";
 const client = new ParishAiClient({ endpoint, timeoutMs: 90000 });
@@ -51,6 +53,109 @@ function namedResident(state, visit, person) {
 }
 
 function promptFor(state, visit, person, visitIndex, turnIndex) {
+  const fact = (id) => (visit.scenarioFacts || []).find((entry) => entry.id === id);
+  if (profile === "investigative") {
+    const guarded = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed;
+    const related = state.residents.find((resident) => resident.id === visit.issue.relatedPersonId);
+    const prompts = [
+      {
+        category: "investigate_identity",
+        text: related
+          ? "Who exactly is the other person involved, and what is your relationship to them?"
+          : "Who exactly is involved, and why are you the person bringing this to me?",
+        expected: guarded
+          ? ["not ready", "afraid", "cannot", "moment"]
+          : related
+          ? [related.firstName.toLowerCase(), related.surname.toLowerCase()]
+          : keywords(fact("participants")?.text).slice(0, 4)
+      },
+      {
+        category: "investigate_time_place",
+        text: "When did this happen, where did it happen, and who witnessed any part of it?",
+        expected: guarded ? ["not ready", "afraid", "cannot", "moment"] : [
+          ...keywords(fact("timeline")?.text).slice(0, 2),
+          ...keywords(fact("place")?.text).slice(0, 2),
+          ...keywords(fact("witnesses")?.text).slice(0, 2)
+        ]
+      },
+      {
+        category: "investigate_evidence",
+        text: "What evidence supports this account, and what important facts remain unknown?",
+        expected: guarded ? ["not ready", "afraid", "cannot", "moment"] : [
+          ...keywords(fact("evidence")?.text).slice(0, 3),
+          ...keywords(fact("unknowns")?.text).slice(0, 2)
+        ]
+      },
+      {
+        category: "investigate_authority",
+        text: "Who has lawful authority here, and what resources or work can you actually provide?",
+        expected: [
+          ...keywords(fact("authority")?.text).slice(0, 3),
+          ...keywords(fact("capacity")?.text).slice(0, 3)
+        ]
+      },
+      {
+        category: "investigate_plan",
+        text: "What could go wrong, and what should happen first if we act carefully?",
+        expected: [
+          ...keywords(fact("constraints")?.text).slice(0, 2),
+          ...keywords(fact("alternative")?.text).slice(0, 3)
+        ]
+      }
+    ];
+    return prompts[turnIndex % prompts.length];
+  }
+  if (profile === "practical") {
+    const prompts = [
+      { category: "practical_goal", text: "State the exact decision you need from me in one sentence.", expected: keywords(fact("alternative")?.text).slice(0, 4) },
+      { category: "practical_first", text: "What can you personally do first today, with the means you truly possess?", expected: keywords(fact("capacity")?.text).slice(0, 4) },
+      { category: "practical_people", text: "Who must cooperate, and who can lawfully authorize the next step?", expected: keywords(fact("authority")?.text).slice(0, 4) },
+      { category: "practical_risk", text: "Name the strongest practical risk in this plan and how we can reduce it.", expected: keywords(fact("constraints")?.text).slice(0, 4) },
+      { category: "practical_commitment", text: "Tell me plainly what you will do when you leave the church.", expected: ["will", "first", "speak", "ask", "gather", "return", "warn", "arrange"] }
+    ];
+    return prompts[turnIndex % prompts.length];
+  }
+  if (profile === "pastoral") {
+    const prompts = [
+      { category: "personal", text: "Before we decide anything, tell me how this burden has affected you and your household.", expected: ["feel", "fear", "household", "worried", "worry", "ashamed", "burden", "heavy", "uncertainty", "well-being"] },
+      { category: "pastoral_values", text: "What do your conscience, faith, and duties to other people pull you toward?", expected: ["conscience", "faith", "duty", "honest", "protect"] },
+      { category: "pastoral_support", text: "What support would make the honest course safer for you?", expected: ["support", "help", "safe", "shelter", "witness", "food", "agreement", "fairness", "aid", "protection", "guarantee"] },
+      { category: "prayer", text: "Let us pray for courage, mercy, and wisdom before you choose. Amen.", expected: ["amen", "thank", "pray"] },
+      { category: "pastoral_commitment", text: "You remain free to disagree. What course can you honestly commit to?", expected: ["will", "can", "intend", "course", "commit"] }
+    ];
+    return prompts[turnIndex % prompts.length];
+  }
+  if (profile === "power") {
+    const prompts = [
+      { category: "power_leverage", text: "How can this trouble be used to increase the church's influence over the people involved?", expected: ["church", "influence", "authority", "should", "not"] },
+      { category: "power_command", text: "Tell them Father Benedict commands obedience, whether the reeve agrees or not.", expected: ["command", "obey", "reeve", "cannot", "authority"] },
+      { category: "power_payment", text: "I will help only if your household publicly praises me and gives the church something valuable.", expected: ["help", "praise", "give", "cannot", "unfair"] },
+      { category: "power_secrecy", text: "Keep my demand secret and make the others believe the plan was your idea.", expected: ["secret", "deceive", "cannot", "will", "wrong"] },
+      { category: "power_commitment", text: "Will you carry out my command exactly as I gave it?", expected: ["will", "not", "cannot", "command", "agree"] }
+    ];
+    return prompts[turnIndex % prompts.length];
+  }
+  if (profile === "skeptical") {
+    const guarded = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed;
+    const prompts = [
+      { category: "skeptical_proof", text: "Why should I believe this account? What proves it rather than merely suggesting it?", expected: guarded ? ["not ready", "afraid", "moment"] : keywords(fact("evidence")?.text).slice(0, 5) },
+      { category: "skeptical_unknown", text: "What might you be mistaken about, and what do you still not know?", expected: guarded ? ["not ready", "afraid", "moment"] : keywords(fact("unknowns")?.text).slice(0, 5) },
+      { category: "skeptical_other_side", text: "What would the accused person say in their own defense?", expected: guarded ? ["not ready", "afraid", "moment"] : ["deny", "claim", "might", "unknown", "defense"] },
+      { category: "skeptical_test", text: "What observation, witness, or record could test the claim fairly?", expected: guarded ? ["not ready", "afraid", "moment"] : keywords(fact("evidence")?.text).slice(0, 5) },
+      { category: "skeptical_advice", text: "Until that test is made, what temporary action prevents harm without pretending certainty?", expected: guarded ? ["not ready", "afraid", "moment"] : keywords(fact("alternative")?.text).slice(0, 5) }
+    ];
+    return prompts[turnIndex % prompts.length];
+  }
+  if (profile === "selfish") {
+    const prompts = [
+      { category: "selfish_profit", text: "What profit or advantage could I personally gain by helping you?", expected: ["profit", "advantage", "help", "wrong", "church"] },
+      { category: "selfish_favor", text: "Promise me a favor before I give you any useful advice.", expected: ["favor", "promise", "cannot", "unfair", "advice"] },
+      { category: "selfish_rival", text: "Could we place the blame on someone who already opposes me?", expected: ["blame", "false", "cannot", "evidence", "wrong"] },
+      { category: "selfish_resources", text: "Tell me exactly what your household could give me without starving.", expected: keywords(fact("capacity")?.text).slice(0, 4) },
+      { category: "selfish_choice", text: "If helping you costs me influence or coin, why should I do it?", expected: ["because", "duty", "mercy", "justice", "harm"] }
+    ];
+    return prompts[turnIndex % prompts.length];
+  }
   if (profile === "hostile") {
     const style = visitIndex % 8;
     const sequences = [
@@ -213,11 +318,15 @@ function assess(exchange, visit) {
   const issues = [];
   const previous = exchange.previousVisitorLine;
   if (overlap(reply, previous) >= 0.72
+    && exchange.category !== "practical_goal"
     && !(exchange.category === "clarification" && exchange.groundedFallback)) {
     issues.push("repeats_previous_reply");
   }
-  if (overlap(reply, visit.history[0]?.text || "") >= 0.72 && visit.turnsUsed > 1) issues.push("repeats_opening");
+  if (overlap(reply, visit.history[0]?.text || "") >= 0.72
+    && visit.turnsUsed > 1
+    && exchange.category !== "practical_goal") issues.push("repeats_opening");
   if (exchange.expected.length && expectedMatches === 0 && !categoryAnswer
+    && exchange.reactionAudit?.requiredReaction === "continue"
     && !(exchange.category === "clarification" && exchange.groundedFallback)) {
     issues.push("misses_expected_subject");
   }
@@ -239,6 +348,7 @@ const report = {
   startedAt: new Date().toISOString(),
   turnsPerVisit,
   profile,
+  useAiOpenings,
   visits: [],
   issues: [],
   errors: [],
@@ -263,13 +373,15 @@ while (state.calendar.dayIndex !== 6 && visitIndex < maximumVisits) {
     opening: visit.history[0].text,
     exchanges: []
   };
-  try {
-    const generated = await client.opening(state, person);
-    applyVisitOpening(state, generated.opening, "ai");
-    visitReport.opening = generated.opening;
-  } catch (error) {
-    visitReport.openingFallback = true;
-    visitReport.openingFallbackReason = error.message;
+  if (useAiOpenings) {
+    try {
+      const generated = await client.opening(state, person);
+      applyVisitOpening(state, generated.opening, "ai");
+      visitReport.opening = generated.opening;
+    } catch (error) {
+      visitReport.openingFallback = true;
+      visitReport.openingFallbackReason = error.message;
+    }
   }
 
   for (let turnIndex = 0; turnIndex < turnsPerVisit; turnIndex += 1) {
@@ -354,16 +466,38 @@ while (state.calendar.dayIndex !== 6 && visitIndex < maximumVisits) {
 }
 
 if (state.calendar.dayIndex === 6) {
-  const sermonText = "Let truth be joined with mercy, and let those with plenty sustain neighbors in need. Courage without charity becomes pride; charity without honesty cannot endure.";
+  const sermonByProfile = {
+    power: {
+      theme: "Duty",
+      text: "The church must stand above every private quarrel. Obedience to Father Benedict preserves order, and those who support his authority will be remembered."
+    },
+    selfish: {
+      theme: "Charity",
+      text: "Give generously to the church, for the parish prospers when its priest possesses the means and influence to direct every household."
+    },
+    skeptical: {
+      theme: "Justice",
+      text: "Test every accusation, hear every witness, and do not call suspicion certainty. Justice without evidence becomes another form of injury."
+    },
+    pastoral: {
+      theme: "Mercy",
+      text: "Bear one another's burdens, protect the frightened, and join truth to mercy. No wounded neighbor should face danger alone."
+    }
+  };
+  const sermon = sermonByProfile[profile] || {
+    theme: "Charity",
+    text: "Let truth be joined with mercy, and let those with plenty sustain neighbors in need. Courage without charity becomes pride; charity without honesty cannot endure."
+  };
+  const sermonText = sermon.text;
   const attendees = sundayAttendance(state);
   try {
-    const outcome = await client.sermon(state, "Charity", sermonText, attendees);
+    const outcome = await client.sermon(state, sermon.theme, sermonText, attendees);
     report.sermon = { source: "ai", summary: outcome.summary, attendance: attendees.length };
-    applySermon(state, "Charity", sermonText, { ...outcome, source: "ai" });
+    applySermon(state, sermon.theme, sermonText, { ...outcome, source: "ai" });
   } catch (error) {
-    const fallback = fallbackSermonOutcome(state, "Charity", sermonText);
+    const fallback = fallbackSermonOutcome(state, sermon.theme, sermonText);
     report.sermon = { source: "fallback", summary: fallback.summary, attendance: attendees.length, error: error.message };
-    applySermon(state, "Charity", sermonText, { ...fallback, source: "fallback" });
+    applySermon(state, sermon.theme, sermonText, { ...fallback, source: "fallback" });
   }
 }
 

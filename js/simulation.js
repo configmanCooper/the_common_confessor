@@ -34,6 +34,7 @@ import {
   createInitialReactionState,
   createVisitIntent,
   detectConfidentialityBreach,
+  factIdsMentionedInText,
   previewConversationReaction,
   REACTIONS,
   recordPriestPosition,
@@ -65,6 +66,13 @@ import {
   parseChurchDonationDetail,
   parseChurchTransferIntent
 } from "./church.js";
+import {
+  archiveCompletedVisit,
+  finalizePeriodReports,
+  upgradeReportingState
+} from "./reporting.js";
+import { PROMPT_TRACE_LIMIT } from "./dialogue_planner.js";
+import { completeGeneratedText, completeStoredText } from "./text.js";
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -245,6 +253,7 @@ export function createGame(seed = String(Date.now())) {
     replayBase: null,
     sermons: [],
     conversationHistory: [],
+    aiDiagnostics: { lastCompletedVisit: null },
     settings: { aiEnabled: true },
     statistics: {
       conversations: 0,
@@ -266,6 +275,7 @@ export function createGame(seed = String(Date.now())) {
     facts: { population: 200, town: town.name }
   });
   addChronicle(state, "The parish register opens", "Exactly 200 living villagers are entered by name. Their inward lives remain unknown until events draw them into the parish story.", "faith");
+  upgradeReportingState(state);
   return sealState(state);
 }
 
@@ -488,8 +498,155 @@ function issueFromThread(thread, person) {
   };
 }
 
+function scenarioAuthorityText(scenarioId) {
+  const id = String(scenarioId || "");
+  if (/tax|inheritance|debt|enclosure|boundary|market_monopoly/.test(id)) {
+    return "Written records should be gathered first. The reeve or manor steward can examine the local claim, while a magistrate is the lawful next appeal if local authority refuses.";
+  }
+  if (/well|contagion|ale|healer|midwife|pregnancy/.test(id)) {
+    return "A healer or midwife can assess illness and immediate safety. The reeve can restrict a public hazard, and the manor steward can organize labor or access to shared resources.";
+  }
+  if (/apprentice|children|violence|witchcraft|watch|fugitive|sanctuary|poaching|deserter/.test(id)) {
+    return "Immediate safety belongs first to trustworthy adults and the watch or reeve. A magistrate or manor court decides punishment; the priest may offer sanctuary, witness, mediation, and advocacy but cannot invent a legal verdict.";
+  }
+  if (/marriage|courtship|orphan|elder|household|family/.test(id)) {
+    return "The affected adults and households must be heard. The priest may mediate and protect vulnerable people; property or coercion disputes may require the reeve, steward, or magistrate.";
+  }
+  if (/grain|wage|weights|prices|charity|trade|workshop|bridge|watercourse|fire/.test(id)) {
+    return "The people doing the work and those bearing the loss must be heard. The reeve can organize an inspection or temporary measure, while the steward controls manor labor, stores, or reimbursement.";
+  }
+  return "The priest can counsel, mediate, gather witnesses, and offer bounded church aid. Coercive judgment belongs to the reeve, steward, watch, magistrate, or church superior according to the matter.";
+}
+
+function scenarioEvidenceText(issue) {
+  const id = String(issue.scenarioId || "");
+  const witness = issue.openingContext?.witness || "No independent witness has yet given a complete account.";
+  if (/tax|inheritance|debt|weights|wage|blackmail|grain/.test(id)) {
+    return `The useful evidence is written terms, receipts, measures, letters, store records, and consistent witness accounts. ${witness}`;
+  }
+  if (/well|contagion|ale|healer|midwife|pregnancy/.test(id)) {
+    return `The useful evidence is the pattern of symptoms, who used the suspected source, physical traces, and comparison with people who were not exposed. ${witness}`;
+  }
+  if (/bridge|boundary|enclosure|watercourse|fire|workshop|apprentice|children/.test(id)) {
+    return `The useful evidence is the condition of the place, tools or damage, work schedules, injuries, and accounts from people who saw the work. ${witness}`;
+  }
+  if (/violence|watch|fugitive|sanctuary|poaching|deserter|witchcraft/.test(id)) {
+    return `The useful evidence is injuries, the order of events, who first used force, physical traces, and separate witness accounts. ${witness}`;
+  }
+  return `The present evidence consists of the concrete facts already stated, the visitor's direct knowledge, and any independent account that can be checked. ${witness}`;
+}
+
+function relationshipToRelated(person, related) {
+  if (!related) return "No second principal person is yet identified.";
+  if (person.spouseId === related.id) return `${related.name} is the visitor's spouse.`;
+  if (person.parentIds?.includes(related.id)) return `${related.name} is the visitor's parent.`;
+  if (person.childrenIds?.includes(related.id)) return `${related.name} is the visitor's child.`;
+  if (person.householdId === related.householdId) return `${related.name} belongs to the visitor's household.`;
+  return `${related.name} is a known villager connected through work, travel, neighborhood, or established village ties.`;
+}
+
+function expandScenarioFactWeb(state, issue, person) {
+  const existing = new Set((issue.scenarioFacts || []).map((fact) => fact.id));
+  const related = state.residents.find((resident) => resident.id === issue.relatedPersonId);
+  const household = state.households.find((entry) => entry.id === person.householdId);
+  const properties = household?.properties?.length
+    ? household.properties.map((property) => `${property.status} ${property.type}`).join(", ")
+    : household?.dwelling || "no recorded property";
+  const means = (household?.wealth || 0) < 25 ? "very little spare means"
+    : (household?.wealth || 0) < 55 ? "modest means" : "comparatively secure means";
+  const food = (household?.food || 0) < 25 ? "precarious food stores"
+    : (household?.food || 0) < 55 ? "modest food stores" : "strong food stores";
+  const health = person.health < 35 ? "poor health"
+    : person.health < 65 ? "workable but limited health" : "good working health";
+  const timing = issue.openingContext?.timing || "at a time that has not yet been independently established";
+  const place = issue.openingContext?.place || "a place that has not yet been independently established";
+  const witness = issue.openingContext?.witness || "No independent witness has yet given a complete account.";
+  const deadlineDays = Number(
+    (issue.scenarioFacts || [])
+      .map((fact) => fact.text)
+      .join(" ")
+      .match(/\bwithin (\d+) days\b/i)?.[1]
+  ) || 7;
+  const additions = [
+    {
+      id: "participants",
+      text: `${person.name} is a ${person.age}-year-old ${person.occupation}. ${relationshipToRelated(person, related)}${related ? ` ${related.name} is a ${related.age}-year-old ${related.occupation}.` : ""}`
+    },
+    {
+      id: "timeline",
+      text: `The matter was noticed ${timing}. A decision is currently expected within ${deadlineDays} days.`
+    },
+    {
+      id: "place",
+      text: `The relevant place is ${place}.`
+    },
+    {
+      id: "witnesses",
+      text: witness
+    },
+    {
+      id: "evidence",
+      text: scenarioEvidenceText(issue)
+    },
+    {
+      id: "authority",
+      text: scenarioAuthorityText(issue.scenarioId)
+    },
+    {
+      id: "capacity",
+      text: `${person.name}'s household has ${means}, ${food}, and ${properties}. As a ${person.occupation} in ${health}, ${person.firstName} can offer ${person.occupation} work and ordinary labor, but cannot promise authority, expertise, property, or resources the household does not possess.`
+    },
+    {
+      id: "constraints",
+      text: "Any plan must account for immediate safety, consent, lawful authority, actual household means, age and health, and the risk of retaliation or lost livelihood described in the stakes."
+    },
+    {
+      id: "unknowns",
+      text: "Still unknown are whether every accused person will admit the claim, whether independent witnesses agree, whether the responsible authority will cooperate, and which feared consequence will actually occur. The visitor should say plainly when a requested fact is not yet known."
+    },
+    {
+      id: "counterclaim",
+      text: related
+        ? `${related.name} might deny the allegation, dispute the evidence, claim necessity, mistake, lawful right, or self-defense, or give another account of the sequence. Those are possible defenses to test, not established facts.`
+        : "No specific accused person is identified in this matter. The visitor should say that a request for an accused person's defense may not apply rather than inventing one."
+    }
+  ];
+  if (String(issue.scenarioId || "").includes("contaminated_well") && !issue.threadId) {
+    const affected = [];
+    const usedHouseholds = new Set();
+    for (const resident of state.residents
+      .filter((candidate) => candidate.active && candidate.alive
+        && candidate.id !== person.id && candidate.id !== issue.relatedPersonId)
+      .sort((left, right) => left.id.localeCompare(right.id))) {
+      if (usedHouseholds.has(resident.householdId)) continue;
+      usedHouseholds.add(resident.householdId);
+      affected.push(resident);
+      resident.illness = "waterborne sickness";
+      resident.illnessDays = Math.max(resident.illnessDays || 0, 4);
+      resident.health = clamp(resident.health - 8);
+      if (affected.length >= 3) break;
+    }
+    issue.affectedPersonIds = affected.map((resident) => resident.id);
+    additions.push({
+      id: "affected_people",
+      text: affected.length
+        ? `${affected.map((resident) => `${resident.name}'s household`).join(", ")} reported matching sickness after using the common well. The complete number of sick villagers is not yet known.`
+        : "Several households reported sickness, but no complete named list has yet been established."
+    });
+  }
+  for (const fact of additions) {
+    if (existing.has(fact.id)) continue;
+    issue.scenarioFacts.push({
+      ...fact,
+      anchors: (fact.text.toLowerCase().match(/[a-z]{5,}/g) || []).slice(0, 8)
+    });
+  }
+  return issue;
+}
+
 function attachIssueThread(state, issue, person) {
   if (issue.threadId) return issue;
+  expandScenarioFactWeb(state, issue, person);
   const subjectIds = new Set([person.id]);
   if (issue.relatedPersonId) subjectIds.add(issue.relatedPersonId);
   const factText = (issue.scenarioFacts || []).map((fact) => fact.text).join(" ").toLowerCase();
@@ -511,6 +668,12 @@ function attachIssueThread(state, issue, person) {
     visibility: fact.visibility || factVisibility,
     allowedSpeakers: fact.allowedSpeakers || [person.id]
   }));
+  const statedDeadlineDays = Number(
+    issue.scenarioFacts
+      .map((fact) => fact.text)
+      .join(" ")
+      .match(/\bwithin (\d+) days\b/i)?.[1]
+  );
   const thread = {
     id: threadId,
     kind: issue.kind,
@@ -526,7 +689,7 @@ function attachIssueThread(state, issue, person) {
     publicAwareness: clamp(/whisper|public|market|households/i.test(issue.opening) ? 28 : 10, 0, 100),
     danger: clamp(issue.gravity * 9 + (/violence|injur|threat|punish|arrest/i.test(issue.opening) ? 18 : 0), 0, 100),
     momentum: clamp(20 + issue.gravity * 8, 0, 100),
-    deadlineDay: state.calendar.absoluteDay + Math.max(2, issue.scenarioFacts?.find((fact) => fact.id === "stakes") ? 7 : 12),
+    deadlineDay: state.calendar.absoluteDay + Math.max(2, statedDeadlineDays || 12),
     status: "open",
     authorityStage: 0,
     createdDay: state.calendar.absoluteDay,
@@ -554,7 +717,7 @@ function issueForPerson(state, person) {
   const knownRelations = person.relationshipIds
     .map((id) => state.residents.find((resident) => resident.id === id))
     .filter(Boolean);
-  const relation = knownRelations.length ? rng.pick(knownRelations) : null;
+  let relation = knownRelations.length ? rng.pick(knownRelations) : null;
   issue.relatedPersonId = relation?.id ?? null;
   issue.relatedName = relation?.name ?? "someone in the village";
   issue.detail = person.privatePressure;
@@ -567,17 +730,35 @@ function issueForPerson(state, person) {
   const trade = tradeOccupations.has(relation?.occupation)
     ? relation.occupation
     : rng.pick(["grain merchant", "wool trader", "carpenter", "brewer", "miller"]);
-  const victim = knownRelations.find((candidate) => candidate.id !== relation?.id)
+  let victim = knownRelations.find((candidate) => candidate.id !== relation?.id)
     || state.residents.find((candidate) => candidate.id !== person.id && candidate.id !== relation?.id);
   const victimName = victim?.name || "an older villager";
   state.scenarioHistory ||= [];
-  const allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
+  let allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
   const availableArchetypes = allArchetypes.filter((archetype) => archetype.kinds.includes(issue.kind));
   const recent = new Set(state.scenarioHistory.slice(-10));
   const preferredPool = availableArchetypes.filter((archetype) => !recent.has(archetype.id));
   const broadPool = allArchetypes.filter((archetype) => !recent.has(archetype.id));
-  const archetype = rng.pick(preferredPool.length ? preferredPool : broadPool.length ? broadPool : availableArchetypes);
+  let archetype = rng.pick(preferredPool.length ? preferredPool : broadPool.length ? broadPool : availableArchetypes);
   if (archetype) {
+    if (archetype.familyId === "contaminated_well" && relation?.occupation !== "tanner") {
+      const compatibleRelations = state.residents
+        .filter((resident) => resident.active && resident.alive
+          && resident.id !== person.id && resident.occupation === "tanner")
+        .sort((left, right) => left.id.localeCompare(right.id));
+      if (compatibleRelations.length) {
+        relation = rng.pick(compatibleRelations);
+        issue.relatedPersonId = relation.id;
+        issue.relatedName = relation.name;
+        if (victim?.id === relation.id) {
+          victim = state.residents.find((candidate) => (
+            candidate.id !== person.id && candidate.id !== relation.id && candidate.active && candidate.alive
+          ));
+        }
+        allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
+        archetype = allArchetypes.find((candidate) => candidate.id === archetype.id) || archetype;
+      }
+    }
     state.scenarioHistory.push(archetype.id);
     state.scenarioHistory = state.scenarioHistory.slice(-30);
     issue.scenarioId = archetype.id;
@@ -794,14 +975,15 @@ function updateIssueThreadAfterVisit(state, visit, steps) {
   if (!thread) return null;
   const helpful = new Set([
     "apologize", "forgive", "reconcile", "return_stolen_goods", "report_crime",
-    "make_peace", "testify", "protect", "heal", "shelter", "share_food"
+    "make_peace", "testify", "protect", "heal", "shelter", "share_food",
+    "secure_clean_water"
   ]);
   const harmful = new Set([
     "accuse", "gossip", "reveal_secret", "steal", "threaten", "assault",
     "begin_feud", "evict", "betray", "vandalize", "kill_person"
   ]);
   const publicDisclosure = steps.some((step) => (
-    ["gossip", "report_crime", "testify", "confess_publicly"].includes(step.actionType)
+    ["gossip", "report_crime", "testify", "confess_publicly", "secure_clean_water"].includes(step.actionType)
   ));
   if (publicDisclosure) {
     thread.visibility = {
@@ -824,7 +1006,9 @@ function updateIssueThreadAfterVisit(state, visit, steps) {
   thread.momentum = clamp(thread.momentum + (pressureDelta > 0 ? 7 : -12));
   thread.publicAwareness = clamp(
     thread.publicAwareness
-      + (steps.some((step) => ["gossip", "report_crime", "testify", "confess_publicly"].includes(step.actionType)) ? 14 : -2)
+      + (steps.some((step) => ["gossip", "report_crime", "testify", "confess_publicly"].includes(step.actionType))
+        ? 14
+        : steps.some((step) => step.actionType === "secure_clean_water") ? 18 : -2)
   );
   thread.danger = clamp(
     thread.danger
@@ -1107,7 +1291,15 @@ export function beginVisit(state, { record = true } = {}) {
       reactionState: createInitialReactionState(state, person, issue, "requested"),
       turnAudits: [],
       reactionStateMigrated: false,
-      continuity: { unresolvedQuestions: [], agreements: [], retractions: [] }
+      promptTraces: [],
+      continuity: {
+        unresolvedQuestions: [],
+        agreements: [],
+        retractions: [],
+        mentionedFactIds: [],
+        currentObligation: null,
+        lastAnsweredQuestionTurnIds: []
+      }
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
@@ -1130,6 +1322,12 @@ export function beginVisit(state, { record = true } = {}) {
     const person = materializeResident(state, queued.sourcePersonId, true);
     person.visitCount += 1;
     person.lastVisitDay = state.calendar.absoluteDay;
+    const sourceEvent = state.events.find((event) => event.id === queued.sourceEventId);
+    const relatedPersonId = [sourceEvent?.actorId, sourceEvent?.targetId]
+      .find((personId) => personId && personId !== "priest" && personId !== person.id) || null;
+    const sourceThread = state.issueThreads
+      .filter((thread) => thread.subjectIds.includes(person.id) || thread.subjectIds.includes(relatedPersonId))
+      .sort((left, right) => right.lastTouchedDay - left.lastTouchedDay)[0];
     const issue = {
       kind: queued.type === "sermon_followup"
         ? "sermon follow-up"
@@ -1142,9 +1340,58 @@ export function beginVisit(state, { record = true } = {}) {
           ? `Father, I was told that you asked me to come and speak with you. ${queued.reason}`
         : `Father, I have come because of what happened in the village: ${queued.reason}`,
       detail: queued.reason,
-      relatedPersonId: null,
-      relatedName: null
+      relatedPersonId,
+      relatedName: state.residents.find((resident) => resident.id === relatedPersonId)?.name || null,
+      scenarioId: sourceThread?.scenarioId || queued.type,
+      threadId: sourceThread?.id || null,
+      openingContext: {
+        timing: `after the event recorded on day ${sourceEvent?.day ?? state.calendar.absoluteDay}`,
+        place: "within the village",
+        witness: sourceEvent?.facts?.title
+          ? `The public record names the event as "${sourceEvent.facts.title}".`
+          : "The people directly involved know part of what occurred."
+      },
+      scenarioFacts: [
+        {
+          id: "concrete_matter",
+          text: queued.reason,
+          anchors: (queued.reason.toLowerCase().match(/[a-z]{5,}/g) || []).slice(0, 8)
+        },
+        {
+          id: "mechanism",
+          text: sourceEvent?.facts?.title
+            ? `This follow-up was caused by the earlier event "${sourceEvent.facts.title}".`
+            : "This follow-up was caused by an earlier interaction in the village.",
+          anchors: ["follow", "earlier", "event"]
+        },
+        {
+          id: "stakes",
+          text: "The visitor's reputation, relationships, safety, work, or household may change according to how the earlier event is answered.",
+          anchors: ["reputation", "relationships", "safety", "household"]
+        },
+        {
+          id: "alternative",
+          text: "Clarify the disputed facts, identify immediate harm, and choose one proportionate next step with the people directly involved.",
+          anchors: ["clarify", "facts", "harm", "proportionate"]
+        }
+      ]
     };
+    expandScenarioFactWeb(state, issue, person);
+    if (sourceThread) {
+      const followupVisibility = sourceThread.visibility?.scope === "public"
+        ? sourceThread.visibility
+        : { scope: "private_visit", authorizedPersonIds: [person.id, "priest"] };
+      issue.scenarioFacts = issue.scenarioFacts.map((fact) => ({
+        ...fact,
+        issueId: sourceThread.id,
+        provenance: fact.provenance || "state",
+        confidence: fact.confidence ?? 100,
+        visibility: fact.visibility || followupVisibility,
+        allowedSpeakers: fact.allowedSpeakers || [person.id]
+      }));
+    } else {
+      attachIssueThread(state, issue, person);
+    }
     const originEvent = appendEvent(state, {
       type: queued.type === "sermon_followup"
         ? "sermon_followup_started"
@@ -1168,7 +1415,7 @@ export function beginVisit(state, { record = true } = {}) {
       mood: "guarded",
       disclosure: 20,
       hiddenConcernDisclosed: Boolean(issue.openingDisclosesHidden),
-      scenarioFacts: [],
+      scenarioFacts: issue.scenarioFacts,
       revealedFactIds: [],
       stagnationCount: 0,
       lastVisitorReplies: [issue.opening],
@@ -1181,7 +1428,15 @@ export function beginVisit(state, { record = true } = {}) {
       ),
       turnAudits: [],
       reactionStateMigrated: false,
-      continuity: { unresolvedQuestions: [], agreements: [], retractions: [] }
+      promptTraces: [],
+      continuity: {
+        unresolvedQuestions: [],
+        agreements: [],
+        retractions: [],
+        mentionedFactIds: [],
+        currentObligation: null,
+        lastAnsweredQuestionTurnIds: []
+      }
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
@@ -1232,7 +1487,15 @@ export function beginVisit(state, { record = true } = {}) {
       reactionState: createInitialReactionState(state, person, issue, "authority"),
       turnAudits: [],
       reactionStateMigrated: false,
-      continuity: { unresolvedQuestions: [], agreements: [], retractions: [] }
+      promptTraces: [],
+      continuity: {
+        unresolvedQuestions: [],
+        agreements: [],
+        retractions: [],
+        mentionedFactIds: [],
+        currentObligation: null,
+        lastAnsweredQuestionTurnIds: []
+      }
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
@@ -1281,7 +1544,15 @@ export function beginVisit(state, { record = true } = {}) {
     reactionState: createInitialReactionState(state, person, issue, "ordinary"),
     turnAudits: [],
     reactionStateMigrated: false,
-    continuity: { unresolvedQuestions: [], agreements: [], retractions: [] }
+    promptTraces: [],
+    continuity: {
+      unresolvedQuestions: [],
+      agreements: [],
+      retractions: [],
+      mentionedFactIds: [],
+      currentObligation: null,
+      lastAnsweredQuestionTurnIds: []
+    }
   };
   if (issue.kind === "confession") {
     state.statistics.confessions += 1;
@@ -1564,7 +1835,10 @@ export function recordExchange(state, playerText, response, { record = true } = 
     thresholdReasons: preview.thresholdReasons,
     expressedReaction: response.expressedReaction || "continue",
     fallbackUsed: Boolean(response.groundedFallback),
-    visibility: preview.visibility
+    visibility: preview.visibility,
+    conversationObligation: response.conversationObligation
+      ? JSON.parse(JSON.stringify(response.conversationObligation))
+      : null
   };
   visit.reactionState = JSON.parse(JSON.stringify(preview.nextState));
   visit.turnAudits.push(reactionAudit);
@@ -1574,6 +1848,21 @@ export function recordExchange(state, playerText, response, { record = true } = 
   if (!Array.isArray(response.segments) && cleanText.includes("?")) answeredQuestionIds.add(questionTurnId);
   for (const question of visit.continuity.unresolvedQuestions) {
     if (answeredQuestionIds.has(question.turnId)) question.status = "answered";
+  }
+  const mentionedFactIds = new Set([
+    ...(visit.continuity.mentionedFactIds || []),
+    ...factIdsMentionedInText(visit.scenarioFacts, visit.history[0]?.text || ""),
+    ...(response.segments || []).flatMap((segment) => segment.referencedFactIds || []),
+    ...factIdsMentionedInText(visit.scenarioFacts, reply)
+  ]);
+  visit.continuity.mentionedFactIds = [...mentionedFactIds];
+  visit.continuity.currentObligation = response.conversationObligation
+    ? JSON.parse(JSON.stringify(response.conversationObligation))
+    : null;
+  visit.continuity.lastAnsweredQuestionTurnIds = [...answeredQuestionIds];
+  if (response.promptTrace) {
+    visit.promptTraces.push(JSON.parse(JSON.stringify(response.promptTrace)));
+    visit.promptTraces = visit.promptTraces.slice(-PROMPT_TRACE_LIMIT);
   }
   if (/\b(?:i will|i shall|i agree|i can do that|i promise)\b/i.test(reply)) {
     visit.continuity.agreements.push({
@@ -1628,6 +1917,16 @@ export function recordExchange(state, playerText, response, { record = true } = 
       `${person.name} carried Father Benedict's request that ${summonsTarget.name} come to the church.`,
       visit.originEventId,
       "priest_summons"
+    );
+  }
+  if (response.conversationObligation?.followupRequested
+    && /\b(?:i will|i shall|yes)\b/i.test(reply)
+    && !/\b(?:will not|cannot|can't|do not)\b/i.test(reply)) {
+    scheduleResidentFollowup(
+      state,
+      person.id,
+      `${person.name} promised to return after carrying out the priest's requested action.`,
+      visit.originEventId
     );
   }
   const churchAid = applyChurchAid(state, person, cleanText);
@@ -1720,6 +2019,12 @@ export function recordExchange(state, playerText, response, { record = true } = 
         expressedReaction: response.expressedReaction || "continue",
         boundaryProposal: response.boundaryProposal || null,
         segments: Array.isArray(response.segments) ? response.segments.slice(0, 6) : [],
+        conversationObligation: response.conversationObligation
+          ? JSON.parse(JSON.stringify(response.conversationObligation))
+          : null,
+        promptTrace: response.promptTrace
+          ? JSON.parse(JSON.stringify(response.promptTrace))
+          : null,
         reactionAudit
       }
     }, response.source || "simulation");
@@ -1819,7 +2124,7 @@ function addChronicle(state, title, text, tone = "neutral", event = {}) {
     eventId: storedEvent.id,
     day: state.calendar.absoluteDay,
     title: String(title).slice(0, 120),
-    text: String(text).slice(0, 700),
+    text: completeGeneratedText(text, 700),
     tone
   });
   state.chronicle = state.chronicle.slice(0, 250);
@@ -1859,7 +2164,7 @@ function metricDeltaForAction(actionType) {
     invite_migrant: { prosperity: 1 }, make_peace: { harmony: 4, safety: 2 }, repent: { faith: 2, mercy: 1 },
     testify: { safety: 1 }, organize_aid: { health: 1, mercy: 3 }, attend_church: { faith: 1 },
     seek_absolution: { faith: 2 }, confess_publicly: { faith: 1 }, protect: { safety: 2, mercy: 1 },
-    offer_work: { prosperity: 2 },
+    offer_work: { prosperity: 2 }, secure_clean_water: { health: 2, safety: 1 },
     buy_property: { prosperity: 1 },
     sell_property: { prosperity: 1 },
     lease_property: { prosperity: 1 }
@@ -1874,6 +2179,76 @@ function metricDeltaForAction(actionType) {
     protest: { harmony: -1 }, avoid_church: { faith: -1 }, betray: { harmony: -4 }
   };
   return positive[actionType] || negative[actionType] || {};
+}
+
+const CUSTOM_EFFECT_KEYS = Object.freeze({
+  town: new Set(["harmony", "faith", "prosperity", "health", "safety", "mercy"]),
+  material: new Set(["foodSecurity", "grainPrice", "diseasePressure", "crime", "infrastructure"]),
+  issue: new Set(["pressure", "publicAwareness", "danger", "momentum"]),
+  actor: new Set(["stress", "morale", "trustPriest"]),
+  target: new Set(["stress", "morale", "trustPriest"])
+});
+
+function normalizeCustomEffects(rawEffects, hasTarget) {
+  if (rawEffects == null) return [];
+  if (!Array.isArray(rawEffects) || rawEffects.length > 3) return null;
+  const seen = new Set();
+  const effects = [];
+  for (const raw of rawEffects) {
+    const scope = String(raw?.scope || "");
+    const key = String(raw?.key || "");
+    const delta = Number(raw?.delta);
+    const identity = `${scope}:${key}`;
+    if (!CUSTOM_EFFECT_KEYS[scope]?.has(key)
+      || !Number.isInteger(delta) || delta < -3 || delta > 3
+      || !String(raw?.reason || "").trim()
+      || (scope === "target" && !hasTarget)
+      || seen.has(identity)) return null;
+    seen.add(identity);
+    effects.push({
+      scope,
+      key,
+      delta,
+      reason: completeGeneratedText(raw.reason, 80)
+    });
+  }
+  return effects;
+}
+
+function salvageCustomEffects(rawEffects, hasTarget) {
+  if (!Array.isArray(rawEffects)) return [];
+  const effects = [];
+  const seen = new Set();
+  for (const raw of rawEffects.slice(0, 3)) {
+    const normalized = normalizeCustomEffects([raw], hasTarget);
+    if (!normalized?.length) continue;
+    const effect = normalized[0];
+    const identity = `${effect.scope}:${effect.key}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    effects.push(effect);
+  }
+  return effects;
+}
+
+function applyCustomEffects(state, actor, target, effects) {
+  const thread = state.issueThreads.find((entry) => entry.id === state.currentVisit?.issue.threadId);
+  for (const effect of effects || []) {
+    if (effect.scope === "town") {
+      state.town.metrics[effect.key] = clamp(state.town.metrics[effect.key] + effect.delta);
+    } else if (effect.scope === "material") {
+      state.material.modifiers[effect.key] = clamp(
+        state.material.modifiers[effect.key] + effect.delta * 2,
+        -20,
+        20
+      );
+    } else if (effect.scope === "issue" && thread) {
+      thread[effect.key] = clamp(thread[effect.key] + effect.delta * 3);
+    } else {
+      const person = effect.scope === "actor" ? actor : target;
+      if (person && effect.key in person) person[effect.key] = clamp(person[effect.key] + effect.delta * 2);
+    }
+  }
 }
 
 export function applyAction(state, step) {
@@ -1950,6 +2325,17 @@ export function applyAction(state, step) {
   }
   actor.morale = clamp(actor.morale + (deltas.harmony || deltas.mercy || 0));
   actor.stress = clamp(actor.stress - (deltas.mercy || 0) + Math.max(0, -(deltas.harmony || 0)));
+  if (step.actionType === "secure_clean_water") {
+    state.material.modifiers.diseasePressure = clamp(
+      state.material.modifiers.diseasePressure - intensity * 4,
+      -20,
+      20
+    );
+    state.town.metrics.health = clamp(state.town.metrics.health + intensity);
+  }
+  if (step.actionType === "improvise") {
+    applyCustomEffects(state, actor, targetIsPriest ? null : target, step.effects);
+  }
   if (target && !targetIsPriest) {
     target.morale = clamp(target.morale + (deltas.mercy || deltas.harmony || 0));
     if (!actor.relationshipIds.includes(target.id)) actor.relationshipIds.push(target.id);
@@ -2281,7 +2667,11 @@ export function applyAction(state, step) {
       parentId: step.parentEventId ?? state.currentVisit?.originEventId ?? state.events.at(-1)?.id ?? null,
       actorId: actor.id,
       targetId: target?.id ?? null,
-      facts: { actionType: step.actionType, intensity }
+      facts: {
+        actionType: step.actionType,
+        intensity,
+        effects: step.actionType === "improvise" ? step.effects || [] : []
+      }
     }
   );
   const eventId = state.chronicle[0].eventId;
@@ -2489,6 +2879,15 @@ function visitorCommitmentAction(state, visit, person) {
   if (/\bforgive\b/.test(text)) return { actionType: "forgive", targetId, detail: "", historyIndex: committedLine.index };
   if (/\b(?:share|give|bring)\b.*\b(?:food|bread|grain|cheese)\b/.test(text)) {
     return { actionType: "share_food", targetId, detail: "", historyIndex: committedLine.index };
+  }
+  if (String(visit.issue.scenarioId || "").includes("contaminated_well")
+    && /\b(?:carry|carried|secure|arrange|transport|organize)\w*\b.*\b(?:water|spring|well)\b/.test(text)) {
+    return {
+      actionType: "secure_clean_water",
+      targetId: null,
+      detail: completeStoredText(committedLine.text, 120),
+      historyIndex: committedLine.index
+    };
   }
   if (/\bpray\b/.test(text) && targetId) return { actionType: "pray_with", targetId, detail: "", historyIndex: committedLine.index };
   if (/\b(?:protect|shelter|keep .* safe)\b/.test(text)) return { actionType: "protect", targetId, detail: "", historyIndex: committedLine.index };
@@ -3012,7 +3411,10 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
   const rawSteps = Array.isArray(plan?.steps) ? plan.steps : [];
   if (rawSteps.length < 1 || rawSteps.length > 3) {
     return {
-      summary: `${candidateMap.get(visit.personId)?.name || "The visitor"} acted after the hour's counsel.`,
+      summary: completeGeneratedText(
+        plan?.summary || `${candidateMap.get(visit.personId)?.name || "The visitor"} acted after the hour's counsel.`,
+        400
+      ),
       steps: [],
       complete: false,
       fullyAccepted: false,
@@ -3056,6 +3458,20 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
     if (!AI_ALLOWED_ACTIONS.includes(raw.actionType)) {
       reject(index, raw, "action_enum", "The action type is not allowed.");
       break;
+    }
+    const customEffects = normalizeCustomEffects(raw.effects, Boolean(target && target.id !== "priest"));
+    if (customEffects == null || (raw.actionType !== "improvise" && customEffects.length)) {
+      reject(index, raw, "custom_effects", "Custom effects must be bounded, unique, and attached only to an improvised action.");
+      break;
+    }
+    if (raw.actionType === "secure_clean_water") {
+      const waterContext = `${raw.title || ""} ${raw.description || ""} ${raw.detail || ""}`.toLowerCase();
+      if (!String(visit.issue.scenarioId || "").includes("contaminated_well")
+        || !/\b(?:water|well|spring)\b/.test(waterContext)
+        || !/\b(?:carry|carried|secure|arrange|transport|organize|warn)\w*\b/.test(waterContext)) {
+        reject(index, raw, "water_context", "Securing clean water requires a contaminated-well issue and a concrete water action.");
+        break;
+      }
     }
     if (raw.composition != null) {
       const composition = raw.composition;
@@ -3222,18 +3638,21 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       targetId: target?.id ?? null,
       actionType: raw.actionType,
       intensity: requestedIntensity,
-      title: String(
-        raw.actionType === "improvise" && raw.title
+      title: completeGeneratedText(
+        ["improvise", "secure_clean_water"].includes(raw.actionType) && raw.title
           ? raw.title
-          : raw.actionType.replaceAll("_", " ")
-      ).slice(0, 100),
-      description: String(
-        raw.actionType === "improvise" && raw.description
+          : raw.actionType.replaceAll("_", " "),
+        100
+      ),
+      description: completeGeneratedText(
+        ["improvise", "secure_clean_water"].includes(raw.actionType) && raw.description
           ? raw.description
-          : `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`
-      ).slice(0, 400),
-      detail: ["change_job", "offer_work", "donate", "improvise", "buy_property", "sell_property", "lease_property"].includes(raw.actionType) ? detail : "",
+          : `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`,
+        400
+      ),
+      detail: ["change_job", "offer_work", "donate", "improvise", "secure_clean_water", "buy_property", "sell_property", "lease_property"].includes(raw.actionType) ? detail : "",
       composition: raw.composition ? JSON.parse(JSON.stringify(raw.composition)) : null,
+      effects: customEffects,
       motive: typeof raw.motive === "string" ? raw.motive.slice(0, 30) : "practical",
       evidence: typeof raw.evidence === "string" ? raw.evidence.slice(0, 180) : "",
       decisionScore: resolvedDecisionScore,
@@ -3332,6 +3751,123 @@ function normalizeAiDeparturePlan(state, plan) {
   const maximumIntensity = maximumIntensityForLicense(visit?.eventLicense);
   const steps = (Array.isArray(plan?.steps) ? plan.steps : []).map((raw, index) => {
     const step = actionFromComposition(raw);
+    const actionText = `${step.title || ""} ${step.description || ""} ${step.detail || ""}`.toLowerCase();
+    if (step.actionType === "offer_work"
+      && /\b(?:offer|give|provide|volunteer)\w*\b.*\b(?:my|her|his|their|own)?\s*(?:labor|labour|work|service|skills|assistance|help)\b/.test(actionText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "offer_work",
+        to: "improvise",
+        reason: "own_labor_not_job_offer"
+      });
+      step.actionType = "improvise";
+      step.targetId = null;
+      step.detail = step.detail || step.description || "offer personal labor";
+    }
+    if (step.actionType === "offer_work"
+      && !/\b(?:job|employment|hire|wage|paid work|position)\b/.test(actionText)
+      && /\b(?:seek|speak|ask|audit|investigate|assist|oversee|gather)\w*\b/.test(actionText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "offer_work",
+        to: "improvise",
+        reason: "assistance_not_job_offer"
+      });
+      step.actionType = "improvise";
+      step.detail = step.detail || step.description || "offer practical assistance";
+    }
+    if (step.actionType === "seek_absolution"
+      && !["confession", "grave conscience"].includes(visit?.issue.kind)
+      && /\b(?:guidance|counsel|advice|assistance)\b/.test(actionText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "seek_absolution",
+        to: "improvise",
+        reason: "guidance_not_absolution"
+      });
+      step.actionType = "improvise";
+      step.targetId = null;
+      step.detail = step.detail || "reflect on the priest's guidance";
+    }
+    if (step.actionType === "pray_with"
+      && /\b(?:priest|father benedict)\b/.test(actionText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "pray_with",
+        to: "improvise",
+        reason: "prayer_already_shared_with_priest"
+      });
+      step.actionType = "improvise";
+      step.targetId = null;
+      step.motive = "faithful";
+      step.detail = step.detail || "leave strengthened by shared prayer";
+    }
+    if (step.actionType === "share_food"
+      && step.targetId === "priest"
+      && !/\b(?:food|bread|grain|beans|onions|fish|cheese)\b/.test(actionText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "share_food",
+        to: "improvise",
+        reason: "nonfood_offering"
+      });
+      step.actionType = "improvise";
+      step.targetId = null;
+      step.detail = step.detail || step.description || "offer a modest nonfood gift";
+    }
+    if (step.actionType === "leave_village"
+      && /\b(?:leave|depart|return)\w*\b.*\b(?:church|priest(?:'s)? house|meeting|cottage|home)\b/.test(actionText)
+      && !/\b(?:leave|depart|move away from)\w*\b.*\b(?:village|town|parish)\b/.test(actionText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "leave_village",
+        to: "improvise",
+        reason: "leave_meeting_not_village"
+      });
+      step.actionType = "improvise";
+      step.targetId = null;
+      step.detail = step.detail || "return home after counsel";
+    }
+    const improvisedText = `${step.title || ""} ${step.description || ""} ${step.detail || ""}`.toLowerCase();
+    if (step.actionType === "improvise"
+      && String(visit?.issue.scenarioId || "").includes("contaminated_well")
+      && /\b(?:water|well|spring)\b/.test(improvisedText)
+      && /\b(?:carry|carried|secure|arrange|transport|organize|warn)\w*\b/.test(improvisedText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "improvise",
+        to: "secure_clean_water",
+        reason: "scenario_grounded_water_action"
+      });
+      step.actionType = "secure_clean_water";
+      if (Array.isArray(step.effects) && step.effects.length) {
+        normalizations.push({
+          stepIndex: index,
+          field: "effects",
+          from: step.effects,
+          to: [],
+          reason: "canonical_water_effects"
+        });
+        step.effects = [];
+      }
+    }
+    if (step.actionType !== "improvise" && Array.isArray(step.effects) && step.effects.length) {
+      normalizations.push({
+        stepIndex: index,
+        field: "effects",
+        from: step.effects,
+        to: [],
+        reason: "canonical_action_effects"
+      });
+      step.effects = [];
+    }
     if (Number.isInteger(step.intensity)) {
       const normalizedIntensity = clamp(step.intensity, 1, maximumIntensity);
       if (normalizedIntensity !== step.intensity) {
@@ -3414,6 +3950,22 @@ function normalizeAiDeparturePlan(state, plan) {
         });
         step.targetId = candidateIds[0];
       }
+      if (step.effects != null) {
+        const salvagedEffects = salvageCustomEffects(
+          step.effects,
+          Boolean(step.targetId && step.targetId !== "priest")
+        );
+        if (JSON.stringify(salvagedEffects) !== JSON.stringify(step.effects)) {
+          normalizations.push({
+            stepIndex: index,
+            field: "effects",
+            from: step.effects,
+            to: salvagedEffects,
+            reason: "bounded_custom_effects"
+          });
+          step.effects = salvagedEffects;
+        }
+      }
     }
     if (safeAutoTargetActions.has(step.actionType)
       && step.targetId
@@ -3444,6 +3996,7 @@ export function finishVisit(state, plan, { record = true } = {}) {
   const visit = state.currentVisit;
   if (!visit) throw new Error("There is no visit to finish");
   const person = materializeResident(state, visit.personId, true);
+  const resultingEventStart = state.events.length;
   if (visit.reactionState && visit.reactionState.endReason == null) {
     visit.reactionState.endReason = "completed";
   }
@@ -3562,14 +4115,35 @@ export function finishVisit(state, plan, { record = true } = {}) {
     privateMemory: ["confessional", "office"].includes(visit.location) || visit.hiddenConcernDisclosed,
     sourceEventId: parentEventId
   });
-  const importantCounsel = [...visit.counsel].reverse().find((line) => (
-    classifyPriestSpeech(line).some((intent) => intent !== "question" && intent !== "neutral")
-  )) || visit.counsel.at(-1) || "The priest listened.";
+  const farewellPattern = /\b(?:goodbye|farewell|go with god|god be with you|peace be with you|that will be all)\b/i;
+  const agreementTurn = visit.continuity.agreements.at(-1)?.turn;
+  const counselBeforeAgreement = Number.isInteger(agreementTurn)
+    ? visit.history[(agreementTurn * 2) - 1]?.text
+    : null;
+  const importantCounsel = counselBeforeAgreement && !farewellPattern.test(counselBeforeAgreement)
+    ? counselBeforeAgreement
+    : [...visit.counsel]
+      .map((line, index) => {
+        const intents = classifyPriestSpeech(line);
+        const actionable = intents.filter((intent) => !["question", "neutral"].includes(intent)).length;
+        const directive = /\b(?:should|must|need to|ought to|please|go|speak|tell|ask|arrange|secure|help|report|collect|appeal|work|pray)\b/i.test(line);
+        return {
+          line,
+          index,
+          score: farewellPattern.test(line) ? -100 : actionable * 4 + (directive ? 3 : 0) + (line.endsWith("?") ? -2 : 0)
+        };
+      })
+      .sort((left, right) => right.score - left.score || right.index - left.index)
+      .find((entry) => entry.score > 0)?.line
+      || "The priest listened and considered the matter.";
   const finalActions = validated.steps.map((step) => step.actionType.replaceAll("_", " ")).join(", ");
   addStructuredMemory(state, person, {
     type: "visit_summary",
     subjectId: "priest",
-    summary: `Father Benedict counseled: ${importantCounsel.slice(0, 105)} Agreed next action: ${finalActions || "none"}.`,
+    summary: completeStoredText(
+      `Father Benedict counseled: ${importantCounsel} Agreed next action: ${finalActions || "none"}.`,
+      220
+    ),
     emotion: visit.mood,
     confidence: 95,
     privateMemory: ["confessional", "office"].includes(visit.location) || visit.hiddenConcernDisclosed,
@@ -3584,11 +4158,37 @@ export function finishVisit(state, plan, { record = true } = {}) {
       resolution
     }, acceptedAiProposal ? "ai" : (plan?.source || "simulation") === "ai" ? "fallback" : (plan?.source || "simulation"));
   }
+  const issueThread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+  archiveCompletedVisit(state, visit, {
+    personName: person.name,
+    visibility: issueThread?.visibility || {
+      scope: ["confessional", "office"].includes(visit.location) ? "private_visit" : "public",
+      authorizedPersonIds: [person.id, "priest"]
+    },
+    issueSummary: issueThread?.summary || visit.issue.detail,
+    submittedPlan,
+    acceptedPlan: { summary: validated.summary, steps: validated.steps },
+    evaluation,
+    resolution,
+    eventIds: [
+      visit.originEventId,
+      ...state.events.slice(resultingEventStart).map((event) => event.id)
+    ]
+  });
+  state.aiDiagnostics.lastCompletedVisit = {
+    visitId: visit.visitId,
+    day: state.calendar.absoluteDay,
+    personId: person.id,
+    personName: person.name,
+    promptTraces: JSON.parse(JSON.stringify(visit.promptTraces.slice(-PROMPT_TRACE_LIMIT)))
+  };
   if (person.id.startsWith("external-")) person.active = false;
   state.currentVisit = null;
   state.conversationHistory = [];
   state.calendar.slot += 1;
   if (state.calendar.slot >= dailyAppointmentLimit(state)) {
+    const endingDay = state.calendar.absoluteDay;
+    const endingWeek = state.calendar.week;
     state.calendar.slot = 0;
     state.calendar.absoluteDay += 1;
     state.calendar.dayIndex = state.calendar.absoluteDay % 7;
@@ -3597,6 +4197,7 @@ export function finishVisit(state, plan, { record = true } = {}) {
       ? "The bells call the whole village toward Sunday worship."
       : "Four ordinary hours of counsel await, along with any requested or consequence-driven visits.", "neutral");
     resolvePopulationDay(state);
+    finalizePeriodReports(state, { endingDay, endingWeek });
   }
   return state;
 }
@@ -3753,11 +4354,14 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
       }
     }, outcome?.source || "simulation");
   }
+  const endingDay = state.calendar.absoluteDay;
+  const endingWeek = state.calendar.week;
   state.calendar.absoluteDay += 1;
   state.calendar.dayIndex = state.calendar.absoluteDay % 7;
   state.calendar.week = Math.floor(state.calendar.absoluteDay / 7) + 1;
   state.calendar.slot = 0;
   resolvePopulationDay(state);
+  finalizePeriodReports(state, { endingDay, endingWeek, includeWeek: true });
   return attendees.length;
 }
 

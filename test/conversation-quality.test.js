@@ -159,6 +159,28 @@ test("the model cannot deny a concrete act assigned to the visitor", async () =>
       }]
     }), { status: 200, headers: { "Content-Type": "application/json" } })
   });
+
+  test("anonymous related-person questions answer with the known identity", async () => {
+    const { state, visit, person } = groundedDecisionState("anonymous-related-identity");
+    const related = state.residents.find((resident) => resident.id !== person.id);
+    visit.issue.relatedPersonId = related.id;
+    visit.issue.relatedName = related.name;
+    visit.issue.scenarioId = "sanctuary_fugitive_1";
+    visit.scenarioFacts = [{
+      id: "concrete_matter",
+      text: "A fugitive has claimed sanctuary in the church after injuring a watchman.",
+      anchors: ["fugitive", "sanctuary", "watchman"]
+    }];
+    const client = new ParishAiClient({
+      fetchImpl: async () => {
+        throw new Error("The deterministic identity answer should not call Gemma.");
+      }
+    });
+    const response = await client.conversation(state, person, "Who is the man who seeks refuge?");
+    assert.match(response.reply, new RegExp(related.firstName, "i"));
+    assert.match(response.reply, new RegExp(related.surname, "i"));
+    assert.doesNotMatch(response.reply, /^A fugitive has claimed sanctuary/i);
+  });
   const response = await client.conversation(state, person, "Please continue.");
   assert.match(response.reply, /I diverted 8 sacks of grain/i);
   assert.doesNotMatch(response.reply, /did not take/i);
@@ -378,7 +400,7 @@ test("advising other people to pray does not pretend the visitor just prayed wit
     person,
     "Talk to him about improving the boy's safety. Get them to pray together for the boy as well."
   );
-  assert.match(response.reply, /speak with Master Strongmill/i);
+  assert.match(response.reply, /I will speak with/i);
   assert.doesNotMatch(response.reply, /^Amen, Father/i);
 });
 
@@ -554,7 +576,9 @@ test("normal, resistant, humorous, and outrageous modes create varied forward mo
   }
   assert.ok(new Set(replies).size >= 6);
   assert.ok(replies.some((reply) => /tools|coin|contract|workshop/i.test(reply)));
-  const modes = captured.map((prompt) => JSON.parse(prompt.split("CONTEXT_JSON=")[1]).responseMode);
+  const modes = captured.map((prompt) => JSON.parse(
+    prompt.split("BACKGROUND_CONTEXT_JSON=")[1].split("\nRESPONSE_PLAN_JSON=")[0]
+  ).responseMode);
   assert.ok(new Set(modes).size >= 3);
 });
 

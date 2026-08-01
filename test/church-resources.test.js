@@ -73,7 +73,7 @@ test("schema-10 parishes gain church stores during migration", () => {
   legacy.version = 10;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 14);
+  assert.equal(migrated.schemaVersion, 16);
   assert.equal(migrated.churchResources.bread, 18);
   assert.doesNotThrow(() => serializeState(migrated));
 });

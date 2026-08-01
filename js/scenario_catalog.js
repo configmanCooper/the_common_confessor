@@ -180,6 +180,7 @@ export function buildGeneratedScenarioArchetypes(context) {
   return FAMILIES.filter(([id]) => eligibleForFamily(context, id)).flatMap(([id, kinds, premise, harm, alternative]) => (
     VARIANTS.map((variant, index) => ({
       id: `${id}_${index + 1}`,
+      familyId: id,
       kinds,
       opening: `${openingLead(kinds)} ${spokenOpening(premise, context)} ${spokenOpening(harm, context)} ${spokenOpening(variant.opening, context)} ${occupationPerspective(context, id)}`,
       facts: [

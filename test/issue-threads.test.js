@@ -147,7 +147,7 @@ test("schema-12 parishes gain empty issue-thread state", () => {
   legacy.version = 12;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 14);
+  assert.equal(migrated.schemaVersion, 16);
   assert.deepEqual(migrated.issueThreads, []);
   assert.equal(migrated.nextIssueThreadSequence, 1);
 });

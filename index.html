@@ -32,7 +32,7 @@
     <div>
       <p class="eyebrow">The Common Confessor</p>
       <strong id="calendar-label"></strong>
-      <span class="small">Playtest 0.14</span>
+      <span class="small">Playtest 0.16</span>
     </div>
     <div class="top-actions">
       <span id="ai-status" data-state="checking">Gemma: checking...</span>
@@ -42,6 +42,7 @@
       <button id="open-request-visits">Request Visits</button>
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
+      <button id="open-reports">Reports</button>
     </div>
   </header>
 
@@ -137,6 +138,11 @@
   <dialog id="chronicle-dialog" class="parchment modal wide">
     <header><div><p class="eyebrow">Cause and consequence</p><h2>Village Chronicle</h2></div><button data-close="chronicle-dialog">Close</button></header>
     <div id="chronicle-list" class="chronicle-list"></div>
+  </dialog>
+
+  <dialog id="period-report-dialog" class="parchment modal wide">
+    <header><div><p class="eyebrow">The parish reckons its changes</p><h2>Day and Week Reports</h2></div><button data-close="period-report-dialog">Close</button></header>
+    <div id="period-report-list" class="period-report-list"></div>
   </dialog>
 
   <dialog id="ending-dialog" class="parchment modal">

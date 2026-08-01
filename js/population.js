@@ -811,6 +811,13 @@ function processMigration(state, day, events) {
 
 export function advancePopulationDay(state) {
   upgradePopulationState(state);
+  state.material.modifiers ||= {
+    foodSecurity: 0,
+    grainPrice: 0,
+    diseasePressure: 0,
+    crime: 0,
+    infrastructure: 0
+  };
   const day = state.calendar.absoluteDay;
   const events = [];
   const seasons = ["Spring", "Summer", "Autumn", "Winter"];
@@ -834,19 +841,31 @@ export function advancePopulationDay(state) {
   }));
   const averageFood = occupiedHouseholds.reduce((sum, household) => sum + household.food, 0) / Math.max(1, occupiedHouseholds.length);
   const averageWealth = occupiedHouseholds.reduce((sum, household) => sum + household.wealth, 0) / Math.max(1, occupiedHouseholds.length);
-  state.material.foodSecurity = clamp(averageFood);
-  state.material.grainPrice = clamp(100 - averageFood + (state.material.season === "Winter" ? 15 : 0));
+  state.material.foodSecurity = clamp(averageFood + state.material.modifiers.foodSecurity);
+  state.material.grainPrice = clamp(
+    100 - averageFood + (state.material.season === "Winter" ? 15 : 0) + state.material.modifiers.grainPrice
+  );
   state.material.diseasePressure = clamp(
-    20 + (100 - averageFood) * 0.2 + (["cold", "snow", "rain"].includes(state.material.weather) ? 10 : 0)
+    20
+      + (100 - averageFood) * 0.2
+      + (["cold", "snow", "rain"].includes(state.material.weather) ? 10 : 0)
+      + state.material.modifiers.diseasePressure
   );
   state.material.crime = clamp(
-    20 + (100 - averageWealth) * 0.35 + (state.town.metrics.harmony < 40 ? 15 : 0) - state.town.metrics.safety * 0.2
+    20
+      + (100 - averageWealth) * 0.35
+      + (state.town.metrics.harmony < 40 ? 15 : 0)
+      - state.town.metrics.safety * 0.2
+      + state.material.modifiers.crime
   );
   const maintenance = averageWealth * 0.0008 + state.residents.filter((person) => (
     person.active && person.alive && ["carpenter", "mason", "thatcher", "laborer"].includes(person.occupation)
   )).length * 0.0008;
   state.material.infrastructure = clamp(
-    state.material.infrastructure + maintenance - (state.material.weather === "storm" ? 0.5 : 0.08)
+    state.material.infrastructure
+      + maintenance
+      - (state.material.weather === "storm" ? 0.5 : 0.08)
+      + state.material.modifiers.infrastructure
   );
   if (state.material.crime > 65 && weatherRng.next() < 0.02) {
     const possibleVictims = state.residents.filter((person) => person.active && person.alive);
@@ -873,5 +892,9 @@ export function advancePopulationDay(state) {
       + (55 - state.town.metrics.safety) * 0.002
       - state.material.crime * 0.00035
   );
+  for (const key of Object.keys(state.material.modifiers)) {
+    const value = state.material.modifiers[key];
+    state.material.modifiers[key] = Math.abs(value) <= 1 ? 0 : value - Math.sign(value);
+  }
   return events;
 }

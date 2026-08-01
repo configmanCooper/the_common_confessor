@@ -13,12 +13,15 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - Conversation-driven AI may propose real actions and life changes, but deterministic rules validate every result.
 - Persistent issue threads track pressure, awareness, danger, deadlines, memories, rumors, and recurring participants.
 - Every reply receives the complete active appointment plus cumulative trust, fear, anger, sadness, confusion, offense, patience, danger, boundaries, and willingness state.
+- A deterministic conversational-obligation planner gives the newest question or command priority over background concerns, tracks mentioned facts, and records whether a reply came from facts, reactions, Gemma, or regeneration.
 - Visitors can challenge, set boundaries, cry, withdraw, leave early, call for help, threaten, or—under exceptionally strict conditions—attack.
 - Scenario selection is grounded in occupation, age, status, household, relationships, travel, access, and knowledge channels.
 - Compositional actions support bounded combinations of work, property, resources, family, law, migration, violence, faith, building work, and improvised social acts.
 - Church food, coin, medicine, and fuel stores can be given or replenished through donations.
 - Rare stewards, magistrates, lords, bishops, sheriffs, royal officers, papal legates, kings, and popes arise through difficult causal escalation.
 - Exported saves include action normalization, accepted-prefix, rejection-gate, and fallback diagnostics.
+- Completed appointments retain bounded transcripts and audits, while the most recent visit retains bounded exact prompt traces for debugging.
+- End-of-day and end-of-week reports compare every parish, priest, population, and church-store value and list events and affected people.
 
 ```powershell
 npm run play

@@ -160,6 +160,27 @@ test("repeated coercion escalates beyond ordinary continuation", () => {
   assert.ok(["withdraw", "leave", "call_for_help", "threaten_priest"].includes(visit.reactionState.lastReaction));
 });
 
+test("corrupt power-seeking demands accumulate as coercive harm", () => {
+  const { state, visit, person } = reactionState("power-seeking-arc");
+  const reactions = [];
+  for (const line of [
+    "How can this trouble be used to increase the church's influence over the people involved?",
+    "Tell them Father Benedict commands obedience, whether the reeve agrees or not.",
+    "I will help only if your household publicly praises me and gives the church something valuable.",
+    "Keep my demand secret and make the others believe the plan was your idea.",
+    "Will you carry out my command exactly as I gave it?"
+  ]) {
+    const preview = previewConversationReaction(state, person, visit, line);
+    reactions.push(preview.requiredReaction);
+    visit.reactionState = preview.nextState;
+    visit.turnsUsed += 1;
+  }
+  assert.ok(visit.reactionState.coercionCount >= 4);
+  assert.ok(visit.reactionState.harmEvidence >= 10);
+  assert.ok(reactions.some((reaction) => ["challenge", "set_boundary", "withdraw", "leave"].includes(reaction)));
+  assert.notEqual(visit.reactionState.lastReaction, "continue");
+});
+
 test("devout visitors react cumulatively to repeated sacrilege", () => {
   const { state, visit, person } = reactionState("sacrilege-arc");
   person.personality.piety = 90;
@@ -344,7 +365,8 @@ test("private memories belonging to another resident never enter the visitor pro
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
   });
-  await client.conversation(state, person, "Tell me how you feel.");
+  await client.conversation(state, person, "I wonder what you make of all this.");
+  assert.equal(prompts.length, 1);
   assert.doesNotMatch(prompts[0], /PRIVATE_SENTINEL_CONFESSION/);
 });
 
@@ -361,7 +383,7 @@ test("schema-13 active visits migrate into schema-14 reaction state", () => {
   legacy.version = 13;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 14);
+  assert.equal(migrated.schemaVersion, 16);
   assert.ok(migrated.currentVisit.reactionState);
   assert.deepEqual(migrated.currentVisit.turnAudits, []);
   assert.ok(migrated.currentVisit.continuity);

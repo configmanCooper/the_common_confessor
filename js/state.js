@@ -8,14 +8,73 @@ import {
 } from "./conversation.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
+import {
+  DAILY_REPORT_LIMIT,
+  upgradeReportingState,
+  VISIT_ARCHIVE_LIMIT,
+  WEEKLY_REPORT_LIMIT
+} from "./reporting.js";
+import {
+  PROMPT_TRACE_LIMIT,
+  PROMPT_TRACE_MAX_CHARS
+} from "./dialogue_planner.js";
 
-export const STATE_SCHEMA_VERSION = 14;
+export const STATE_SCHEMA_VERSION = 16;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon", "request_visits"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
 
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function upgradeDialoguePlannerState(state) {
+  state.aiDiagnostics ||= { lastCompletedVisit: null };
+  if (!state.currentVisit) return state;
+  state.currentVisit.promptTraces ||= [];
+  state.currentVisit.promptTraces = state.currentVisit.promptTraces.slice(-PROMPT_TRACE_LIMIT);
+  state.currentVisit.continuity ||= {
+    unresolvedQuestions: [],
+    agreements: [],
+    retractions: []
+  };
+  state.currentVisit.continuity.mentionedFactIds ||= [];
+  state.currentVisit.continuity.currentObligation ??= null;
+  state.currentVisit.continuity.lastAnsweredQuestionTurnIds ||= [];
+  return state;
+}
+
+function upgradeLegacyActionEffects(state) {
+  const bound = (value) => Math.max(0, Math.min(100, value));
+  const eventsById = new Map((state.events || []).map((event) => [event.id, event]));
+  for (const entry of state.chronicle || []) {
+    const event = eventsById.get(entry.eventId);
+    const prose = `${entry.title || ""} ${entry.text || ""}`.toLowerCase();
+    if (event?.type !== "person_action" || event.facts?.actionType !== "improvise"
+      || !/\b(?:water|well|spring)\b/.test(prose)
+      || !/\b(?:carry|carried|secure|arrange|transport|organize|warn)\w*\b/.test(prose)) continue;
+    const thread = (state.issueThreads || []).find((candidate) => (
+      candidate.originatorId === event.actorId
+      && String(candidate.scenarioId || "").includes("contaminated_well")
+      && candidate.createdDay <= event.day
+    ));
+    if (!thread) continue;
+    state.material.modifiers.diseasePressure = Math.max(
+      -20,
+      state.material.modifiers.diseasePressure - 8
+    );
+    state.town.metrics.health = bound(state.town.metrics.health + 2);
+    thread.pressure = bound(thread.pressure - 25);
+    thread.publicAwareness = bound(thread.publicAwareness + 18);
+    thread.danger = bound(thread.danger - 4);
+    thread.visibility = {
+      scope: "public",
+      authorizedPersonIds: [...new Set([...(thread.subjectIds || []), "priest"])]
+    };
+    event.facts.migratedFromActionType = "improvise";
+    event.facts.actionType = "secure_clean_water";
+  }
+  return state;
 }
 
 function upgradeIssueThreadState(state) {
@@ -25,6 +84,7 @@ function upgradeIssueThreadState(state) {
 }
 
 function upgradeReactionState(state) {
+  upgradeDialoguePlannerState(state);
   upgradeVisibilityState(state);
   upgradeFactProvenanceState(state);
   state.priestReports ||= [];
@@ -243,6 +303,59 @@ function validateReactionAudit(audit, label) {
   validateReactionState(audit.stateAfter);
   requireArray(audit.thresholdReasons, `${label} threshold reasons`);
   validateVisibility(audit.visibility, `${label} visibility`);
+  if (audit.conversationObligation != null) {
+    validateConversationObligation(audit.conversationObligation, `${label} obligation`);
+  }
+}
+
+function validateConversationObligation(obligation, label) {
+  requireObject(obligation, label);
+  for (const field of [
+    "obligationId", "latestPlayerText", "kind", "reason",
+    "directAnswer", "responseSource"
+  ]) {
+    if (typeof obligation[field] !== "string") throw new Error(`${label} ${field} is invalid`);
+  }
+  for (const field of [
+    "answeredQuestionTurnIds", "requiredFactIds", "requiredAnswerSlots",
+    "avoidRepeatingTexts", "mentionedFactIdsBefore", "completedObjectiveIds",
+    "activeObjectiveIds", "prohibitedFallbackFactIds"
+  ]) {
+    requireArray(obligation[field], `${label} ${field}`);
+    if (obligation[field].some((entry) => typeof entry !== "string")) {
+      throw new Error(`${label} ${field} is invalid`);
+    }
+  }
+  if (typeof obligation.mustAnswerFirst !== "boolean"
+    || typeof obligation.modelNeeded !== "boolean"
+    || typeof obligation.followupRequested !== "boolean"
+    || !Number.isFinite(obligation.routerConfidence)
+    || obligation.routerConfidence < 0 || obligation.routerConfidence > 1) {
+    throw new Error(`${label} routing metadata is invalid`);
+  }
+}
+
+function validatePromptTrace(trace, label) {
+  requireObject(trace, label);
+  validateConversationObligation(trace.obligation, `${label} obligation`);
+  if (typeof trace.prompt !== "string"
+    || trace.prompt.length > PROMPT_TRACE_MAX_CHARS + 100
+    || !Number.isInteger(trace.promptLength) || trace.promptLength < 0
+    || typeof trace.initialReply !== "string" || trace.initialReply.length > 600
+    || typeof trace.finalReply !== "string" || trace.finalReply.length > 600
+    || typeof trace.mandatoryAnswerPassed !== "boolean"
+    || typeof trace.retryUsed !== "boolean"
+    || typeof trace.route !== "string"
+    || typeof trace.responseSource !== "string"
+    || typeof trace.gemmaCalled !== "boolean") {
+    throw new Error(`${label} is invalid`);
+  }
+  requireArray(trace.includedFactIds, `${label} included facts`);
+  requireObject(trace.validation, `${label} validation`);
+  if (typeof trace.validation.mandatoryAnswerPresent !== "boolean"
+    || typeof trace.validation.repetitionDetected !== "boolean") {
+    throw new Error(`${label} validation result is invalid`);
+  }
 }
 
 function validateScenarioFact(fact, label) {
@@ -442,6 +555,7 @@ export function migrateState(rawState) {
     upgradeConversationState(state);
     upgradeAuthorityState(state);
     upgradeParishState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const replaySnapshot = {
@@ -465,6 +579,7 @@ export function migrateState(rawState) {
     upgradeConversationState(state);
     upgradeAuthorityState(state);
     upgradeParishState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -492,6 +607,7 @@ export function migrateState(rawState) {
     upgradeConversationState(state);
     upgradeAuthorityState(state);
     upgradeParishState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -519,6 +635,7 @@ export function migrateState(rawState) {
     upgradeConversationState(state);
     upgradeAuthorityState(state);
     upgradeParishState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -539,6 +656,7 @@ export function migrateState(rawState) {
     upgradePopulationState(state);
     upgradeConversationState(state);
     upgradeParishState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -556,6 +674,7 @@ export function migrateState(rawState) {
     state.priest.relicStolenById ??= null;
     upgradeAuthorityState(state);
     upgradeParishState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -582,6 +701,7 @@ export function migrateState(rawState) {
     upgradePopulationState(state);
     upgradeGroundedConversationState(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -599,6 +719,7 @@ export function migrateState(rawState) {
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -616,6 +737,7 @@ export function migrateState(rawState) {
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -633,6 +755,7 @@ export function migrateState(rawState) {
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -649,6 +772,7 @@ export function migrateState(rawState) {
     state.nextVisitRequestSequence ||= 1;
     upgradeIssueThreadState(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -663,6 +787,7 @@ export function migrateState(rawState) {
     verifyIntegrity(state);
     upgradeIssueThreadState(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -676,6 +801,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 13) {
     verifyIntegrity(state);
     upgradeReactionState(state);
+    upgradeReportingState(state, true);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({ ...state, commandLog: [], aiProposals: [], nextCommandSequence: 1, replayBase: null });
@@ -686,6 +812,58 @@ export function migrateState(rawState) {
     state.replayBase = { kind: "migration", sourceSchemaVersion: 13, source: cloneJson(rawState), snapshot: migrationSnapshot };
     sealState(state);
   }
+  if (detectedVersion === 14) {
+    verifyIntegrity(state);
+    upgradeReportingState(state, true);
+    upgradeDialoguePlannerState(state);
+    upgradeLegacyActionEffects(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 14,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
+  if (detectedVersion === 15) {
+    verifyIntegrity(state);
+    upgradeDialoguePlannerState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 15,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
+  upgradeDialoguePlannerState(state);
+  upgradeReportingState(state, detectedVersion < STATE_SCHEMA_VERSION);
   state.schemaVersion = STATE_SCHEMA_VERSION;
   state.version = STATE_SCHEMA_VERSION;
   return state;
@@ -873,6 +1051,14 @@ export function validateState(state) {
   for (const field of ["foodSecurity", "grainPrice", "diseasePressure", "crime", "infrastructure"]) {
     requireFinite(state.material[field], `Material ${field}`, 0, 100);
   }
+  requireObject(state.material.modifiers, "Material modifiers");
+  const materialModifierKeys = ["foodSecurity", "grainPrice", "diseasePressure", "crime", "infrastructure"];
+  if (Object.keys(state.material.modifiers).sort().join(",") !== [...materialModifierKeys].sort().join(",")) {
+    throw new Error("Material modifiers have invalid keys");
+  }
+  for (const field of materialModifierKeys) {
+    requireFinite(state.material.modifiers[field], `Material modifier ${field}`, -20, 20);
+  }
   if (typeof state.material.season !== "string" || typeof state.material.weather !== "string") {
     throw new Error("Material season or weather is invalid");
   }
@@ -907,6 +1093,49 @@ export function validateState(state) {
   requireArray(state.chronicle, "Chronicle");
   requireArray(state.sermons, "Sermons");
   requireArray(state.conversationHistory, "Conversation history");
+  requireObject(state.aiDiagnostics, "AI diagnostics");
+  if (state.aiDiagnostics.lastCompletedVisit != null) {
+    const diagnostic = state.aiDiagnostics.lastCompletedVisit;
+    requireObject(diagnostic, "Last completed visit diagnostics");
+    requireArray(diagnostic.promptTraces, "Last completed visit prompt traces");
+    if (typeof diagnostic.visitId !== "string"
+      || !Number.isInteger(diagnostic.day) || diagnostic.day < 0
+      || typeof diagnostic.personId !== "string"
+      || typeof diagnostic.personName !== "string"
+      || diagnostic.promptTraces.length > PROMPT_TRACE_LIMIT) {
+      throw new Error("Last completed visit diagnostics are invalid");
+    }
+    for (const trace of diagnostic.promptTraces) validatePromptTrace(trace, "Completed visit prompt trace");
+  }
+  requireArray(state.visitArchive, "Visit archive");
+  requireArray(state.periodReports, "Period reports");
+  requireObject(state.periodTracking, "Period tracking");
+  if (!Number.isInteger(state.nextPeriodReportSequence) || state.nextPeriodReportSequence < 1) {
+    throw new Error("Period report sequence is invalid");
+  }
+  if (state.visitArchive.length > VISIT_ARCHIVE_LIMIT
+    || state.periodReports.filter((report) => report.type === "day").length > DAILY_REPORT_LIMIT
+    || state.periodReports.filter((report) => report.type === "week").length > WEEKLY_REPORT_LIMIT) {
+    throw new Error("Report or visit archive retention limit is invalid");
+  }
+  for (const field of ["dayStart", "weekStart"]) {
+    const baseline = state.periodTracking[field];
+    requireObject(baseline, `Period tracking ${field}`);
+    requireArray(baseline.metrics, `Period tracking ${field} metrics`);
+    if (!Number.isInteger(baseline.day) || baseline.day < 0
+      || !Number.isInteger(baseline.week) || baseline.week < 1
+      || !Number.isInteger(baseline.eventSequence) || baseline.eventSequence < 1
+      || typeof baseline.partial !== "boolean") {
+      throw new Error("Period tracking baseline is invalid");
+    }
+    for (const metric of baseline.metrics) {
+      if (typeof metric.group !== "string" || typeof metric.key !== "string"
+        || typeof metric.label !== "string" || typeof metric.unit !== "string"
+        || !Number.isFinite(metric.value)) {
+        throw new Error("Period tracking metric is invalid");
+      }
+    }
+  }
   requireObject(state.settings, "Settings");
   requireObject(state.statistics, "Statistics");
   if (typeof state.settings.aiEnabled !== "boolean") throw new Error("AI setting is invalid");
@@ -940,7 +1169,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -1215,6 +1444,69 @@ export function validateState(state) {
     }
     priorEventIds.add(event.id);
   }
+  const archivedVisitIds = new Set();
+  for (const visit of state.visitArchive) {
+    requireObject(visit, "Archived visit");
+    requireArray(visit.history, "Archived visit history");
+    requireArray(visit.counsel, "Archived visit counsel");
+    requireArray(visit.turnAudits, "Archived visit audits");
+    requireArray(visit.eventIds, "Archived visit events");
+    requireObject(visit.issue, "Archived visit issue");
+    requireObject(visit.acceptedPlan, "Archived visit accepted plan");
+    requireArray(visit.acceptedPlan.steps, "Archived visit accepted steps");
+    if (typeof visit.visitId !== "string" || archivedVisitIds.has(visit.visitId)
+      || !personIds.has(visit.personId) || typeof visit.personName !== "string"
+      || !Number.isInteger(visit.day) || visit.day < 0
+      || !Number.isInteger(visit.week) || visit.week < 1
+      || !Number.isInteger(visit.slot) || visit.slot < 0
+      || !["confessional", "office", "nave", "shrine"].includes(visit.location)
+      || typeof visit.issue.kind !== "string" || typeof visit.issue.summary !== "string"
+      || typeof visit.resolution !== "string") {
+      throw new Error("Archived visit is invalid");
+    }
+    validateVisibility(visit.visibility, "Archived visit visibility");
+    for (const line of visit.history) {
+      if (!["priest", "visitor"].includes(line.speaker) || typeof line.text !== "string") {
+        throw new Error("Archived visit history is invalid");
+      }
+    }
+    for (const audit of visit.turnAudits) validateReactionAudit(audit, "Archived visit audit");
+    if (visit.eventIds.some((eventId) => !eventIds.has(eventId))) {
+      throw new Error("Archived visit references a missing event");
+    }
+    archivedVisitIds.add(visit.visitId);
+  }
+  const reportIds = new Set();
+  for (const report of state.periodReports) {
+    requireObject(report, "Period report");
+    requireArray(report.metrics, "Period report metrics");
+    requireArray(report.eventIds, "Period report events");
+    requireArray(report.summaries, "Period report summaries");
+    requireArray(report.visits, "Period report visits");
+    requireArray(report.affectedPeople, "Period report affected people");
+    if (typeof report.id !== "string" || reportIds.has(report.id)
+      || !["day", "week"].includes(report.type) || typeof report.label !== "string"
+      || !Number.isInteger(report.startDay) || report.startDay < 0
+      || !Number.isInteger(report.endDay) || report.endDay < report.startDay
+      || !Number.isInteger(report.week) || report.week < 1
+      || typeof report.partial !== "boolean"
+      || !Number.isInteger(report.omittedSummaryCount) || report.omittedSummaryCount < 0) {
+      throw new Error("Period report is invalid");
+    }
+    for (const metric of report.metrics) {
+      if (typeof metric.group !== "string" || typeof metric.key !== "string"
+        || typeof metric.label !== "string" || typeof metric.unit !== "string"
+        || !Number.isFinite(metric.start) || !Number.isFinite(metric.end)
+        || metric.delta !== metric.end - metric.start) {
+        throw new Error("Period report metric is invalid");
+      }
+    }
+    if (report.eventIds.some((eventId) => !eventIds.has(eventId))
+      || report.affectedPeople.some((entry) => !personIds.has(entry.personId))) {
+      throw new Error("Period report references missing people or events");
+    }
+    reportIds.add(report.id);
+  }
   for (const person of [...state.residents, ...state.externalActors]) {
     for (const memory of person.memories) {
       if (memory.sourceEventId != null && !eventIds.has(memory.sourceEventId)) {
@@ -1306,9 +1598,25 @@ export function validateState(state) {
       throw new Error("Fresh visit reaction audit count does not match turns");
     }
     requireObject(state.currentVisit.continuity, "Current visit continuity");
-    for (const field of ["unresolvedQuestions", "agreements", "retractions"]) {
+    for (const field of [
+      "unresolvedQuestions", "agreements", "retractions",
+      "mentionedFactIds", "lastAnsweredQuestionTurnIds"
+    ]) {
       requireArray(state.currentVisit.continuity[field], `Current visit ${field}`);
     }
+    if (state.currentVisit.continuity.mentionedFactIds.some((factId) => (
+      typeof factId !== "string" || !state.currentVisit.scenarioFacts.some((fact) => fact.id === factId)
+    )) || state.currentVisit.continuity.lastAnsweredQuestionTurnIds.some((turnId) => typeof turnId !== "string")) {
+      throw new Error("Current visit fact or question progress is invalid");
+    }
+    if (state.currentVisit.continuity.currentObligation != null) {
+      validateConversationObligation(state.currentVisit.continuity.currentObligation, "Current visit obligation");
+    }
+    requireArray(state.currentVisit.promptTraces, "Current visit prompt traces");
+    if (state.currentVisit.promptTraces.length > PROMPT_TRACE_LIMIT) {
+      throw new Error("Current visit has too many prompt traces");
+    }
+    for (const trace of state.currentVisit.promptTraces) validatePromptTrace(trace, "Current visit prompt trace");
     for (const question of state.currentVisit.continuity.unresolvedQuestions) {
       requireObject(question, "Unresolved question");
       if (typeof question.turnId !== "string" || typeof question.text !== "string"
@@ -1372,6 +1680,15 @@ export function validateState(state) {
       }
       requireObject(command.payload.response, "Conversation command response");
       validateConversation(command.payload.response);
+      if (command.payload.response.conversationObligation != null) {
+        validateConversationObligation(
+          command.payload.response.conversationObligation,
+          "Conversation command obligation"
+        );
+      }
+      if (command.payload.response.promptTrace != null) {
+        validatePromptTrace(command.payload.response.promptTrace, "Conversation command prompt trace");
+      }
       if (command.payload.response.reactionAudit != null) {
         validateReactionAudit(command.payload.response.reactionAudit, "Conversation command reaction audit");
       }
@@ -1413,6 +1730,18 @@ export function validateState(state) {
         }
         for (const field of ["title", "description", "detail"]) {
           if (typeof step[field] !== "string") throw new Error(`Finish command ${field} is invalid`);
+        }
+        const stepEffects = step.effects ?? [];
+        requireArray(stepEffects, "Finish command custom effects");
+        if (stepEffects.length > 3 || (step.actionType !== "improvise" && stepEffects.length)) {
+          throw new Error("Finish command custom effects are invalid");
+        }
+        for (const effect of stepEffects) {
+          if (!["town", "material", "issue", "actor", "target"].includes(effect.scope)
+            || typeof effect.key !== "string" || !Number.isInteger(effect.delta)
+            || effect.delta < -3 || effect.delta > 3 || typeof effect.reason !== "string") {
+            throw new Error("Finish command custom effect is invalid");
+          }
         }
         if (!Number.isInteger(step.decisionScore) || step.decisionScore < 0 || step.decisionScore > 100) {
           throw new Error("Finish command decision score is invalid");
@@ -1655,7 +1984,9 @@ export function compactReplayHistory(state) {
     ...state.knowledge.map((entry) => entry.sourceEventId),
     ...state.rumors.map((rumor) => rumor.sourceEventId),
     ...[...state.residents, ...state.externalActors].flatMap((person) => person.memories.map((memory) => memory.sourceEventId)),
-    ...state.eventQueue.map((event) => event.sourceEventId)
+    ...state.eventQueue.map((event) => event.sourceEventId),
+    ...state.visitArchive.flatMap((visit) => visit.eventIds),
+    ...state.periodReports.flatMap((report) => report.eventIds)
   ].filter(Boolean));
   const eventsById = new Map(state.events.map((event) => [event.id, event]));
   const frontier = [...retainedEventIds];

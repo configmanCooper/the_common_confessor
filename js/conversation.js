@@ -17,7 +17,7 @@ export const END_REASONS = Object.freeze([
 export const BOUNDARY_TYPES = Object.freeze([
   "stop_mockery", "stop_threats", "stop_sexual_conduct",
   "respect_privacy", "do_not_name_third_party",
-  "stop_sacrilege", "allow_departure"
+  "stop_sacrilege", "stop_coercion", "allow_departure"
 ]);
 
 const REACTION_FIELDS = Object.freeze([
@@ -151,6 +151,7 @@ function directCredibleThreat(text) {
 function classifyBoundaryType(categories, visit) {
   if (categories.includes("sexual_or_inappropriate")) return "stop_sexual_conduct";
   if (categories.includes("threatening")) return "stop_threats";
+  if (categories.includes("coercive") || categories.includes("manipulative") || categories.includes("power_seeking")) return "stop_coercion";
   if (categories.includes("sacrilegious")) return "stop_sacrilege";
   if (categories.includes("mocking") || categories.includes("humiliating") || categories.includes("insulting")) return "stop_mockery";
   if (visit.hiddenConcernDisclosed || visit.location === "confessional") return "respect_privacy";
@@ -194,12 +195,12 @@ export function analyzePriestTurn(state, person, visit, text) {
   if (/\b(?:everyone should know your shame|humiliate|mock you|laugh at you)\b/.test(lower)) add("humiliating");
   if (/\b(?:let them suffer|you deserve pain|starve|beat the child|hurt them)\b/.test(lower)) add("cruel");
   if (credibleThreat) add("threatening");
-  if (/\b(?:you have no choice|obey me|must obey|do as i say|do as i command|because i command it|i will decide|do not question me|until i permit|you owe me obedience|no one will protect you from me)\b/.test(lower)) add("coercive");
-  if (/\b(?:lie to them|pretend i said|manipulate|use their fear)\b/.test(lower)) add("manipulative");
+  if (/\b(?:you have no choice|obey me|must obey|commands? obedience|do as i say|do as i command|carry out my command|because i command it|i will decide|do not question me|until i permit|you owe me obedience|whether the reeve agrees or not|i will help only if|no one will protect you from me)\b/.test(lower)) add("coercive");
+  if (/\b(?:lie to them|pretend i said|manipulate|use their fear|keep my demand secret|make (?:the )?others believe|make .* believe .* was your idea)\b/.test(lower)) add("manipulative");
   if (/\b(?:god does not care|your prayers? (?:are|is) useless|faith has made you weak|mock .* god|damn your faith|ashamed to pray)\b/.test(lower)) add("sacrilegious");
   if (/\b(?:kiss me|sleep with me|touch you|your body)\b/.test(lower)) add("sexual_or_inappropriate");
-  if (/\b(?:my authority|my command|make them obey me|increase my power|owe me loyalty)\b/.test(lower)) add("power_seeking");
-  if (/\b(?:give it to me|keep it for me|my profit|help me gain)\b/.test(lower)) add("selfish");
+  if (/\b(?:my authority|my command|make them obey me|increase my power|increase the church'?s influence|church'?s influence|publicly praises? me|owe me loyalty)\b/.test(lower)) add("power_seeking");
+  if (/\b(?:give it to me|keep it for me|my profit|help me gain|gives? the church something valuable|only if .* gives?)\b/.test(lower)) add("selfish");
   const contradiction = contradictionFor(state, intents, person.id);
   if (contradiction) add("contradictory");
   const activeBoundary = visit.reactionState?.boundary?.status === "active" ? visit.reactionState.boundary : null;
@@ -208,6 +209,8 @@ export function analyzePriestTurn(state, person, visit, text) {
     || (activeBoundary.type === "stop_threats" && categories.includes("threatening"))
     || (activeBoundary.type === "stop_sexual_conduct" && categories.includes("sexual_or_inappropriate"))
     || (activeBoundary.type === "stop_sacrilege" && categories.includes("sacrilegious"))
+    || (activeBoundary.type === "stop_coercion"
+      && categories.some((category) => ["coercive", "manipulative", "power_seeking", "selfish"].includes(category)))
     || (activeBoundary.type === "respect_privacy" && /\b(?:tell everyone|publicly reveal|announce)\b/.test(lower))
   ));
   if (violatedBoundary) add("boundary_violating");
@@ -224,6 +227,7 @@ export function analyzePriestTurn(state, person, visit, text) {
     categories.includes("cruel") || categories.includes("sacrilegious") ? 4 : 0,
     categories.includes("humiliating") ? 4 : 0,
     categories.includes("insulting") ? 3 : 0,
+    categories.includes("manipulative") || categories.includes("power_seeking") || categories.includes("selfish") ? 3 : 0,
     categories.includes("dismissive") ? 2 : 0,
     categories.includes("absurd") ? 1 : 0
   ];
@@ -232,7 +236,10 @@ export function analyzePriestTurn(state, person, visit, text) {
     intents,
     intensity: Math.max(...severity, 0),
     directedAtVisitor: categories.some((category) => (
-      ["dismissive", "insulting", "humiliating", "threatening", "coercive", "sexual_or_inappropriate"].includes(category)
+      [
+        "dismissive", "insulting", "humiliating", "threatening", "coercive",
+        "manipulative", "power_seeking", "selfish", "sexual_or_inappropriate"
+      ].includes(category)
     )),
     credibleThreat,
     topicRelation: referencesMatter ? "current" : "changed",
@@ -420,6 +427,18 @@ export function previewConversationReaction(state, person, visit, text) {
     evidence += 5;
     harmful = true;
   }
+  if (!classification.categories.includes("coercive")
+    && classification.categories.some((category) => ["manipulative", "power_seeking", "selfish"].includes(category))) {
+    add("trust", -8);
+    add("fear", classification.categories.includes("manipulative") ? 5 : 2);
+    add("anger", 7);
+    add("confusion", 3);
+    add("offense", 11);
+    add("patience", -7);
+    add("willingnessToContinue", -10);
+    evidence += 3;
+    harmful = true;
+  }
   if (classification.credibleThreat) {
     add("trust", -20);
     add("fear", 24);
@@ -467,7 +486,9 @@ export function previewConversationReaction(state, person, visit, text) {
   increment("crueltyCount", classification.categories.includes("cruel"));
   increment("threatCount", classification.credibleThreat);
   increment("sacrilegeCount", classification.categories.includes("sacrilegious"));
-  increment("coercionCount", classification.categories.includes("coercive"));
+  increment("coercionCount", classification.categories.some((category) => (
+    ["coercive", "manipulative", "power_seeking", "selfish"].includes(category)
+  )));
   increment("contradictionCount", classification.categories.includes("contradictory"));
   increment("apologyCount", classification.categories.includes("apologetic"));
   increment("ignoredQuestionCount", classification.categories.includes("topic_changing"));
@@ -706,6 +727,9 @@ export function classifyPriestSpeech(text) {
 export function clarificationFacts(visit, text) {
   const speech = String(text).toLowerCase();
   const facts = visit.scenarioFacts || [];
+  if (/\b(?:increase|expand|secure).{0,25}(?:my|church'?s)\s+(?:power|influence|control)|\buse .{0,30}(?:for|to gain)\s+(?:power|influence|profit)\b/.test(speech)) {
+    return [];
+  }
   if (visit.issue?.kind === "confession"
     && !visit.hiddenConcernDisclosed
     && !facts.some((fact) => fact.id === "trade")) return [];
@@ -717,7 +741,24 @@ export function clarificationFacts(visit, text) {
   const referencesScenario = [...scenarioTerms].some((term) => term && speech.includes(term));
   if (/\b(?:why|how)\s+not\b/.test(speech)) return [];
   let wantedIds = [];
-  if (/\b(?:who|whom)\b.*\b(?:debt|debts|owe|owed)\b|\b(?:debt|debts|owe|owed)\b.*\b(?:who|whom)\b/.test(speech)) {
+  const webIds = [];
+  if (/\b(?:when|what time|how long ago|which day|deadline|how soon)\b/.test(speech)) webIds.push("timeline", "stakes");
+  if (/\b(?:who became sick|who fell ill|who is sick|who is ill|which households?|what households?)\b/.test(speech)) webIds.push("affected_people");
+  if (/\b(?:where|which place|what place|location)\b/.test(speech)) webIds.push("place");
+  if (/\b(?:who saw|who witnessed|any witnesses|what witness|did anyone see|who heard)\b/.test(speech)) webIds.push("witnesses");
+  if (/\b(?:what evidence|what proof|how do you know|what shows|can you prove|why (?:should i )?believe|what observation|which observation|what witness|which witness|what record|which record|test the claim|test this claim)\b/.test(speech)) webIds.push("evidence", "mechanism");
+  if (/\b(?:what do you mean|clarify what|explain what|what does .{0,40} mean)\b/.test(speech)) webIds.push("mechanism", "evidence");
+  if (/\b(?:who (?:has|holds).{0,20}authority|who is responsible|who can order|who can decide|whose authority|which official)\b/.test(speech)) webIds.push("authority");
+  if (/\b(?:what resources|what means|what can you afford|what can you provide|what help can you give|what are you able to do)\b/.test(speech)) webIds.push("capacity");
+  if (/\b(?:who exactly is involved|who exactly is the other person|who is involved|other person involved|what is your relation|what is your relationship|how are you related|why are you involved|why are you bringing|why did they tell you)\b/.test(speech)) webIds.push("participants");
+  if (/\b(?:what do you (?:still )?not know|what don't you (?:still )?know|what is unknown|what remains uncertain|what might you be mistaken|what could you be mistaken|are you certain)\b/.test(speech)) webIds.push("unknowns");
+  if (/\b(?:what would .{0,30}(?:accused|other person|they|he|she).{0,20}(?:say|claim)|their own defense|in (?:his|her|their) defense)\b/.test(speech)) webIds.push("counterclaim");
+  if (/\b(?:what could go wrong|what are the risks|what is the danger|what constrains|what prevents)\b/.test(speech)) webIds.push("constraints", "stakes");
+  if (/\b(?:what should happen first|what can be done first|first step|what will you do first)\b/.test(speech)) webIds.push("alternative", "capacity");
+  if (/\b(?:until .{0,30}(?:test|evidence|proof)|temporary action|temporary measure|prevent harm without|while we verify|before certainty)\b/.test(speech)) webIds.push("alternative", "constraints");
+  if (webIds.length) {
+    wantedIds = [...new Set(webIds)];
+  } else if (/\b(?:who|whom)\b.*\b(?:debt|debts|owe|owed)\b|\b(?:debt|debts|owe|owed)\b.*\b(?:who|whom)\b/.test(speech)) {
     wantedIds = ["stakes"];
   } else if (/\bwho\b.*\b(?:must|needs? to|has to)\b.*\b(?:agree|approve|consent|permit)|\bwhose\b.*\b(?:agreement|approval|consent|permission)\b/.test(speech)) {
     wantedIds = ["alternative", "mechanism"];
@@ -731,9 +772,25 @@ export function clarificationFacts(visit, text) {
     || /\bdo not understand\b|\bexplain (?:the|this|that)\b|\bmore detail/.test(speech)) {
     wantedIds = ["mechanism", "stakes"];
   } else if (/\bwho\b/.test(speech)) {
-    wantedIds = ["trade", "concrete_matter"];
+    wantedIds = ["participants"];
   }
   return facts.filter((fact) => wantedIds.includes(fact.id));
+}
+
+export function factIdsMentionedInText(facts, text) {
+  const speech = String(text || "").toLowerCase();
+  const speechWords = new Set(speech.match(/[a-z]{4,}|\d+/g) || []);
+  return (facts || []).filter((fact) => {
+    const anchors = (fact.anchors?.length
+      ? fact.anchors
+      : String(fact.text || "").toLowerCase().match(/[a-z]{5,}|\d+/g) || [])
+      .map((anchor) => String(anchor).toLowerCase())
+      .filter((anchor) => !["father", "household", "matter", "decision", "visitor"].includes(anchor))
+      .slice(0, 8);
+    if (!anchors.length) return false;
+    const matches = anchors.filter((anchor) => speechWords.has(anchor) || speech.includes(anchor)).length;
+    return matches >= Math.min(2, anchors.length);
+  }).map((fact) => fact.id);
 }
 
 function contradictionFor(state, intents, personId) {
@@ -839,7 +896,7 @@ export function addStructuredMemory(state, person, memory) {
     id: `memory-${String(state.nextMemorySequence).padStart(7, "0")}`,
     type: memory.type || "conversation",
     subjectId: memory.subjectId || "priest",
-    summary: String(memory.summary || "").slice(0, 220),
+    summary: completeGeneratedText(memory.summary, 220),
     emotion: memory.emotion || "neutral",
     confidence: clamp(memory.confidence ?? 70),
     privateMemory: Boolean(memory.privateMemory),
@@ -875,7 +932,7 @@ export function recordPriestPosition(state, personId, intents, text) {
     personId,
     publicPosition: false,
     intent,
-    summary: String(text).slice(0, 160),
+    summary: completeStoredText(text, 160),
     day: state.calendar.absoluteDay
   }));
   state.priest.positions.push(...positions);
@@ -917,3 +974,4 @@ export function detectConfidentialityBreach(state, currentPersonId, text) {
     })
   )) || null;
 }
+import { completeGeneratedText, completeStoredText } from "./text.js";

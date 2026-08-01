@@ -6,7 +6,7 @@ import {
   fallbackDeparturePlan,
   finishVisit
 } from "../js/simulation.js";
-import { sealState, serializeState } from "../js/state.js";
+import { compactReplayHistory, sealState, serializeState } from "../js/state.js";
 
 function asLegacySave(state) {
   const legacy = JSON.parse(JSON.stringify(state));
@@ -210,7 +210,7 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 14);
+  assert.equal(manualState.schemaVersion, 16);
   assert.equal(await page.locator("#open-request-visits").isDisabled(), true);
   assert.match(await page.locator("#church-resources").innerText(), /Bread/i);
   assert.equal(manualState.commandLog.length, 1);
@@ -278,6 +278,30 @@ try {
   await page.waitForFunction((name) => document.querySelector("#town-name")?.textContent === name, idleImportState.town.name);
   assert.match(await page.locator("#turn-counter").innerText(), /0 \/ 10/);
 
+  const reportState = createGame("browser-report-parish");
+  for (let index = 0; index < 3; index += 1) {
+    beginVisit(reportState);
+    finishVisit(reportState, { ...fallbackDeparturePlan(reportState), source: "fallback" });
+  }
+  const harmonyBaseline = reportState.periodTracking.dayStart.metrics.find((metric) => metric.key === "harmony");
+  harmonyBaseline.value = Math.min(100, harmonyBaseline.value + 5);
+  compactReplayHistory(reportState);
+  beginVisit(reportState);
+  await page.locator("#import-file").setInputFiles({
+    name: "report-import.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(serializeState(reportState))
+  });
+  await page.waitForFunction((name) => document.querySelector("#town-name")?.textContent === name, reportState.town.name);
+  await page.locator("#next-hour").click();
+  await page.locator("#period-report-dialog").waitFor({ state: "visible" });
+  assert.match(await page.locator("#period-report-dialog").innerText(), /Daily report/);
+  assert.equal(await page.locator("#period-report-dialog .report-metrics tbody tr").count(), 23);
+  assert.ok(await page.locator("#period-report-dialog .metric-change.fall").count() >= 1);
+  assert.ok(await page.locator("#period-report-dialog .metric-change.same").count() >= 1);
+  await page.locator('[data-close="period-report-dialog"]').click();
+  await page.locator("#visitor-panel").waitFor({ state: "visible" });
+
   const sundayState = createGame("browser-sunday-parish");
   while (sundayState.calendar.dayIndex !== 6) {
     beginVisit(sundayState);
@@ -299,7 +323,11 @@ try {
   assert.match(await page.locator("#toast").innerText(), /1 to 100 words/);
   await page.locator("#sermon-text").fill("Let mercy guide correction, restore neighbors, and keep every door open to repentance.");
   await page.locator("#deliver-sermon").click();
-  assert.equal(await page.locator("#deliver-sermon").isDisabled(), true);
+  await page.locator("#period-report-dialog").waitFor({ state: "visible" });
+  assert.match(await page.locator("#period-report-dialog").innerText(), /Daily report — Sunday, Week 1/);
+  assert.match(await page.locator("#period-report-dialog").innerText(), /Weekly report — Week 1/);
+  assert.ok(await page.locator("#period-report-dialog .metric-change.rise").count() >= 1);
+  await page.locator('[data-close="period-report-dialog"]').click();
   await page.locator("#visitor-panel").waitFor({ state: "visible" });
   assert.match(await page.locator("#calendar-label").innerText(), /Monday, Week 2/);
 

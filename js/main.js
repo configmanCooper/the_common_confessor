@@ -43,6 +43,7 @@ let stateGeneration = 0;
 let initializationComplete = false;
 let startActionInFlight = false;
 let toastTimer = null;
+let continueAfterPeriodReport = false;
 const requestedVisitSelection = new Set();
 
 function setHidden(element, hidden) {
@@ -418,6 +419,7 @@ async function endHour() {
     return;
   }
   departureInFlight = false;
+  const priorReportIds = new Set(requestState.periodReports.map((report) => report.id));
   finishVisit(requestState, plan);
   compactReplayHistory(requestState);
   saveGame(true, true);
@@ -431,6 +433,11 @@ async function endHour() {
   setBusy(false);
   elements["next-hour"].disabled = false;
   renderCommon();
+  const newReports = requestState.periodReports.filter((report) => !priorReportIds.has(report.id));
+  if (newReports.length) {
+    showPeriodReports(newReports, true);
+    return;
+  }
   proceedToCurrentPeriod();
 }
 
@@ -539,6 +546,7 @@ async function deliverSermon() {
     setBusy(false);
     return;
   }
+  const priorReportIds = new Set(requestState.periodReports.map((report) => report.id));
   const count = applySermon(requestState, theme, text, outcome);
   compactReplayHistory(requestState);
   saveGame(true, true);
@@ -548,6 +556,11 @@ async function deliverSermon() {
   setBusy(false);
   showToast(`${count} villagers heard the sermon. Monday begins.`);
   renderCommon();
+  const newReports = requestState.periodReports.filter((report) => !priorReportIds.has(report.id));
+  if (newReports.length) {
+    showPeriodReports(newReports, true);
+    return;
+  }
   proceedToCurrentPeriod();
 }
 
@@ -632,11 +645,122 @@ function renderChronicle() {
   }));
 }
 
+function renderPeriodReports(reports) {
+  const articles = reports.map((report) => {
+    const article = document.createElement("article");
+    article.className = "period-report";
+    const header = document.createElement("header");
+    const heading = document.createElement("h3");
+    heading.textContent = `${report.type === "week" ? "Weekly" : "Daily"} report — ${report.label}`;
+    const note = document.createElement("p");
+    note.className = "small";
+    note.textContent = report.partial
+      ? "This report begins from the point when the older save was upgraded."
+      : `${report.visits.length} completed appointment${report.visits.length === 1 ? "" : "s"} · ${report.affectedPeople.length} named people affected`;
+    header.append(heading, note);
+    article.append(header);
+
+    const groups = [...new Set(report.metrics.map((metric) => metric.group))];
+    for (const group of groups) {
+      const section = document.createElement("section");
+      section.className = "report-group";
+      const title = document.createElement("h4");
+      title.textContent = group;
+      const table = document.createElement("table");
+      table.className = "report-metrics";
+      const tableHead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const label of ["Measure", "Start", "End", "Change"]) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        headRow.append(th);
+      }
+      tableHead.append(headRow);
+      const body = document.createElement("tbody");
+      for (const metric of report.metrics.filter((entry) => entry.group === group)) {
+        const row = document.createElement("tr");
+        const direction = metric.delta > 0 ? "rise" : metric.delta < 0 ? "fall" : "same";
+        const arrow = metric.delta > 0 ? "↑" : metric.delta < 0 ? "↓" : "—";
+        const values = [
+          metric.label,
+          `${metric.start}${metric.unit ? ` ${metric.unit}` : ""}`,
+          `${metric.end}${metric.unit ? ` ${metric.unit}` : ""}`,
+          `${arrow} ${metric.delta > 0 ? "+" : ""}${metric.delta}`
+        ];
+        values.forEach((value, index) => {
+          const cell = document.createElement(index === 0 ? "th" : "td");
+          cell.textContent = value;
+          if (index === 3) cell.className = `metric-change ${direction}`;
+          row.append(cell);
+        });
+        body.append(row);
+      }
+      table.append(tableHead, body);
+      section.append(title, table);
+      article.append(section);
+    }
+
+    const eventsTitle = document.createElement("h4");
+    eventsTitle.textContent = "What happened";
+    article.append(eventsTitle);
+    const eventList = document.createElement("div");
+    eventList.className = "report-events";
+    if (!report.summaries.length) {
+      const empty = document.createElement("p");
+      empty.className = "report-empty";
+      empty.textContent = "No chronicle-worthy event was recorded.";
+      eventList.append(empty);
+    }
+    for (const event of report.summaries) {
+      const entry = document.createElement("article");
+      entry.className = `report-event ${event.tone || ""}`;
+      const title = document.createElement("h4");
+      title.textContent = event.title;
+      const text = document.createElement("p");
+      text.textContent = event.text;
+      entry.append(title, text);
+      eventList.append(entry);
+    }
+    if (report.omittedSummaryCount) {
+      const omitted = document.createElement("p");
+      omitted.className = "small";
+      omitted.textContent = `${report.omittedSummaryCount} additional minor events are retained in the save.`;
+      eventList.append(omitted);
+    }
+    article.append(eventList);
+
+    const affected = document.createElement("details");
+    const affectedSummary = document.createElement("summary");
+    affectedSummary.textContent = `Everyone affected (${report.affectedPeople.length})`;
+    affected.append(affectedSummary);
+    const people = document.createElement("div");
+    people.className = "report-people";
+    for (const person of report.affectedPeople) {
+      const chip = document.createElement("span");
+      chip.className = "report-person";
+      chip.textContent = person.name;
+      chip.title = person.reasons.join("\n");
+      people.append(chip);
+    }
+    affected.append(people);
+    article.append(affected);
+    return article;
+  });
+  elements["period-report-list"].replaceChildren(...articles);
+}
+
+function showPeriodReports(reports, continueAfter = false) {
+  continueAfterPeriodReport = continueAfter;
+  renderPeriodReports(reports);
+  if (!elements["period-report-dialog"].open) elements["period-report-dialog"].showModal();
+}
+
 function startGame(nextState, isNew) {
   stateGeneration += 1;
   conversationInFlight = false;
   departureInFlight = false;
   sermonInFlight = false;
+  continueAfterPeriodReport = false;
   setBusy(false);
   elements["next-hour"].disabled = false;
   elements["deliver-sermon"].disabled = false;
@@ -762,6 +886,14 @@ elements["send-visit-requests"].addEventListener("click", () => {
 elements["open-chronicle"].addEventListener("click", () => {
   renderChronicle();
   elements["chronicle-dialog"].showModal();
+});
+elements["open-reports"].addEventListener("click", () => {
+  showPeriodReports([...state.periodReports].reverse(), false);
+});
+elements["period-report-dialog"].addEventListener("close", () => {
+  if (!continueAfterPeriodReport) return;
+  continueAfterPeriodReport = false;
+  proceedToCurrentPeriod();
 });
 elements["register-search"].addEventListener("input", (event) => renderRegister(event.target.value));
 document.querySelectorAll("[data-close]").forEach((button) => {

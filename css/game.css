@@ -158,6 +158,40 @@ summary { cursor: pointer; font-weight: 600; }
 .chronicle-entry.danger { border-color: #812729; }
 .chronicle-entry.faith { border-color: #a5822d; }
 .chronicle-entry h3 { font-size: .95rem; margin: 0; }
+.period-report-list { display: grid; gap: 1rem; }
+.period-report {
+  padding: 1rem;
+  border: 1px solid rgba(72,42,20,.3);
+  background: rgba(255,250,231,.28);
+}
+.period-report > header { border-bottom: 1px solid rgba(72,42,20,.25); margin-bottom: .7rem; }
+.period-report h3 { margin: 0; color: #5c2520; }
+.report-group { margin-top: .85rem; }
+.report-group h4 { margin: 0 0 .25rem; color: #5c2520; }
+.report-metrics { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.report-metrics th, .report-metrics td {
+  padding: .28rem .4rem;
+  border-bottom: 1px solid rgba(72,42,20,.18);
+  text-align: right;
+}
+.report-metrics th:first-child, .report-metrics td:first-child { text-align: left; }
+.metric-change { font-weight: 700; white-space: nowrap; }
+.metric-change.rise { color: #17652c; }
+.metric-change.fall { color: #9a2025; }
+.metric-change.same { color: #17120d; }
+.report-events { display: grid; gap: .4rem; margin: .45rem 0; }
+.report-event { padding: .45rem .55rem; border-left: 3px solid #846433; background: rgba(255,255,255,.18); }
+.report-event.danger { border-color: #9a2025; }
+.report-event h4, .report-event p { margin: 0; }
+.report-people { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem; }
+.report-person {
+  padding: .2rem .42rem;
+  border: 1px solid rgba(72,42,20,.25);
+  border-radius: 999px;
+  background: rgba(255,255,255,.22);
+  font-size: .78rem;
+}
+.report-empty { color: #604c36; font-style: italic; }
 #toast {
   position: fixed; z-index: 40; left: 50%; top: 5.5rem; transform: translate(-50%, -20px);
   opacity: 0; pointer-events: none; padding: .55rem .85rem; border: 1px solid #b58b4c;
@@ -180,4 +214,6 @@ summary { cursor: pointer; font-weight: 600; }
   .dialogue-log { height: 115px; }
   #counsel-form { grid-template-columns: 1fr 1fr; }
   #counsel-input { grid-column: 1 / -1; }
+  .report-metrics { font-size: .72rem; }
+  .report-metrics th, .report-metrics td { padding: .22rem; }
 }

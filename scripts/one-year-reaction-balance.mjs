@@ -92,6 +92,15 @@ for (const seed of seeds) {
 
   const serialized = serializeState(state);
   deserializeState(serialized);
+  const saveBytes = Buffer.byteLength(serialized);
+  if (saveBytes > 16_000_000) {
+    throw new Error(`${seed} exceeded the 16 MB one-year save budget: ${saveBytes}`);
+  }
+  if (state.visitArchive.length > 40
+    || state.periodReports.filter((report) => report.type === "day").length > 35
+    || state.periodReports.filter((report) => report.type === "week").length > 12) {
+    throw new Error(`${seed} exceeded bounded diagnostic or report retention`);
+  }
   const authorityVisits = state.events.filter((event) => event.type === "external_visit_started");
   const maxMemories = Math.max(
     0,
@@ -119,7 +128,7 @@ for (const seed of seeds) {
     issueThreads: state.issueThreads.length,
     openThreads: state.issueThreads.filter((thread) => thread.status !== "resolved").length,
     maxMemories,
-    saveBytes: Buffer.byteLength(serialized),
+    saveBytes,
     elapsedMs: Math.round(performance.now() - started),
     replayPassed: true
   }));
