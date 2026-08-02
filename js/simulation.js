@@ -534,7 +534,7 @@ function scenarioEvidenceText(issue) {
   if (/violence|watch|fugitive|sanctuary|poaching|deserter|witchcraft/.test(id)) {
     return `The useful evidence is injuries, the order of events, who first used force, physical traces, and separate witness accounts. ${witness}`;
   }
-  return `The present evidence consists of the concrete facts already stated, the visitor's direct knowledge, and any independent account that can be checked. ${witness}`;
+  return `What can presently be checked is my direct account, the physical or written evidence already described, and any independent witness who can be questioned. Beyond that, I have no proof yet. ${witness}`;
 }
 
 function relationshipToRelated(person, related) {
@@ -603,7 +603,7 @@ function expandScenarioFactWeb(state, issue, person) {
     },
     {
       id: "unknowns",
-      text: "Still unknown are whether every accused person will admit the claim, whether independent witnesses agree, whether the responsible authority will cooperate, and which feared consequence will actually occur. The visitor should say plainly when a requested fact is not yet known."
+      text: "I still do not know whether every accused person will admit the claim, whether independent witnesses agree, whether the responsible authority will cooperate, or which feared consequence will actually occur."
     },
     {
       id: "counterclaim",

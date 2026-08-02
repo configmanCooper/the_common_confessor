@@ -751,6 +751,7 @@ export function clarificationFacts(visit, text) {
   if (/\b(?:when|what time|how long ago|which day|deadline|how soon)\b/.test(speech)) webIds.push("timeline", "stakes");
   if (/\b(?:who became sick|who fell ill|who is sick|who is ill|which households?|what households?)\b/.test(speech)) webIds.push("affected_people");
   if (/\b(?:at war|declared war|what soldiers|which soldiers|whose soldiers|what army|which army|where are they coming from|what direction)\b/.test(speech)) webIds.push("threat_status", "evidence", "unknowns");
+  if (/\b(?:soldiers?.{0,40}plague|plague.{0,40}soldiers?)\b/.test(speech)) webIds.push("threat_status", "evidence", "unknowns");
   if (/\b(?:where|which place|what place|location)\b/.test(speech)) webIds.push("place");
   if (/\b(?:who saw|who witnessed|any witnesses|what witness|did anyone see|who heard)\b/.test(speech)) webIds.push("witnesses");
   if (/\b(?:what evidence|what proof|how do you know|what shows|can you prove|why (?:should i )?believe|what observation|which observation|what witness|which witness|what record|which record|test the claim|test this claim)\b/.test(speech)) webIds.push("evidence", "mechanism");

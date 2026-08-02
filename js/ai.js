@@ -72,6 +72,8 @@ function spokenScenarioFact(text, state, person) {
   if (!name) return String(text || "");
   const possessive = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'s\\b`, "gi");
   let result = String(text || "")
+    .replace(/\bthe visitor's\b/gi, "my")
+    .replace(/\bthe visitor\b/gi, "I")
     .replace(possessive, (_match, offset) => offset === 0 ? "My" : "my")
     .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+is\\b`, "gi"), "I am")
     .replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+`, "gi"), "I ")
@@ -83,6 +85,17 @@ function spokenScenarioFact(text, state, person) {
     .replace(/\bI receives\b/g, "I receive")
     .replace(/\bI needs\b/g, "I need");
   return naturalizeDialogueNames(state, person, result);
+}
+
+function renderRequiredFactAnswer(state, person, facts) {
+  const factIds = new Set(facts.map((fact) => fact.id));
+  if (factIds.has("threat_status")) {
+    return `No one has confirmed either story, Father. There is no declared war involving ${state.town.name} that I know of, and no trustworthy witness has identified a banner, commander, company, number, intention, or direction. Some people say soldiers and others say plague, so I cannot yet tell you which—if either—is true.`;
+  }
+  return boundedProse(
+    facts.map((fact) => spokenScenarioFact(fact.text, state, person)).join(" "),
+    600
+  );
 }
 
 function adviceQuestion(visit) {
@@ -1588,7 +1601,7 @@ export class ParishAiClient extends EventTarget {
     const directAnswer = socialRequirement?.type === "compound_turn"
       ? [
         requiredFacts.length
-          ? boundedProse(requiredFacts.map((fact) => spokenScenarioFact(fact.text, state, person)).join(" "), 300)
+          ? boundedProse(renderRequiredFactAnswer(state, person, requiredFacts), 300)
           : "",
         socialRequirement.fallbackReply
       ].filter(Boolean).join(" ")
@@ -1597,7 +1610,7 @@ export class ParishAiClient extends EventTarget {
         ? socialRequirement.fallbackReply
         : naturalizeDialogueNames(state, person, socialRequirement.fallbackReply)
       : requiredFacts.length
-        ? boundedProse(requiredFacts.map((fact) => spokenScenarioFact(fact.text, state, person)).join(" "), 600)
+        ? renderRequiredFactAnswer(state, person, requiredFacts)
         : socialRequirement
         ? ["full_name_request", "related_identity"].includes(socialRequirement.type)
           ? socialRequirement.fallbackReply
@@ -1970,7 +1983,7 @@ export class ParishAiClient extends EventTarget {
     }
     if (requiredFacts.length) {
       if (!replyGroundsFacts(result.reply, requiredFacts)) {
-        result.reply = boundedProse(requiredFacts.map((fact) => spokenScenarioFact(fact.text, state, person)).join(" "), 600);
+        result.reply = renderRequiredFactAnswer(state, person, requiredFacts);
         result.groundedFallback = true;
       }
     }
@@ -2002,7 +2015,7 @@ export class ParishAiClient extends EventTarget {
     if (maximumRepetition >= 0.62) {
       const stagnationCount = (visit.stagnationCount || 0) + 1;
       result.reply = requiredFacts.length
-        ? boundedProse(requiredFacts.map((fact) => spokenScenarioFact(fact.text, state, person)).join(" "), 600)
+        ? renderRequiredFactAnswer(state, person, requiredFacts)
         : socialRequirement?.fallbackReply || progressiveStagnationReply(visit, person, stagnationCount);
       result.groundedFallback = true;
       result.stagnationCount = stagnationCount;

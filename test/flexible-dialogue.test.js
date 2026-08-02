@@ -64,9 +64,10 @@ test("panic-rumor questions preserve uncertainty instead of inventing an army", 
     person,
     "Are we currently at war with someone? What soldiers are supposedly coming, and from where?"
   );
-  assert.match(response.reply, /no war.*declared|not.*declared|not.*verified/i);
-  assert.match(response.reply, /no reliable witness|not.*identified|unknown/i);
+  assert.match(response.reply, /no (?:declared )?war|not.*declared|not.*verified/i);
+  assert.match(response.reply, /no (?:reliable|trustworthy) witness|witness has identified|not.*identified|unknown/i);
   assert.doesNotMatch(response.reply, /king's forces|from the south|plague-carrying company/i);
+  assert.doesNotMatch(response.reply, /the visitor|concrete facts|present evidence consists/i);
 });
 
 test("compound dialogue records partial acceptance, refusal, and deferral", async () => {

@@ -158,7 +158,7 @@ test("generated scenarios expose a compact investigative fact web", async () => 
     client.conversation(state, person, "Until that test is made, what temporary action prevents harm without pretending certainty?")
   ]);
   assert.match(skeptical[0].reply, /\b(?:evidence|witness|record|symptoms|injuries|account)\b/i);
-  assert.match(skeptical[1].reply, /\bunknown\b/i);
+  assert.match(skeptical[1].reply, /\bunknown\b|do not know/i);
   assert.match(skeptical[2].reply, /\b(?:deny|dispute|claim|defense|no specific accused)\b/i);
   assert.match(skeptical[3].reply, /\b(?:evidence|witness|record|symptoms|injuries|account)\b/i);
   assert.match(skeptical[4].reply, /\b(?:first|safety|consent|authority|plan|immediate)\b/i);
