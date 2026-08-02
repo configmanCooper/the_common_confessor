@@ -400,7 +400,7 @@ test("advising other people to pray does not pretend the visitor just prayed wit
     person,
     "Talk to him about improving the boy's safety. Get them to pray together for the boy as well."
   );
-  assert.match(response.reply, /I will speak with/i);
+  assert.match(response.reply, /I will speak with|carry a message/i);
   assert.doesNotMatch(response.reply, /^Amen, Father/i);
 });
 

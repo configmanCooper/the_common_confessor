@@ -383,7 +383,7 @@ test("schema-13 active visits migrate into schema-14 reaction state", () => {
   legacy.version = 13;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 16);
+  assert.equal(migrated.schemaVersion, 17);
   assert.ok(migrated.currentVisit.reactionState);
   assert.deepEqual(migrated.currentVisit.turnAudits, []);
   assert.ok(migrated.currentVisit.continuity);

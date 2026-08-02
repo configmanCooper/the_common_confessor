@@ -170,6 +170,7 @@ export function analyzePriestTurn(state, person, visit, text) {
     if (!categories.includes(category)) categories.push(category);
   };
   const credibleThreat = directCredibleThreat(speech);
+  if (lower === "[silence]") add("silent");
   const priorPriestLines = visit.history.filter((line) => line.speaker === "priest");
   const repeatedText = priorPriestLines.some((line) => (
     line.text.toLowerCase().replace(/[^a-z0-9 ]/g, "") === lower.replace(/[^a-z0-9 ]/g, "")
@@ -347,6 +348,11 @@ export function previewConversationReaction(state, person, visit, text) {
     add("confusion", -4);
     add("patience", 2);
     add("willingnessToContinue", 3);
+  }
+  if (classification.categories.includes("silent")) {
+    add("confusion", visit.issue.gravity >= 4 ? 5 : 2);
+    add("patience", visit.issue.gravity >= 4 ? -4 : -1);
+    add("willingnessToContinue", visit.issue.gravity >= 4 ? -3 : 0);
   }
   if (classification.categories.includes("absurd") || classification.categories.includes("humorous")) {
     const grave = visit.issue.gravity >= 4 || ["grief", "grave conscience", "confession"].includes(visit.issue.kind);
@@ -744,6 +750,7 @@ export function clarificationFacts(visit, text) {
   const webIds = [];
   if (/\b(?:when|what time|how long ago|which day|deadline|how soon)\b/.test(speech)) webIds.push("timeline", "stakes");
   if (/\b(?:who became sick|who fell ill|who is sick|who is ill|which households?|what households?)\b/.test(speech)) webIds.push("affected_people");
+  if (/\b(?:at war|declared war|what soldiers|which soldiers|whose soldiers|what army|which army|where are they coming from|what direction)\b/.test(speech)) webIds.push("threat_status", "evidence", "unknowns");
   if (/\b(?:where|which place|what place|location)\b/.test(speech)) webIds.push("place");
   if (/\b(?:who saw|who witnessed|any witnesses|what witness|did anyone see|who heard)\b/.test(speech)) webIds.push("witnesses");
   if (/\b(?:what evidence|what proof|how do you know|what shows|can you prove|why (?:should i )?believe|what observation|which observation|what witness|which witness|what record|which record|test the claim|test this claim)\b/.test(speech)) webIds.push("evidence", "mechanism");
@@ -774,7 +781,9 @@ export function clarificationFacts(visit, text) {
   } else if (/\bwho\b/.test(speech)) {
     wantedIds = ["participants"];
   }
-  return facts.filter((fact) => wantedIds.includes(fact.id));
+  return [...new Set(wantedIds)]
+    .map((factId) => facts.find((fact) => fact.id === factId))
+    .filter(Boolean);
 }
 
 export function factIdsMentionedInText(facts, text) {

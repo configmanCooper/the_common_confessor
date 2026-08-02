@@ -54,6 +54,24 @@ function namedResident(state, visit, person) {
 
 function promptFor(state, visit, person, visitIndex, turnIndex) {
   const fact = (id) => (visit.scenarioFacts || []).find((entry) => entry.id === id);
+  if (profile === "chaos") {
+    const sequences = [
+      ["[silence]", "I have nothing useful to say.", "The rain sounds pleasant.", "What were we discussing?"],
+      ["What if a chicken judged the case?", "Declare tomorrow a holiday.", "No, that was foolish.", "Tell me what actually matters."],
+      ["You expect me to believe that?", "What evidence would change your mind?", "I may be wrong.", "What is safest while we remain uncertain?"],
+      ["I refuse to help.", "Actually, explain who may be harmed.", "I still disagree.", "What could I do without betraying my conscience?"],
+      ["Tell someone to verify the road, prepare your household to leave, and ask the watch to ready a defense.", "Which part can you truly do?", "Which part must you refuse?", "What will happen first?"],
+      ["Bananas.", "I like your shoes.", "My breakfast was porridge.", "Now, how has this affected you?"],
+      ["Use this to increase my influence.", "Give the church something valuable first.", "I am sorry; that was selfish.", "Let us return to your actual need."],
+      ["Pray together.", "Then gather evidence.", "Also protect the vulnerable person.", "You may reject any part that is impossible."]
+    ];
+    const sequence = sequences[visitIndex % sequences.length];
+    return {
+      category: `chaos_${visitIndex % sequences.length}`,
+      text: sequence[turnIndex % sequence.length],
+      expected: []
+    };
+  }
   if (profile === "investigative") {
     const guarded = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed;
     const related = state.residents.find((resident) => resident.id === visit.issue.relatedPersonId);

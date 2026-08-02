@@ -235,7 +235,7 @@ export const ACTION_TYPES = Object.freeze([
   "wear_disguise", "release_livestock_in_church", "stage_public_penance", "start_procession",
   "ring_bells_at_midnight", "steal_church_relic", "return_church_relic", "seek_sanctuary",
   "improvise", "secure_clean_water", "buy_property", "sell_property", "lease_property"
-  , "kill_person"
+  , "verify_route", "prepare_evacuation", "organize_defense", "kill_person"
 ]);
 
 export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
@@ -246,7 +246,7 @@ export const PHASE_ZERO_SAFE_ACTIONS = Object.freeze([
   "report_crime", "make_peace", "celebrate", "mourn", "fast", "repent", "testify", "visit",
   "write_letter", "organize_aid", "protest", "attend_church", "avoid_church", "seek_absolution",
   "keep_silence", "confess_publicly", "protect", "offer_work", "refuse_work", "improvise",
-  "secure_clean_water",
+  "secure_clean_water", "verify_route", "prepare_evacuation", "organize_defense",
   "buy_property", "sell_property", "lease_property"
 ]);
 

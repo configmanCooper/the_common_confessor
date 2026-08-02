@@ -820,6 +820,12 @@ export function advancePopulationDay(state) {
   };
   const day = state.calendar.absoluteDay;
   const events = [];
+  for (const resident of state.residents) {
+    resident.flags = (resident.flags || []).filter((flag) => {
+      const match = /_until_day_(\d+)$/.exec(flag);
+      return !match || Number(match[1]) >= day;
+    });
+  }
   const seasons = ["Spring", "Summer", "Autumn", "Winter"];
   state.material.season = seasons[Math.floor((day % 364) / 91)];
   const weatherRng = new PopulationRng(`${state.seed}:weather:${day}`);

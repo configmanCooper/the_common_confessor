@@ -19,7 +19,7 @@ import {
   PROMPT_TRACE_MAX_CHARS
 } from "./dialogue_planner.js";
 
-export const STATE_SCHEMA_VERSION = 16;
+export const STATE_SCHEMA_VERSION = 17;
 const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon", "request_visits"]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -29,7 +29,25 @@ function cloneJson(value) {
 }
 
 function upgradeDialoguePlannerState(state) {
+  const upgradeObligation = (obligation) => {
+    if (!obligation) return obligation;
+    obligation.actKinds ||= [];
+    obligation.proposals ||= [];
+    obligation.requiredAnswerSlots ||= [];
+    obligation.followupRequested ??= false;
+    return obligation;
+  };
+  const upgradeTrace = (trace) => {
+    if (!trace) return trace;
+    upgradeObligation(trace.obligation);
+    trace.decisions ||= [];
+    return trace;
+  };
   state.aiDiagnostics ||= { lastCompletedVisit: null };
+  for (const trace of state.aiDiagnostics.lastCompletedVisit?.promptTraces || []) upgradeTrace(trace);
+  for (const archived of state.visitArchive || []) {
+    for (const audit of archived.turnAudits || []) upgradeObligation(audit.conversationObligation);
+  }
   if (!state.currentVisit) return state;
   state.currentVisit.promptTraces ||= [];
   state.currentVisit.promptTraces = state.currentVisit.promptTraces.slice(-PROMPT_TRACE_LIMIT);
@@ -41,6 +59,11 @@ function upgradeDialoguePlannerState(state) {
   state.currentVisit.continuity.mentionedFactIds ||= [];
   state.currentVisit.continuity.currentObligation ??= null;
   state.currentVisit.continuity.lastAnsweredQuestionTurnIds ||= [];
+  state.currentVisit.continuity.proposals ||= [];
+  state.currentVisit.continuity.visitorDecisions ||= [];
+  upgradeObligation(state.currentVisit.continuity.currentObligation);
+  for (const trace of state.currentVisit.promptTraces) upgradeTrace(trace);
+  for (const audit of state.currentVisit.turnAudits || []) upgradeObligation(audit.conversationObligation);
   return state;
 }
 
@@ -319,11 +342,20 @@ function validateConversationObligation(obligation, label) {
   for (const field of [
     "answeredQuestionTurnIds", "requiredFactIds", "requiredAnswerSlots",
     "avoidRepeatingTexts", "mentionedFactIdsBefore", "completedObjectiveIds",
-    "activeObjectiveIds", "prohibitedFallbackFactIds"
+    "activeObjectiveIds", "prohibitedFallbackFactIds", "actKinds"
   ]) {
     requireArray(obligation[field], `${label} ${field}`);
     if (obligation[field].some((entry) => typeof entry !== "string")) {
       throw new Error(`${label} ${field} is invalid`);
+    }
+    requireArray(obligation.proposals, `${label} proposals`);
+    if (obligation.proposals.length > 6) throw new Error(`${label} has too many proposals`);
+    for (const proposal of obligation.proposals) {
+      if (typeof proposal.proposalId !== "string" || typeof proposal.rawText !== "string"
+        || proposal.rawText.length > 180 || typeof proposal.actionHint !== "string"
+        || !Number.isFinite(proposal.priority) || proposal.priority < 0 || proposal.priority > 100) {
+        throw new Error(`${label} proposal is invalid`);
+      }
     }
   }
   if (typeof obligation.mustAnswerFirst !== "boolean"
@@ -351,6 +383,14 @@ function validatePromptTrace(trace, label) {
     throw new Error(`${label} is invalid`);
   }
   requireArray(trace.includedFactIds, `${label} included facts`);
+  requireArray(trace.decisions, `${label} decisions`);
+  for (const decision of trace.decisions) {
+    if (typeof decision.proposalId !== "string"
+      || !["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
+      || typeof decision.reason !== "string" || decision.reason.length > 120) {
+      throw new Error(`${label} decision is invalid`);
+    }
+  }
   requireObject(trace.validation, `${label} validation`);
   if (typeof trace.validation.mandatoryAnswerPresent !== "boolean"
     || typeof trace.validation.repetitionDetected !== "boolean") {
@@ -862,6 +902,30 @@ export function migrateState(rawState) {
     };
     sealState(state);
   }
+  if (detectedVersion === 16) {
+    verifyIntegrity(state);
+    upgradeDialoguePlannerState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 16,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
   upgradeDialoguePlannerState(state);
   upgradeReportingState(state, detectedVersion < STATE_SCHEMA_VERSION);
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -1169,7 +1233,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -1600,7 +1664,8 @@ export function validateState(state) {
     requireObject(state.currentVisit.continuity, "Current visit continuity");
     for (const field of [
       "unresolvedQuestions", "agreements", "retractions",
-      "mentionedFactIds", "lastAnsweredQuestionTurnIds"
+      "mentionedFactIds", "lastAnsweredQuestionTurnIds",
+      "proposals", "visitorDecisions"
     ]) {
       requireArray(state.currentVisit.continuity[field], `Current visit ${field}`);
     }
@@ -1608,6 +1673,26 @@ export function validateState(state) {
       typeof factId !== "string" || !state.currentVisit.scenarioFacts.some((fact) => fact.id === factId)
     )) || state.currentVisit.continuity.lastAnsweredQuestionTurnIds.some((turnId) => typeof turnId !== "string")) {
       throw new Error("Current visit fact or question progress is invalid");
+    }
+    if (state.currentVisit.continuity.proposals.length > 18
+      || state.currentVisit.continuity.visitorDecisions.length > 18) {
+      throw new Error("Current visit proposal retention is invalid");
+    }
+    for (const proposal of state.currentVisit.continuity.proposals) {
+      if (typeof proposal.proposalId !== "string" || typeof proposal.rawText !== "string"
+        || proposal.rawText.length > 180 || typeof proposal.actionHint !== "string"
+        || !Number.isInteger(proposal.turn) || proposal.turn < 1
+        || !["pending", "accepted", "rejected", "deferred", "unknown"].includes(proposal.status)
+        || !Number.isFinite(proposal.priority) || proposal.priority < 0 || proposal.priority > 100) {
+        throw new Error("Current visit proposal is invalid");
+      }
+    }
+    for (const decision of state.currentVisit.continuity.visitorDecisions) {
+      if (typeof decision.proposalId !== "string" || typeof decision.reason !== "string"
+        || decision.reason.length > 120 || !Number.isInteger(decision.turn) || decision.turn < 1
+        || !["accepted", "rejected", "deferred", "unknown"].includes(decision.status)) {
+        throw new Error("Current visit proposal decision is invalid");
+      }
     }
     if (state.currentVisit.continuity.currentObligation != null) {
       validateConversationObligation(state.currentVisit.continuity.currentObligation, "Current visit obligation");
@@ -1689,6 +1774,14 @@ export function validateState(state) {
       if (command.payload.response.promptTrace != null) {
         validatePromptTrace(command.payload.response.promptTrace, "Conversation command prompt trace");
       }
+      requireArray(command.payload.response.decisions || [], "Conversation command decisions");
+      for (const decision of command.payload.response.decisions || []) {
+        if (typeof decision.proposalId !== "string"
+          || !["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
+          || typeof decision.reason !== "string" || decision.reason.length > 120) {
+          throw new Error("Conversation command decision is invalid");
+        }
+      }
       if (command.payload.response.reactionAudit != null) {
         validateReactionAudit(command.payload.response.reactionAudit, "Conversation command reaction audit");
       }
@@ -1714,13 +1807,27 @@ export function validateState(state) {
       if (command.payload.plan.steps.length < 1 || command.payload.plan.steps.length > 3) {
         throw new Error("Finish command chain depth is invalid");
       }
-      let expectedActorId = activeVisitPersonId;
+      let rootCount = 0;
       for (let stepIndex = 0; stepIndex < command.payload.plan.steps.length; stepIndex += 1) {
         const step = command.payload.plan.steps[stepIndex];
         requireObject(step, "Finish command step");
-        if (step.depth !== stepIndex + 1 || step.actorId !== expectedActorId || !personIds.has(step.actorId)) {
+        const parentStepIndex = step.parentStepIndex === undefined
+          ? (stepIndex === 0 ? null : stepIndex - 1)
+          : step.parentStepIndex;
+        if (parentStepIndex != null
+          && (!Number.isInteger(parentStepIndex) || parentStepIndex < 0 || parentStepIndex >= stepIndex)) {
+          throw new Error("Finish command graph parent is invalid");
+        }
+        const expectedActorId = parentStepIndex == null
+          ? activeVisitPersonId
+          : command.payload.plan.steps[parentStepIndex]?.targetId;
+        const expectedDepth = parentStepIndex == null
+          ? 1
+          : command.payload.plan.steps[parentStepIndex].depth + 1;
+        if (step.depth !== expectedDepth || step.actorId !== expectedActorId || !personIds.has(step.actorId)) {
           throw new Error("Finish command causal actor is invalid");
         }
+        if (parentStepIndex == null && ++rootCount > 3) throw new Error("Finish command has too many roots");
         if (step.targetId != null && step.targetId !== "priest" && !personIds.has(step.targetId)) {
           throw new Error("Finish command target is invalid");
         }
@@ -1752,10 +1859,6 @@ export function validateState(state) {
         const createsResident = ["adopt_child", "invite_migrant"].includes(step.actionType);
         if (createsResident !== (typeof step.createdResidentId === "string")) {
           throw new Error("Finish command created resident identity is inconsistent");
-        }
-        expectedActorId = step.targetId;
-        if (stepIndex < command.payload.plan.steps.length - 1 && !expectedActorId) {
-          throw new Error("Finish command continues after a targetless action");
         }
       }
       activeVisitPersonId = null;

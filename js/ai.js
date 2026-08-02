@@ -10,6 +10,7 @@ import {
   boundedPromptTrace,
   selectConversationObligation
 } from "./dialogue_planner.js";
+import { analyzePlayerTurn } from "./dialogue_clauses.js";
 import {
   churchDonationCapacity,
   churchResourceRows,
@@ -463,6 +464,180 @@ function directiveRequirement(state, visit, playerText) {
     responsePattern: /\b(?:I will|I cannot|I know of no)\b/i,
     fallbackReply,
     followupRequested: returnsLater
+  };
+}
+
+function fallbackDecisionForProposal(state, person, proposal) {
+  const official = state.residents
+    .filter((resident) => resident.active && resident.alive
+      && ["reeve", "bailiff", "watchman"].includes(resident.occupation))
+    .sort((left, right) => left.id.localeCompare(right.id))[0];
+  if (proposal.actionHint === "verify_route") {
+    return {
+      proposalId: proposal.proposalId,
+      status: "accepted",
+      reason: "I can ask a trusted traveler to scout the road and report before rumors are treated as fact."
+    };
+  }
+  if (proposal.actionHint === "prepare_evacuation") {
+    return {
+      proposalId: proposal.proposalId,
+      status: "accepted",
+      reason: "I can warn my household to pack essentials, but I cannot order every family to abandon home."
+    };
+  }
+  if (proposal.actionHint === "organize_defense") {
+    const canLead = ["reeve", "bailiff", "watchman", "soldier"].includes(person.occupation);
+    return {
+      proposalId: proposal.proposalId,
+      status: canLead ? "accepted" : "deferred",
+      reason: canLead
+        ? "I can help ready a limited watch without claiming to raise an army."
+        : `${official ? naturalReference(state, official) : "A lawful local officer"} must authorize and lead any organized defense.`
+    };
+  }
+  if (proposal.actionHint === "contact_person") {
+    return {
+      proposalId: proposal.proposalId,
+      status: "accepted",
+      reason: "I can carry a message to a named person I can actually reach."
+    };
+  }
+  if (proposal.actionHint === "pray") {
+    return {
+      proposalId: proposal.proposalId,
+      status: "accepted",
+      reason: "I can ask the people involved to pray if they consent, though prayer does not replace practical safety."
+    };
+  }
+  if (proposal.actionHint === "delay_or_ignore") {
+    return {
+      proposalId: proposal.proposalId,
+      status: visitRiskHigh(person) ? "rejected" : "deferred",
+      reason: "Ignoring a credible danger may expose households to preventable harm."
+    };
+  }
+  return {
+    proposalId: proposal.proposalId,
+    status: "deferred",
+    reason: "I need to test whether this part is possible, lawful, and within our actual means."
+  };
+}
+
+function visitRiskHigh(person) {
+  return person.stress >= 65 || person.personality.boldness < 35;
+}
+
+function compoundTurnRequirement(state, person, turnAnalysis) {
+  if (turnAnalysis.proposals.length < 2) return null;
+  const decisions = turnAnalysis.proposals.map((proposal) => fallbackDecisionForProposal(state, person, proposal));
+  const ordered = [...turnAnalysis.proposals].sort((left, right) => right.priority - left.priority);
+  const parts = ordered.map((proposal) => {
+    const decision = decisions.find((entry) => entry.proposalId === proposal.proposalId);
+    if (decision.status === "accepted") return decision.reason;
+    const proposalText = proposal.rawText.replace(/[.!?]+$/, "");
+    return `${decision.status === "rejected" ? "I cannot agree to" : "I cannot promise yet to"} ${proposalText}. ${decision.reason}`;
+  });
+  return {
+    type: "compound_turn",
+    answerSlots: turnAnalysis.proposals.map((proposal) => proposal.proposalId),
+    proposalClauses: turnAnalysis.proposals,
+    fallbackDecisions: decisions,
+    requireAll: true,
+    minimumMatches: turnAnalysis.proposals.length,
+    requiredTerms: [],
+    responsePattern: null,
+    fallbackReply: boundedProse(parts.join(" "), 600)
+  };
+}
+
+function proposalDecisionQuestionRequirement(visit, playerText) {
+  const speech = String(playerText).toLowerCase();
+  const asksAccepted = /\bwhich part\b.*\b(?:can|will|accept|do)\b/.test(speech);
+  const asksRejected = /\bwhich part\b.*\b(?:refuse|reject|cannot|can't|will not)\b/.test(speech);
+  const asksFirst = /\b(?:what|which).{0,20}(?:happen|do|come).{0,10}first\b|\bwhat will happen first\b/.test(speech);
+  if (!asksAccepted && !asksRejected && !asksFirst) return null;
+  const decisions = new Map(
+    (visit.continuity?.visitorDecisions || []).map((decision) => [decision.proposalId, decision])
+  );
+  const proposals = (visit.continuity?.proposals || [])
+    .filter((proposal) => decisions.has(proposal.proposalId))
+    .sort((left, right) => right.priority - left.priority);
+  if (!proposals.length) return null;
+  let selected;
+  let fallbackReply;
+  if (asksFirst) {
+    selected = proposals.find((proposal) => decisions.get(proposal.proposalId).status === "accepted");
+    fallbackReply = selected
+      ? `First I will act on this: ${selected.rawText.replace(/[.!?]+$/, "")}.`
+      : "I have not yet accepted a first action; the proposals remain deferred or refused.";
+  } else if (asksRejected) {
+    selected = proposals.find((proposal) => decisions.get(proposal.proposalId).status === "rejected");
+    if (selected) {
+      fallbackReply = `I refuse this part: ${selected.rawText.replace(/[.!?]+$/, "")}. ${decisions.get(selected.proposalId).reason}`;
+    } else {
+      const deferred = proposals.find((proposal) => decisions.get(proposal.proposalId).status === "deferred");
+      fallbackReply = deferred
+        ? `I have not rejected every part, but I cannot yet promise this one: ${deferred.rawText.replace(/[.!?]+$/, "")}. ${decisions.get(deferred.proposalId).reason}`
+        : "I did not refuse any of the recorded parts.";
+    }
+  } else {
+    const accepted = proposals.filter((proposal) => decisions.get(proposal.proposalId).status === "accepted");
+    fallbackReply = accepted.length
+      ? `I can do ${accepted.map((proposal) => proposal.rawText.replace(/[.!?]+$/, "")).join("; and ")}.`
+      : "I have not yet accepted any part as something I can truly do.";
+  }
+  return {
+    type: "proposal_decision_answer",
+    answerSlots: ["prior_proposal_status"],
+    requireAll: false,
+    minimumMatches: 1,
+    requiredTerms: ["first", "refuse", "can", selected?.rawText?.split(/\s+/)[0]?.toLowerCase()].filter(Boolean),
+    responsePattern: /\b(?:first|refuse|cannot|can do|not yet accepted|did not refuse)\b/i,
+    fallbackReply
+  };
+}
+
+export function deterministicCompoundFallback(state, person, playerText) {
+  const visit = state.currentVisit;
+  if (!visit) return null;
+  const turnAnalysis = analyzePlayerTurn(playerText, visit.turnsUsed + 1);
+  const requirement = compoundTurnRequirement(state, person, turnAnalysis);
+  if (!requirement) return null;
+  const reactionPreview = previewConversationReaction(state, person, visit, playerText);
+  const obligation = selectConversationObligation({
+    visit,
+    playerText,
+    reactionPreview,
+    socialRequirement: requirement,
+    deterministicSocial: false,
+    requiredFacts: clarificationFacts(visit, playerText),
+    directAnswer: requirement.fallbackReply,
+    scenarioFactIds: (visit.scenarioFacts || []).map((fact) => fact.id),
+    turnAnalysis
+  });
+  return {
+    reply: requirement.fallbackReply,
+    memory: "The visitor considered each part of the priest's proposal separately.",
+    groundedFallback: true,
+    structuredFallback: true,
+    expressedReaction: reactionPreview.requiredReaction,
+    decisions: requirement.fallbackDecisions,
+    conversationObligation: obligation,
+    promptTrace: boundedPromptTrace({
+      obligation,
+      prompt: "",
+      includedFactIds: obligation.requiredFactIds,
+      initialReply: requirement.fallbackReply,
+      finalReply: requirement.fallbackReply,
+      decisions: requirement.fallbackDecisions,
+      mandatoryAnswerPassed: true,
+      retryUsed: false,
+      route: "compound_turn_fallback",
+      responseSource: "framework_static",
+      gemmaCalled: false,
+      repetitionDetected: false
+    })
   };
 }
 
@@ -920,6 +1095,9 @@ function departureActionHints(visit) {
   if (/\b(?:appeal|receipt|evidence|witness|report|magistrate|reeve|tax)\b/.test(text)) add("report_crime", "testify", "write_letter");
   if (/\b(?:speak|talk|meet|confront|ask)\b/.test(text)) add("visit");
   if (/\b(?:protect|safe|shelter|violence|injur)\b/.test(text)) add("protect", "shelter");
+  if (/\b(?:scout|verify|check|inspect)\b.*\b(?:road|route)\b/.test(text)) add("verify_route");
+  if (/\b(?:prepare|pack|ready)\b.*\b(?:leave|flee|evacuat)\b/.test(text)) add("prepare_evacuation");
+  if (/\b(?:prepare|organize|ready)\b.*\b(?:defend|defense|guard|watch|men)\b/.test(text)) add("organize_defense");
   if (/\b(?:food|bread|grain|hungry|charity|aid)\b/.test(text)) add("share_food", "organize_aid", "donate");
   if (/\b(?:forgive|reconcile|peace|apolog)\b/.test(text)) add("forgive", "reconcile", "apologize", "make_peace");
   if (/\b(?:work|job|trade|apprentice)\b/.test(text)) add("work_harder", "offer_work", "refuse_work");
@@ -1054,6 +1232,7 @@ const DETERMINISTIC_SOCIAL_TYPES = new Set([
   "expert_request",
   "investigation_people",
   "instruction_acknowledgment",
+  "proposal_decision_answer",
   "unsupported_location",
   "answer_repair"
 ]);
@@ -1109,7 +1288,21 @@ const legacyConversationSchema = {
   required: ["reply", "memory"],
   properties: {
     reply: { type: "string", maxLength: 600 },
-    memory: { type: "string", maxLength: 180 }
+    memory: { type: "string", maxLength: 180 },
+    decisions: {
+      type: "array",
+      maxItems: 6,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["proposalId", "status", "reason"],
+        properties: {
+          proposalId: { type: "string", maxLength: 80 },
+          status: { type: "string", enum: ["accepted", "rejected", "deferred", "unknown"] },
+          reason: { type: "string", maxLength: 120 }
+        }
+      }
+    }
   }
 };
 
@@ -1172,7 +1365,16 @@ export function validateConversation(value) {
         issueId: "legacy",
         answeredQuestionTurnIds: [],
         referencedFactIds: []
-      }]
+      }],
+    decisions: Array.isArray(value.decisions)
+      ? value.decisions.slice(0, 6).map((decision) => ({
+        proposalId: boundedString(decision?.proposalId, 80),
+        status: ["accepted", "rejected", "deferred", "unknown"].includes(decision?.status)
+          ? decision.status
+          : "unknown",
+        reason: boundedProse(decision?.reason, 120)
+      })).filter((decision) => decision.proposalId)
+      : []
   };
 }
 
@@ -1374,13 +1576,23 @@ export class ParishAiClient extends EventTarget {
     const reactionPreview = previewConversationReaction(state, person, visit, playerText);
     const issueThread = state.issueThreads.find((thread) => thread.id === visit.issue.threadId);
     const mode = responseMode(state, person, visit);
-    const socialRequirement = directSocialRequirement(state, person, visit, playerText, mode)
+    const turnAnalysis = analyzePlayerTurn(playerText, visit.turnsUsed + 1);
+    const socialRequirement = compoundTurnRequirement(state, person, turnAnalysis)
+      || proposalDecisionQuestionRequirement(visit, playerText)
+      || directSocialRequirement(state, person, visit, playerText, mode)
       || directiveRequirement(state, visit, playerText);
     const requiredFacts = clarificationFacts(visit, playerText);
     const issueId = visit.issue.threadId || visit.issue.scenarioId || visit.issue.kind;
     const currentQuestionTurnId = `priest-${visit.history.length}`;
     const deterministicSocial = socialRequirement && DETERMINISTIC_SOCIAL_TYPES.has(socialRequirement.type);
-    const directAnswer = deterministicSocial
+    const directAnswer = socialRequirement?.type === "compound_turn"
+      ? [
+        requiredFacts.length
+          ? boundedProse(requiredFacts.map((fact) => spokenScenarioFact(fact.text, state, person)).join(" "), 300)
+          : "",
+        socialRequirement.fallbackReply
+      ].filter(Boolean).join(" ")
+      : deterministicSocial
       ? ["full_name_request", "related_identity"].includes(socialRequirement.type)
         ? socialRequirement.fallbackReply
         : naturalizeDialogueNames(state, person, socialRequirement.fallbackReply)
@@ -1410,7 +1622,8 @@ export class ParishAiClient extends EventTarget {
       deterministicSocial,
       requiredFacts,
       directAnswer,
-      scenarioFactIds: (visit.scenarioFacts || []).map((fact) => fact.id)
+      scenarioFactIds: (visit.scenarioFacts || []).map((fact) => fact.id),
+      turnAnalysis
     });
     if (!obligation.modelNeeded) {
       const reply = obligation.kind === "required_reaction"
@@ -1422,6 +1635,7 @@ export class ParishAiClient extends EventTarget {
         includedFactIds: requiredFacts.map((fact) => fact.id),
         initialReply: reply,
         finalReply: reply,
+        decisions: [],
         mandatoryAnswerPassed: true,
         retryUsed: false,
         route: obligation.kind,
@@ -1449,6 +1663,7 @@ export class ParishAiClient extends EventTarget {
         reactionPreview,
         conversationObligation: obligation,
         promptTrace,
+        decisions: [],
         endsConversation: ["leave", "call_for_help", "threaten_priest", "attack_priest"].includes(reactionPreview.requiredReaction)
           || Boolean(socialRequirement?.endsConversation)
       };
@@ -1530,14 +1745,36 @@ export class ParishAiClient extends EventTarget {
         threshold: visit.intent.disclosureThreshold,
         hiddenConcernDisclosed: visit.hiddenConcernDisclosed
       },
-      reactionState: visit.reactionState,
+      reactionState: {
+        trust: visit.reactionState.trust,
+        fear: visit.reactionState.fear,
+        anger: visit.reactionState.anger,
+        sadness: visit.reactionState.sadness,
+        shame: visit.reactionState.shame,
+        confusion: visit.reactionState.confusion,
+        offense: visit.reactionState.offense,
+        patience: visit.reactionState.patience,
+        perceivedDanger: visit.reactionState.perceivedDanger,
+        willingnessToContinue: visit.reactionState.willingnessToContinue,
+        boundary: visit.reactionState.boundary,
+        lastReaction: visit.reactionState.lastReaction,
+        harmfulTurnCount: visit.reactionState.harmfulTurnCount,
+        repairCount: visit.reactionState.repairCount
+      },
       reactionPreview: {
         classification: reactionPreview.classification,
         deltas: reactionPreview.deltas,
         requiredReaction: reactionPreview.requiredReaction,
         thresholdReasons: reactionPreview.thresholdReasons
       },
-      continuity: visit.continuity,
+      continuity: {
+        unresolvedQuestions: visit.continuity.unresolvedQuestions.slice(-4),
+        agreements: visit.continuity.agreements.slice(-4),
+        retractions: visit.continuity.retractions.slice(-4),
+        mentionedFactIds: visit.continuity.mentionedFactIds.slice(-12),
+        proposals: visit.continuity.proposals.slice(-6),
+        visitorDecisions: visit.continuity.visitorDecisions.slice(-6)
+      },
       activeIssues: [{
         issueId,
         kind: visit.issue.kind,
@@ -1615,6 +1852,7 @@ export class ParishAiClient extends EventTarget {
       `The required visible reaction is ${reactionPreview.requiredReaction}. Phrase that reaction naturally, but do not strengthen, weaken, or replace it.`,
       "Do not resolve the whole matter too quickly. A person may disagree, misunderstand, evade, confess, or be comforted.",
       "The priest may be kind, cruel, selfish, corrupt, political, absurd, power-seeking, or self-sacrificing. React as this particular person would; do not automatically sanitize immoral counsel or obey it, but address it directly and remember it.",
+      "If the latest statement is [silence], react to the priest's silence according to the visitor's personality, urgency, trust, and emotional state. Do not pretend words were spoken.",
       "When directAnswerRequired is nonempty, answer those facts plainly in the first sentence. Never merely restate the dilemma. Questions asking what, how, or why must receive concrete names, trades, property, money, or actions from the supplied facts.",
       "The newest priestSpeech has priority over the prior topic. If it is an offer, greeting, yes/no question, or request for clarification, answer it first and explicitly. Do not repeat your previous statement.",
       `Use a ${mode} response. Move the conversation forward by adding a decision, obstacle, factual detail, disagreement, question, or changed emotion. Never paraphrase the prior visitor line.`,
@@ -1627,6 +1865,9 @@ export class ParishAiClient extends EventTarget {
         latestPlayerText: obligation.latestPlayerText,
         mustAnswerFirst: obligation.mustAnswerFirst,
         requiredFactIds: obligation.requiredFactIds,
+        requiredAnswerSlots: obligation.requiredAnswerSlots,
+        actKinds: obligation.actKinds,
+        proposals: obligation.proposals,
         knownAnswer: obligation.directAnswer,
         avoidRepeatingTexts: obligation.avoidRepeatingTexts
       })}`,
@@ -1635,7 +1876,9 @@ export class ParishAiClient extends EventTarget {
       "2. Treat background facts and long-term goals as context, not lines that must be restated.",
       "3. Do not restart the appointment or repeat an earlier visitor statement unless clarification was explicitly requested.",
       "4. If RESPONSE_PLAN_JSON contains a knownAnswer, the first sentence must answer with those supplied components.",
-      "5. Advance the conversation by one concrete step.",
+      "5. For every proposal in RESPONSE_PLAN_JSON, return one decisions entry with accepted, rejected, deferred, or unknown. You may accept some parts and reject others.",
+      "6. Do not assume every player statement is a solution. Silence, jokes, observations, refusals, selfish advice, and impossible plans may be answered naturally without inventing compliance.",
+      "7. Advance the conversation by one concrete step.",
       `LATEST_PRIEST_STATEMENT=${JSON.stringify(obligation.latestPlayerText)}`,
       "Write only the visitor's spoken response and short memory in the required JSON."
     ].join("\n");
@@ -1644,12 +1887,19 @@ export class ParishAiClient extends EventTarget {
       prompt,
       legacyConversationSchema,
       "parish_conversation",
-      300
+      300,
+      socialRequirement?.type === "compound_turn"
+        ? Math.min(this.timeoutMs, 30000)
+        : this.timeoutMs
     );
     let result = validateConversation(modelConversation);
     const initialReply = result.reply;
     const socialReplyRelevant = (reply) => {
       if (!socialRequirement) return true;
+      if (socialRequirement.type === "compound_turn") {
+        const decided = new Set(result.decisions.map((decision) => decision.proposalId));
+        return socialRequirement.proposalClauses.every((proposal) => decided.has(proposal.proposalId));
+      }
       const direct = String(reply).toLowerCase();
       const matchCount = socialRequirement.requiredTerms.filter((term) => direct.includes(term)).length;
       return socialRequirement.responsePattern
@@ -1673,10 +1923,16 @@ export class ParishAiClient extends EventTarget {
         legacyConversationSchema,
         "parish_conversation_retry",
         260,
-        Math.min(this.timeoutMs, 45000)
+        Math.min(this.timeoutMs, socialRequirement?.type === "compound_turn" ? 20000 : 45000)
       );
       result = validateConversation(modelConversation);
       mandatoryAnswerPassed = socialReplyRelevant(result.reply);
+    }
+    if (socialRequirement?.type === "compound_turn" && !mandatoryAnswerPassed) {
+      result.reply = socialRequirement.fallbackReply;
+      result.decisions = socialRequirement.fallbackDecisions;
+      result.groundedFallback = true;
+      mandatoryAnswerPassed = true;
     }
     result.interpretation = "";
     result.expressedReaction = reactionPreview.requiredReaction;
@@ -1795,6 +2051,7 @@ export class ParishAiClient extends EventTarget {
       includedFactIds: visibleFacts.map((fact) => fact.id),
       initialReply,
       finalReply: result.reply,
+      decisions: result.decisions,
       mandatoryAnswerPassed,
       retryUsed,
       route: obligation.kind,
@@ -1818,6 +2075,7 @@ export class ParishAiClient extends EventTarget {
       required: ["depth", "actorId", "targetId", "actionType", "intensity", "title", "description"],
       properties: {
         depth: { type: "integer", minimum: 1, maximum: 3 },
+        parentStepIndex: { type: ["integer", "null"], minimum: 0, maximum: 1 },
         actorId: { type: "string", enum: actorIds },
         targetId: { type: ["string", "null"], enum: [...targetIds, null] },
         actionType: { type: "string", enum: AI_ALLOWED_ACTIONS },
@@ -1957,6 +2215,8 @@ export class ParishAiClient extends EventTarget {
       } : null,
       counsel: visit.counsel,
       conversation: visit.history,
+      proposalDecisions: (visit.continuity?.visitorDecisions || []).slice(-12),
+      playerProposals: (visit.continuity?.proposals || []).slice(-12),
       suggestedActionTypes: departureActionHints(visit),
       finalMood: visit.mood,
       eventLicense: visit.eventLicense,
@@ -2014,6 +2274,7 @@ export class ParishAiClient extends EventTarget {
     const prompt = [
       "Simulate what happens after a 16th-century villager leaves counsel with the parish priest.",
       "Produce a causal chain of one to three actions. Step 1 must be performed by the visitor. A later step should respond to the prior interaction and may involve one further person.",
+      "The plan may instead contain parallel visitor commitments. Use parentStepIndex null for each visitor root. Use a prior zero-based step index only when that prior step's target performs a response. If parentStepIndex is omitted, the simulation treats later steps as the legacy linear chain.",
       "Choose only listed IDs and allowed action types. Consequences may be helpful, harmful, mixed, mundane, or life-changing, but must follow from personality, circumstances, and the priest's actual words.",
       "Do not assume the priest is benevolent. Selfish, cruel, political, corrupt, absurd, faithful, merciful, and power-seeking counsel may all produce different feasible actions, refusals, reports, rumors, resistance, or compliance.",
       "If no precise actionType represents a plausible bounded social response, use improvise. Put the concrete act in detail and description. Improvise may create only modest social, emotional, reputational, or rumor effects; it cannot create deaths, marriages, arrests, migrations, property transfers, pregnancies, or unfunded resources.",
@@ -2022,6 +2283,7 @@ export class ParishAiClient extends EventTarget {
       "Use composition when the action combines work, property, resources, family, law, communication, migration, violence, faith, or building work. Maximums: two targetIds, one object, one resource, one location, one condition, five evidenceTurnIds. The simulation maps supported compositions to real mechanics and rejects oversized or unsupported combinations.",
       "Use motive to describe why each actor chooses the step, and evidence to quote or summarize the specific counsel, promise, pressure, or relationship that supports it.",
       "The visitor's own explicit commitments in the conversation are major evidence. If the visitor said 'I will', 'I shall', or clearly promised a feasible action, prefer carrying out that action unless later words retract it or the supplied state makes it impossible. Do not replace a clear feasible promise with keep_silence.",
+      "proposalDecisions are authoritative conversation outcomes. Prefer accepted proposals, omit rejected proposals, and treat deferred or unknown proposals cautiously. Up to three accepted proposals may become parallel visitor roots.",
       "Use suggestedActionTypes as the preferred vocabulary for step 1. Do not use seek_absolution unless the matter truly concerns the visitor's own confession or repentance. Do not use invite_migrant unless the conversation explicitly concerns inviting a newcomer and the actor has village authority.",
       "If step 1 has targetId null, return only that one step. Never add a later actor after a targetless action. Do not repeat the same targetless action across several steps.",
       "A visitor may donate to the church only by using actionType donate with targetId priest. Put the donated resource key and amount in detail, for example 'grain:2' or 'coin:4'. Church aid promised by the priest has already been transferred during the conversation and must not be transferred again.",

@@ -444,13 +444,14 @@ async function endHour() {
 async function submitCounsel(event) {
   event.preventDefault();
   if (startActionInFlight || conversationInFlight || departureInFlight) return;
-  const text = elements["counsel-input"].value.trim();
-  if (!text || !state.currentVisit || state.currentVisit.turnsUsed >= 10) return;
+  const enteredText = elements["counsel-input"].value.trim();
+  if (!state.currentVisit || state.currentVisit.turnsUsed >= 10) return;
+  const text = enteredText || "[silence]";
   const person = materializeResident(state, state.currentVisit.personId, true);
   const requestState = state;
   const visitToken = state.currentVisit.visitId;
   const generation = stateGeneration;
-  appendDialogue("priest", text);
+  appendDialogue("priest", enteredText || "…");
   elements["counsel-input"].value = "";
   elements["speak-button"].disabled = true;
   elements["counsel-input"].disabled = true;

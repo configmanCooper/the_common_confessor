@@ -13,6 +13,7 @@ import {
 import { compactReplayHistory, deserializeState, serializeState } from "../js/state.js";
 
 const BASE_CONTEXT = {
+  town: "Alderwick",
   person: "Radel Roseham",
   relation: "Anias Applecombe",
   victim: "Renth Foxridge",

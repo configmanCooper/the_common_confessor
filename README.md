@@ -14,9 +14,12 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - Persistent issue threads track pressure, awareness, danger, deadlines, memories, rumors, and recurring participants.
 - Every reply receives the complete active appointment plus cumulative trust, fear, anger, sadness, confusion, offense, patience, danger, boundaries, and willingness state.
 - A deterministic conversational-obligation planner gives the newest question or command priority over background concerns, tracks mentioned facts, and records whether a reply came from facts, reactions, Gemma, or regeneration.
+- Clause-level turn analysis distinguishes silence, questions, commands, suggestions, decisions, accusations, humor, unrelated observations, and up to six custom proposals without forcing every statement to be a solution.
+- Visitors may accept, reject, defer, or remain uncertain about each part of a multi-part proposal; those decisions persist into memory and departure planning.
 - Visitors can challenge, set boundaries, cry, withdraw, leave early, call for help, threaten, or—under exceptionally strict conditions—attack.
 - Scenario selection is grounded in occupation, age, status, household, relationships, travel, access, and knowledge channels.
 - Compositional actions support bounded combinations of work, property, resources, family, law, migration, violence, faith, building work, and improvised social acts.
+- Departure consequences support up to three parallel visitor commitments or causal response steps, including real route scouting, evacuation preparation, and limited lawful defense readiness.
 - Church food, coin, medicine, and fuel stores can be given or replenished through donations.
 - Rare stewards, magistrates, lords, bishops, sheriffs, royal officers, papal legates, kings, and popes arise through difficult causal escalation.
 - Exported saves include action normalization, accepted-prefix, rejection-gate, and fallback diagnostics.

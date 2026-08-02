@@ -25,7 +25,7 @@ import {
   sealState,
   STATE_SCHEMA_VERSION
 } from "./state.js";
-import { validateSermonResponse } from "./ai.js";
+import { deterministicCompoundFallback, validateSermonResponse } from "./ai.js";
 import {
   addStructuredMemory,
   canApplyImmediateReaction,
@@ -466,6 +466,7 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
     return true;
   });
   return eligibleHandcrafted.concat(buildGeneratedScenarioArchetypes({
+    town: state.town.name,
     person: person.name,
     relation: relationName,
     victim: victimName,
@@ -632,6 +633,12 @@ function expandScenarioFactWeb(state, issue, person) {
       text: affected.length
         ? `${affected.map((resident) => `${resident.name}'s household`).join(", ")} reported matching sickness after using the common well. The complete number of sick villagers is not yet known.`
         : "Several households reported sickness, but no complete named list has yet been established."
+    });
+  }
+  if (String(issue.scenarioId || "").includes("panic_rumor")) {
+    additions.push({
+      id: "threat_status",
+      text: `No war involving ${state.town.name} has been declared or verified. The rumor conflicts: some people say soldiers, others say sickness, and no reliable witness has yet identified a banner, commander, company, number, intention, or confirmed direction of approach.`
     });
   }
   for (const fact of additions) {
@@ -1298,7 +1305,9 @@ export function beginVisit(state, { record = true } = {}) {
         retractions: [],
         mentionedFactIds: [],
         currentObligation: null,
-        lastAnsweredQuestionTurnIds: []
+        lastAnsweredQuestionTurnIds: [],
+        proposals: [],
+        visitorDecisions: []
       }
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
@@ -1435,7 +1444,9 @@ export function beginVisit(state, { record = true } = {}) {
         retractions: [],
         mentionedFactIds: [],
         currentObligation: null,
-        lastAnsweredQuestionTurnIds: []
+        lastAnsweredQuestionTurnIds: [],
+        proposals: [],
+        visitorDecisions: []
       }
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
@@ -1494,7 +1505,9 @@ export function beginVisit(state, { record = true } = {}) {
         retractions: [],
         mentionedFactIds: [],
         currentObligation: null,
-        lastAnsweredQuestionTurnIds: []
+        lastAnsweredQuestionTurnIds: [],
+        proposals: [],
+        visitorDecisions: []
       }
     };
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
@@ -1551,7 +1564,9 @@ export function beginVisit(state, { record = true } = {}) {
       retractions: [],
       mentionedFactIds: [],
       currentObligation: null,
-      lastAnsweredQuestionTurnIds: []
+      lastAnsweredQuestionTurnIds: [],
+      proposals: [],
+      visitorDecisions: []
     }
   };
   if (issue.kind === "confession") {
@@ -1860,6 +1875,34 @@ export function recordExchange(state, playerText, response, { record = true } = 
     ? JSON.parse(JSON.stringify(response.conversationObligation))
     : null;
   visit.continuity.lastAnsweredQuestionTurnIds = [...answeredQuestionIds];
+  for (const proposal of response.conversationObligation?.proposals || []) {
+    if (visit.continuity.proposals.some((entry) => entry.proposalId === proposal.proposalId)) continue;
+    visit.continuity.proposals.push({
+      proposalId: proposal.proposalId,
+      turn: visit.turnsUsed,
+      rawText: String(proposal.rawText || "").slice(0, 180),
+      actionHint: String(proposal.actionHint || "custom").slice(0, 40),
+      priority: clamp(proposal.priority || 50, 0, 100),
+      status: "pending"
+    });
+  }
+  for (const decision of response.decisions || []) {
+    const stored = {
+      proposalId: String(decision.proposalId || "").slice(0, 80),
+      turn: visit.turnsUsed,
+      status: ["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
+        ? decision.status
+        : "unknown",
+      reason: completeGeneratedText(decision.reason, 120)
+    };
+    visit.continuity.visitorDecisions = visit.continuity.visitorDecisions
+      .filter((entry) => entry.proposalId !== stored.proposalId);
+    visit.continuity.visitorDecisions.push(stored);
+    const proposal = visit.continuity.proposals.find((entry) => entry.proposalId === stored.proposalId);
+    if (proposal) proposal.status = stored.status;
+  }
+  visit.continuity.proposals = visit.continuity.proposals.slice(-18);
+  visit.continuity.visitorDecisions = visit.continuity.visitorDecisions.slice(-18);
   if (response.promptTrace) {
     visit.promptTraces.push(JSON.parse(JSON.stringify(response.promptTrace)));
     visit.promptTraces = visit.promptTraces.slice(-PROMPT_TRACE_LIMIT);
@@ -2025,6 +2068,9 @@ export function recordExchange(state, playerText, response, { record = true } = 
         promptTrace: response.promptTrace
           ? JSON.parse(JSON.stringify(response.promptTrace))
           : null,
+        decisions: Array.isArray(response.decisions)
+          ? JSON.parse(JSON.stringify(response.decisions.slice(0, 6)))
+          : [],
         reactionAudit
       }
     }, response.source || "simulation");
@@ -2035,6 +2081,19 @@ export function recordExchange(state, playerText, response, { record = true } = 
 export function fallbackConversation(state, playerText) {
   const visit = state.currentVisit;
   const person = materializeResident(state, visit.personId, true);
+  const compoundFallback = deterministicCompoundFallback(state, person, playerText);
+  if (compoundFallback) return compoundFallback;
+  if (String(playerText).trim() === "[silence]") {
+    return {
+      reply: visit.issue.gravity >= 4
+        ? `"Father? This silence frightens me more than an answer would. Have you nothing to say?"`
+        : `"I can wait a moment, Father, though I do not know what your silence means."`,
+      mood: visit.issue.gravity >= 4 ? "troubled" : "uncertain",
+      trustDelta: 0,
+      stressDelta: visit.issue.gravity >= 4 ? 1 : 0,
+      memory: "The priest answered with silence."
+    };
+  }
   const groundedFacts = clarificationFacts(visit, playerText);
   if (groundedFacts.length) {
     return {
@@ -2165,6 +2224,9 @@ function metricDeltaForAction(actionType) {
     testify: { safety: 1 }, organize_aid: { health: 1, mercy: 3 }, attend_church: { faith: 1 },
     seek_absolution: { faith: 2 }, confess_publicly: { faith: 1 }, protect: { safety: 2, mercy: 1 },
     offer_work: { prosperity: 2 }, secure_clean_water: { health: 2, safety: 1 },
+    verify_route: { safety: 1, harmony: 1 },
+    prepare_evacuation: { safety: 1, harmony: -1, prosperity: -1 },
+    organize_defense: { safety: 2, harmony: -1 },
     buy_property: { prosperity: 1 },
     sell_property: { prosperity: 1 },
     lease_property: { prosperity: 1 }
@@ -2332,6 +2394,47 @@ export function applyAction(state, step) {
       20
     );
     state.town.metrics.health = clamp(state.town.metrics.health + intensity);
+  }
+  if (step.actionType === "verify_route") {
+    actor.flags = [...new Set([...(actor.flags || []), `scouting_route_until_day_${state.calendar.absoluteDay + 1}`])];
+    const thread = state.issueThreads.find((entry) => entry.id === state.currentVisit?.issue.threadId);
+    if (thread) {
+      thread.publicAwareness = clamp(thread.publicAwareness + 8);
+      thread.pressure = clamp(thread.pressure - 8);
+      thread.momentum = clamp(thread.momentum + 8);
+    }
+    scheduleResidentFollowup(
+      state,
+      actor.id,
+      `${actor.name} returns with a report after checking the roads and approaches.`,
+      step.parentEventId || state.currentVisit?.originEventId
+    );
+  }
+  if (step.actionType === "prepare_evacuation") {
+    if (sourceHousehold) {
+      sourceHousehold.wealth = clamp(sourceHousehold.wealth - intensity);
+      sourceHousehold.food = clamp(sourceHousehold.food - intensity);
+      for (const memberId of sourceHousehold.memberIds.slice(0, 8)) {
+        const member = state.residents.find((resident) => resident.id === memberId);
+        if (member?.active && member.alive) {
+          member.flags = [...new Set([...(member.flags || []), `evacuation_ready_until_day_${state.calendar.absoluteDay + 3}`])];
+        }
+      }
+    }
+  }
+  if (step.actionType === "organize_defense") {
+    if (sourceHousehold) {
+      sourceHousehold.wealth = clamp(sourceHousehold.wealth - intensity * 2);
+      sourceHousehold.food = clamp(sourceHousehold.food - intensity);
+    }
+    const suitable = state.residents
+      .filter((resident) => resident.active && resident.alive && resident.age >= ADULT_AGE
+        && ["reeve", "bailiff", "watchman", "soldier", "hunter", "forester"].includes(resident.occupation))
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .slice(0, 5);
+    for (const defender of suitable) {
+      defender.flags = [...new Set([...(defender.flags || []), `defense_ready_until_day_${state.calendar.absoluteDay + 3}`])];
+    }
   }
   if (step.actionType === "improvise") {
     applyCustomEffects(state, actor, targetIsPriest ? null : target, step.effects);
@@ -2752,9 +2855,52 @@ export function applyAction(state, step) {
   };
 }
 
+function acceptedProposalRootSteps(state, visit, person) {
+  const decisionsById = new Map(
+    (visit.continuity?.visitorDecisions || []).map((decision) => [decision.proposalId, decision])
+  );
+  const acceptedProposals = (visit.continuity?.proposals || [])
+    .filter((proposal) => decisionsById.get(proposal.proposalId)?.status === "accepted")
+    .sort((left, right) => right.priority - left.priority)
+    .slice(0, 3);
+  if (acceptedProposals.length < 2) return [];
+  const relatedId = visit.issue.relatedPersonId;
+  const actionMap = {
+    verify_route: "verify_route",
+    prepare_evacuation: "prepare_evacuation",
+    organize_defense: "organize_defense",
+    contact_person: "visit",
+    delay_or_ignore: "keep_silence",
+    pray: "repent",
+    leave: "leave_village"
+  };
+  return acceptedProposals.map((proposal) => {
+    const mappedAction = actionMap[proposal.actionHint] || "improvise";
+    const actionType = mappedAction === "visit" && !relatedId ? "improvise" : mappedAction;
+    return {
+      depth: 1,
+      parentStepIndex: null,
+      actorId: person.id,
+      targetId: actionType === "visit" ? relatedId : null,
+      actionType,
+      intensity: Math.min(3, maximumIntensityForLicense(visit.eventLicense)),
+      title: proposal.rawText.slice(0, 100),
+      description: `${person.name} acts on this accepted proposal: ${proposal.rawText}`,
+      detail: actionType === "improvise" ? proposal.rawText.slice(0, 120) : ""
+    };
+  });
+}
+
 export function fallbackDeparturePlan(state) {
   const visit = state.currentVisit;
   const person = materializeResident(state, visit.personId, true);
+  const acceptedRoots = acceptedProposalRootSteps(state, visit, person);
+  if (acceptedRoots.length >= 2) {
+    return {
+      summary: `${person.name} acts on several parts of the counsel given during the hour.`,
+      steps: acceptedRoots
+    };
+  }
   const commitment = currentVisitorCommitment(state, visit, person);
   const latestIntent = (intent, pattern) => {
     const latest = [...visit.counsel].reverse().find((entry) => pattern.test(entry.toLowerCase()));
@@ -2960,12 +3106,21 @@ function hasPhaseZeroCapability(actor, actionType) {
   if (actionType === "heal") return HEALING_OCCUPATIONS.has(actor.occupation);
   if (actionType === "build" || actionType === "repair") return BUILDING_OCCUPATIONS.has(actor.occupation);
   if (actionType === "hire" || actionType === "offer_work") return HIRING_OCCUPATIONS.has(actor.occupation);
+  if (actionType === "verify_route") return actor.age >= 14 && actor.health >= 35;
+  if (actionType === "prepare_evacuation") return actor.age >= 14 && actor.health >= 25;
+  if (actionType === "organize_defense") return actor.age >= ADULT_AGE && actor.health >= 35;
   return true;
 }
 
 function hasLifeCourseEligibility(state, visit, actor, target, actionType, detail) {
   const counsel = visit.counsel.join(". ").toLowerCase();
   const household = state.households.find((entry) => entry.id === actor.householdId);
+  if (actionType === "organize_defense") {
+    return state.residents.some((resident) => (
+      resident.active && resident.alive
+      && ["reeve", "bailiff", "watchman", "soldier"].includes(resident.occupation)
+    ));
+  }
   const authorityPatterns = {
     petition_bishop: /^(?:please\s+)?(?:petition|write to|report to|contact)\s+(?:the\s+)?bishop[.!]?$/,
     appeal_to_rome: /^(?:please\s+)?(?:appeal|write|send word)\s+(?:to\s+)?(?:rome|the pope|papal authority)[.!]?$/,
@@ -3437,18 +3592,47 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       detail
     };
   };
-  let expectedActorId = visit.personId;
+  let rootCount = 0;
   const maximumIntensity = maximumIntensityForLicense(visit.eventLicense);
   const reservedRelationshipParticipants = new Set();
+  const resourceReservations = new Map();
+  const reservationFor = (householdId) => {
+    if (!resourceReservations.has(householdId)) {
+      resourceReservations.set(householdId, { wealth: 0, food: 0, church: {} });
+    }
+    return resourceReservations.get(householdId);
+  };
   const relationshipChangingActions = new Set(["court", "marry", "separate", "conceive_child", "adopt_child"]);
   for (let index = 0; index < rawSteps.length; index += 1) {
     const raw = rawSteps[index] || {};
     const actor = candidateMap.get(raw.actorId);
     const target = raw.targetId == null ? null : candidateMap.get(raw.targetId);
     const requestedIntensity = Number(raw.intensity);
-    if (!actor || actor.id !== expectedActorId) {
-      reject(index, raw, "causal_actor", `Expected actor ${expectedActorId}.`);
+    const actorHousehold = state.households.find((entry) => entry.id === actor?.householdId);
+    const reservedResources = reservationFor(actor?.householdId || `none-${index}`);
+    const availableWealth = (actorHousehold?.wealth || 0) - reservedResources.wealth;
+    const availableFood = (actorHousehold?.food || 0) - reservedResources.food;
+    const parentStepIndex = raw.parentStepIndex === undefined
+      ? (index === 0 ? null : index - 1)
+      : raw.parentStepIndex;
+    if (parentStepIndex != null
+      && (!Number.isInteger(parentStepIndex) || parentStepIndex < 0 || parentStepIndex >= index)) {
+      reject(index, raw, "graph_parent", "A response step must reference a prior step.");
       break;
+    }
+    const expectedActorId = parentStepIndex == null
+      ? visit.personId
+      : steps[parentStepIndex]?.targetId;
+    if (!actor || !expectedActorId || actor.id !== expectedActorId) {
+      reject(index, raw, "causal_actor", `Expected actor ${expectedActorId || "from a valid prior target"}.`);
+      break;
+    }
+    if (parentStepIndex == null) {
+      rootCount += 1;
+      if (rootCount > 3) {
+        reject(index, raw, "graph_roots", "A departure graph may contain at most three visitor roots.");
+        break;
+      }
     }
     if (relationshipChangingActions.has(raw.actionType)
       && (reservedRelationshipParticipants.has(actor.id) || (target && reservedRelationshipParticipants.has(target.id)))) {
@@ -3560,11 +3744,20 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       break;
     }
     if (["repair", "build"].includes(raw.actionType)) {
-      const household = state.households.find((entry) => entry.id === actor.householdId);
-      if (!household || household.wealth < requestedIntensity * 2 || household.food < requestedIntensity) {
+      if (!actorHousehold || availableWealth < requestedIntensity * 2 || availableFood < requestedIntensity) {
         reject(index, raw, "affordability", "The household cannot afford the building action.");
         break;
       }
+    }
+    if (raw.actionType === "prepare_evacuation"
+      && (!actorHousehold || availableWealth < requestedIntensity || availableFood < requestedIntensity)) {
+      reject(index, raw, "affordability", "The household lacks the means to prepare supplies for rapid departure.");
+      break;
+    }
+    if (raw.actionType === "organize_defense"
+      && (!actorHousehold || availableWealth < requestedIntensity * 2 || availableFood < requestedIntensity)) {
+      reject(index, raw, "affordability", "The household cannot support even a limited defensive watch.");
+      break;
     }
     if (["buy_property", "sell_property", "lease_property"].includes(raw.actionType)) {
       const household = state.households.find((entry) => entry.id === actor.householdId);
@@ -3572,7 +3765,7 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
         reject(index, raw, "property", "The actor has no household for a property transaction.");
         break;
       }
-      if (raw.actionType === "buy_property" && household.wealth < requestedIntensity * 5) {
+      if (raw.actionType === "buy_property" && availableWealth < requestedIntensity * 5) {
         reject(index, raw, "affordability", "The household cannot afford the property purchase.");
         break;
       }
@@ -3580,7 +3773,7 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
         reject(index, raw, "property", "The household owns no property that can be sold.");
         break;
       }
-      if (raw.actionType === "lease_property" && household.wealth < requestedIntensity * 2) {
+      if (raw.actionType === "lease_property" && availableWealth < requestedIntensity * 2) {
         reject(index, raw, "affordability", "The household cannot afford the lease.");
         break;
       }
@@ -3590,62 +3783,90 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
         const person = state.residents.find((resident) => resident.id === id);
         return person?.active && person.alive;
       }));
-      const source = state.households.find((household) => household.id === actor.householdId);
+      const source = actorHousehold;
       const destination = target && target.id !== "priest"
         ? state.households.find((household) => household.id === target.householdId)
         : null;
       if (raw.actionType === "share_food"
         && (!source || !destination || !occupied.includes(destination)
-          || source.id === destination.id || source.food < requestedIntensity * 2)) {
+          || source.id === destination.id || availableFood < requestedIntensity * 2)) {
         reject(index, raw, "affordability", "The food transfer is impossible or unfunded.");
         break;
       }
       if (raw.actionType === "lend_money"
         && (!source || !destination || !occupied.includes(destination)
-          || source.id === destination.id || source.wealth < requestedIntensity * 2)) {
+          || source.id === destination.id || availableWealth < requestedIntensity * 2)) {
         reject(index, raw, "affordability", "The loan is impossible or unfunded.");
         break;
       }
       if (raw.actionType === "donate"
         && target?.id === "priest") {
         const donation = parseChurchDonationDetail(detail, requestedIntensity * 2);
-        const available = churchDonationCapacity(state, actor, donation.resource);
+        const available = churchDonationCapacity(state, actor, donation.resource)
+          - (reservedResources.church[donation.resource] || 0);
         if (!source || available < donation.amount) {
           reject(index, raw, "affordability", "The church donation exceeds available household resources.");
           break;
         }
       } else if (raw.actionType === "donate"
-        && (!source || source.wealth < requestedIntensity * 2
+        && (!source || availableWealth < requestedIntensity * 2
           || (destination && (!occupied.includes(destination) || destination.id === source.id))
           || !(destination || occupied.some((household) => household.id !== source.id)))) {
         reject(index, raw, "affordability", "The donation is impossible or unfunded.");
         break;
       }
-      if (raw.actionType === "lower_prices" && (!source || source.wealth < requestedIntensity)) {
+      if (raw.actionType === "lower_prices" && (!source || availableWealth < requestedIntensity)) {
         reject(index, raw, "affordability", "The actor cannot afford to subsidize lower prices.");
         break;
       }
       if (raw.actionType === "organize_aid"
-        && (!source || (source.food < requestedIntensity * 2 && source.wealth < requestedIntensity)
+        && (!source || (availableFood < requestedIntensity * 2 && availableWealth < requestedIntensity)
           || !occupied.some((household) => household.id !== source.id))) {
         reject(index, raw, "affordability", "The aid effort lacks resources or recipients.");
         break;
       }
     }
+    if (["repair", "build"].includes(raw.actionType)) {
+      reservedResources.wealth += requestedIntensity * 2;
+      reservedResources.food += requestedIntensity;
+    } else if (raw.actionType === "buy_property") {
+      reservedResources.wealth += requestedIntensity * 5;
+    } else if (raw.actionType === "lease_property") {
+      reservedResources.wealth += requestedIntensity * 2;
+    } else if (raw.actionType === "share_food") {
+      reservedResources.food += requestedIntensity * 2;
+    } else if (["lend_money", "lower_prices"].includes(raw.actionType)) {
+      reservedResources.wealth += raw.actionType === "lend_money" ? requestedIntensity * 2 : requestedIntensity;
+    } else if (raw.actionType === "donate" && target?.id === "priest") {
+      const donation = parseChurchDonationDetail(detail, requestedIntensity * 2);
+      reservedResources.church[donation.resource] = (reservedResources.church[donation.resource] || 0) + donation.amount;
+    } else if (raw.actionType === "donate") {
+      reservedResources.wealth += requestedIntensity * 2;
+    } else if (raw.actionType === "organize_aid") {
+      reservedResources.food += requestedIntensity * 2;
+      reservedResources.wealth += requestedIntensity;
+    } else if (raw.actionType === "prepare_evacuation") {
+      reservedResources.wealth += requestedIntensity;
+      reservedResources.food += requestedIntensity;
+    } else if (raw.actionType === "organize_defense") {
+      reservedResources.wealth += requestedIntensity * 2;
+      reservedResources.food += requestedIntensity;
+    }
     steps.push({
-      depth: index + 1,
+      depth: parentStepIndex == null ? 1 : (steps[parentStepIndex]?.depth || 0) + 1,
+      parentStepIndex,
       actorId: actor.id,
       targetId: target?.id ?? null,
       actionType: raw.actionType,
       intensity: requestedIntensity,
       title: completeGeneratedText(
-        ["improvise", "secure_clean_water"].includes(raw.actionType) && raw.title
+        ["improvise", "secure_clean_water", "verify_route", "prepare_evacuation", "organize_defense"].includes(raw.actionType) && raw.title
           ? raw.title
           : raw.actionType.replaceAll("_", " "),
         100
       ),
       description: completeGeneratedText(
-        ["improvise", "secure_clean_water"].includes(raw.actionType) && raw.description
+        ["improvise", "secure_clean_water", "verify_route", "prepare_evacuation", "organize_defense"].includes(raw.actionType) && raw.description
           ? raw.description
           : `${actor.name} chose to ${raw.actionType.replaceAll("_", " ")}${target ? ` in dealing with ${target.name}` : ""}.`,
         400
@@ -3662,13 +3883,6 @@ export function validateDeparturePlan(state, plan, candidates = departureCandida
       reservedRelationshipParticipants.add(actor.id);
       if (target) reservedRelationshipParticipants.add(target.id);
     }
-    if (!target) {
-      if (index < rawSteps.length - 1) {
-        reject(index + 1, rawSteps[index + 1], "causal_chain", "A targetless action cannot lead to another actor step.");
-      }
-      break;
-    }
-    expectedActorId = target.id;
   }
   const fullyAccepted = steps.length === rawSteps.length;
   return {
@@ -3708,6 +3922,11 @@ export function actionFromComposition(raw) {
     "communication:visit": "visit",
     "migration:leave": "leave_village",
     "migration:move": "move_household",
+    "migration:prepare": "prepare_evacuation",
+    "travel:scout": "verify_route",
+    "travel:verify": "verify_route",
+    "defense:organize": "organize_defense",
+    "defense:prepare": "organize_defense",
     "violence:threaten": "threaten",
     "violence:attack": "assault",
     "violence:kill": "kill_person",
@@ -3858,6 +4077,40 @@ function normalizeAiDeparturePlan(state, plan) {
         step.effects = [];
       }
     }
+    if (step.actionType === "improvise"
+      && /\b(?:scout|verify|check|inspect)\w*\b.*\b(?:road|route|approach)\b/.test(improvisedText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "improvise",
+        to: "verify_route",
+        reason: "canonical_route_verification"
+      });
+      step.actionType = "verify_route";
+      step.effects = [];
+    } else if (step.actionType === "improvise"
+      && /\b(?:prepare|ready|pack)\w*\b.*\b(?:leave|flee|evacuat|depart)\w*\b/.test(improvisedText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "improvise",
+        to: "prepare_evacuation",
+        reason: "canonical_evacuation_preparation"
+      });
+      step.actionType = "prepare_evacuation";
+      step.effects = [];
+    } else if (step.actionType === "improvise"
+      && /\b(?:prepare|organize|ready|arm)\w*\b.*\b(?:defend|defense|guard|armed|men)\b/.test(improvisedText)) {
+      normalizations.push({
+        stepIndex: index,
+        field: "actionType",
+        from: "improvise",
+        to: "organize_defense",
+        reason: "canonical_defense_preparation"
+      });
+      step.actionType = "organize_defense";
+      step.effects = [];
+    }
     if (step.actionType !== "improvise" && Array.isArray(step.effects) && step.effects.length) {
       normalizations.push({
         stepIndex: index,
@@ -3983,6 +4236,20 @@ function normalizeAiDeparturePlan(state, plan) {
     }
     return step;
   });
+  for (let index = 1; index < steps.length; index += 1) {
+    if (steps[index].parentStepIndex === undefined
+      && steps[index].actorId === visit?.personId
+      && steps[index - 1].targetId !== visit?.personId) {
+      normalizations.push({
+        stepIndex: index,
+        field: "parentStepIndex",
+        from: "legacy_linear",
+        to: null,
+        reason: "parallel_visitor_root"
+      });
+      steps[index].parentStepIndex = null;
+    }
+  }
   return {
     plan: {
       summary: String(plan?.summary || "").slice(0, 400),
@@ -4008,6 +4275,22 @@ export function finishVisit(state, plan, { record = true } = {}) {
   const normalizedSubmission = submittedByAi
     ? normalizeAiDeparturePlan(state, submittedPlan)
     : { plan: submittedPlan, normalizations: [] };
+  const acceptedRoots = acceptedProposalRootSteps(state, visit, person);
+  if (submittedByAi && acceptedRoots.length >= 2) {
+    const normalizedActions = normalizedSubmission.plan.steps.map((step) => step.actionType);
+    const acceptedActions = acceptedRoots.map((step) => step.actionType);
+    if (JSON.stringify(normalizedActions) !== JSON.stringify(acceptedActions)
+      || normalizedSubmission.plan.steps.some((step) => step.parentStepIndex != null)) {
+      normalizedSubmission.normalizations.push({
+        stepIndex: -1,
+        field: "steps",
+        from: normalizedActions,
+        to: acceptedActions,
+        reason: "accepted_proposal_roots"
+      });
+      normalizedSubmission.plan.steps = acceptedRoots;
+    }
+  }
   const submittedValidation = validateDeparturePlan(state, normalizedSubmission.plan);
   let validated = submittedValidation;
   const acceptedAiProposal = submittedByAi && submittedValidation.complete;
@@ -4051,6 +4334,11 @@ export function finishVisit(state, plan, { record = true } = {}) {
     submittedRejection: submittedValidation.rejection,
     normalizations: normalizedSubmission.normalizations,
     finalStepCount: validated.steps.length,
+    graph: validated.steps.map((step) => ({
+      parentStepIndex: step.parentStepIndex ?? null,
+      actorId: step.actorId,
+      targetId: step.targetId
+    })),
     resolution
   };
   if (plan?.expectedEvaluation && JSON.stringify(plan.expectedEvaluation) !== JSON.stringify(evaluation)) {
@@ -4067,21 +4355,27 @@ export function finishVisit(state, plan, { record = true } = {}) {
     });
     parentEventId = evaluationEvent.id;
   }
-  let followupCandidate = null;
-  for (const step of validated.steps) {
-    const result = applyAction(state, { ...step, parentEventId });
+  const graphRootEventId = parentEventId;
+  const stepEventIds = [];
+  const followupCandidates = [];
+  for (let stepIndex = 0; stepIndex < validated.steps.length; stepIndex += 1) {
+    const step = validated.steps[stepIndex];
+    const stepParentEventId = step.parentStepIndex == null
+      ? graphRootEventId
+      : stepEventIds[step.parentStepIndex] || graphRootEventId;
+    const result = applyAction(state, { ...step, parentEventId: stepParentEventId });
     if (result) {
+      stepEventIds[stepIndex] = result.eventId;
       parentEventId = result.eventId;
-      if (!followupCandidate
-        && result.target
+      if (result.target
         && result.target.id !== "priest"
         && !["visit", "keep_silence", "pray_with"].includes(step.actionType)) {
-        followupCandidate = {
+        followupCandidates.push({
           personId: result.target.id,
           reason: result.description,
           sourceEventId: result.eventId,
           actionType: step.actionType
-        };
+        });
       }
       if (step.expectedCreatedResidentId && step.expectedCreatedResidentId !== result.createdResidentId) {
         throw new Error("Replay created resident mismatch");
@@ -4091,7 +4385,10 @@ export function finishVisit(state, plan, { record = true } = {}) {
       state.statistics.cascades += 1;
     }
   }
-  if (followupCandidate) {
+  const distinctFollowups = [...new Map(
+    followupCandidates.map((candidate) => [candidate.personId, candidate])
+  ).values()].slice(0, 3);
+  for (const followupCandidate of distinctFollowups) {
     const rng = new SeededRng(`${state.seed}:resident-followup:${followupCandidate.sourceEventId}`);
     const urgent = ["accuse", "threaten", "assault", "kill_person", "evict", "report_crime", "reveal_secret"].includes(followupCandidate.actionType);
     if (rng.next() < (urgent ? 0.8 : 0.42)) {

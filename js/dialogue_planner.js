@@ -16,7 +16,8 @@ export function selectConversationObligation({
   deterministicSocial,
   requiredFacts,
   directAnswer,
-  scenarioFactIds = []
+  scenarioFactIds = [],
+  turnAnalysis = null
 }) {
   const questionTurnId = `priest-${visit.history.length}`;
   const base = {
@@ -26,6 +27,8 @@ export function selectConversationObligation({
     answeredQuestionTurnIds: String(playerText).includes("?") ? [questionTurnId] : [],
     requiredFactIds: requiredFacts.map((fact) => fact.id),
     requiredAnswerSlots: socialRequirement?.answerSlots || requiredFacts.map((fact) => fact.id),
+    actKinds: turnAnalysis?.actKinds || [],
+    proposals: turnAnalysis?.proposals || [],
     followupRequested: Boolean(socialRequirement?.followupRequested),
     avoidRepeatingTexts: boundedTexts(
       visit.history.filter((line) => line.speaker === "visitor").map((line) => line.text)
@@ -50,6 +53,16 @@ export function selectConversationObligation({
       routerConfidence: 1,
       responseSource: "scripted_reaction",
       reason: `The cumulative reaction engine requires ${reactionPreview.requiredReaction}.`
+    };
+  }
+  if (socialRequirement?.type === "compound_turn") {
+    return {
+      ...base,
+      kind: "compound_turn",
+      modelNeeded: true,
+      routerConfidence: 0.95,
+      responseSource: "gemma_dialogue",
+      reason: "Multiple actionable clauses must each be accepted, rejected, deferred, or marked unknown."
     };
   }
   if (socialRequirement && deterministicSocial) {
@@ -97,6 +110,11 @@ export function boundedPromptTrace(trace) {
     includedFactIds: Array.isArray(trace.includedFactIds) ? trace.includedFactIds.slice(0, 12) : [],
     initialReply: String(trace.initialReply || "").slice(0, 600),
     finalReply: String(trace.finalReply || "").slice(0, 600),
+    decisions: Array.isArray(trace.decisions) ? trace.decisions.slice(0, 6).map((decision) => ({
+      proposalId: String(decision.proposalId || "").slice(0, 80),
+      status: String(decision.status || "unknown").slice(0, 20),
+      reason: String(decision.reason || "").slice(0, 120)
+    })) : [],
     mandatoryAnswerPassed: Boolean(trace.mandatoryAnswerPassed),
     retryUsed: Boolean(trace.retryUsed),
     route: String(trace.route || "").slice(0, 80),
