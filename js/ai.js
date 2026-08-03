@@ -1545,6 +1545,20 @@ const semanticRendererSchema = {
   }
 };
 
+const fastConversationSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reply", "meaning", "claimType"],
+  properties: {
+    reply: legacyConversationSchema.properties.reply,
+    meaning: { type: "string", maxLength: 160 },
+    claimType: {
+      type: "string",
+      enum: ["none", "belief", "suspicion", "opinion"]
+    }
+  }
+};
+
 const conversationRepairSchema = {
   type: "object",
   additionalProperties: false,
@@ -1912,6 +1926,138 @@ export class ParishAiClient extends EventTarget {
     );
   }
 
+  async fastSocialConversation(state, person, visit, playerText, obligation, visibleFacts, reactionPreview) {
+    const prompt = [
+      "Respond as one persistent person in a 16th-century village conversation. Return JSON only.",
+      "Interpret the newest player meaning and answer it naturally in one or two short sentences, no more than 55 words.",
+      "This is a conversational follow-up, not a request to restate the scenario or produce a complete action plan.",
+      "Explain references to your own prior words when asked. You may hesitate, disagree, ask a question, or admit uncertainty.",
+      "Speak in first person. Never address the priest by the visitor's name; call the priest Father when an address is natural.",
+      "Do not invent facts, officials, locations, agreements, or actions.",
+      "Set meaning to a brief interpretation of what the priest wants. Set claimType to belief, suspicion, or opinion only when the reply expresses one; otherwise use none.",
+      `PERSON=${JSON.stringify({
+        id: person.id,
+        name: person.name,
+        age: person.age,
+        occupation: person.occupation,
+        personality: person.personality,
+        trustPriest: person.trustPriest,
+        stress: person.stress
+      })}`,
+      `REACTION=${JSON.stringify({
+        required: reactionPreview.requiredReaction,
+        trust: visit.reactionState.trust,
+        fear: visit.reactionState.fear,
+        anger: visit.reactionState.anger,
+        confusion: visit.reactionState.confusion,
+        offense: visit.reactionState.offense,
+        willingness: visit.reactionState.willingnessToContinue
+      })}`,
+      `AVAILABLE_FACTS=${JSON.stringify(visibleFacts.slice(0, 4).map((fact) => ({
+        id: fact.id,
+        text: fact.text,
+        speakable: fact.speakable !== false
+      })))}`,
+      `OPEN_OBLIGATIONS=${JSON.stringify((visit.continuity?.obligationStack || []).filter((entry) => entry.status === "open"))}`,
+      `FULL_ACTIVE_TRANSCRIPT=${JSON.stringify(visit.history)}`,
+      `LATEST_PLAYER_TEXT=${JSON.stringify(playerText)}`,
+      `MANDATORY_OBLIGATION_ID=${JSON.stringify(obligation.obligationId)}`
+    ].join("\n");
+    const raw = await this.complete(
+      prompt,
+      fastConversationSchema,
+      "parish_fast_conversation",
+      90,
+      Math.min(this.timeoutMs, 30000)
+    );
+    raw.memory = boundedProse(raw.meaning || raw.reply, 180);
+    raw.interpretation = {
+      speechActs: [{
+        type: "follow_up",
+        meaning: boundedProse(raw.meaning, 160),
+        referenceText: playerText,
+        confidence: 0.9
+      }],
+      implicitMeaning: boundedProse(raw.meaning, 240),
+      tone: "conversational",
+      mandatoryResponseNeeds: [obligation.prompt]
+    };
+    raw.claims = raw.claimType === "none"
+      ? []
+      : [{
+        claimId: `fast-${raw.claimType}`,
+        sentenceIndex: 0,
+        type: raw.claimType,
+        text: raw.reply,
+        subjectId: person.id,
+        targetIds: [],
+        evidenceFactIds: [],
+        confidence: raw.claimType === "opinion" ? 0.75 : 0.6
+      }];
+    raw.newQuestions = /\?\s*$/.test(raw.reply) ? [raw.reply.match(/[^.!?]+\?\s*$/)?.[0]?.trim()].filter(Boolean) : [];
+    raw.responsePlan = {
+      primaryObligationId: obligation.obligationId,
+      secondaryObligationIds: obligation.preservedObligationIds || [],
+      knownFactIds: (raw.claims || []).flatMap((claim) => claim.evidenceFactIds || []).slice(0, 16),
+      unknowns: [],
+      proposalPositions: [],
+      desiredMovement: raw.interpretation?.implicitMeaning || "Continue the conversation naturally.",
+      endConversation: false
+    };
+    raw.answeredObligations = [obligation.obligationId];
+    raw.decisions = [];
+    const result = validateConversation(raw);
+    const report = validateSemanticConversation(state, person, visibleFacts, obligation, result);
+    const fastFallbackUsed = !report.pass;
+    if (!report.pass) {
+      const invalidSentenceIndexes = new Set(
+        report.defects.filter((defect) => Number.isInteger(defect.sentenceIndex)).map((defect) => defect.sentenceIndex)
+      );
+      const sentences = result.reply.match(/[^.!?]+[.!?]?/g)
+        ?.map((sentence) => sentence.trim())
+        .filter((_, index) => !invalidSentenceIndexes.has(index))
+        .filter(Boolean) || [];
+      result.reply = boundedProse(
+        [...sentences, "I cannot say more with certainty yet, Father, but I can explain what I meant."].join(" "),
+        600
+      );
+      result.claims = report.validClaims;
+      result.groundedFallback = true;
+    }
+    result.expressedReaction = reactionPreview.requiredReaction;
+    result.boundaryProposal = reactionPreview.nextState.boundary?.type || null;
+    result.reactionPreview = reactionPreview;
+    result.segments = [{
+      text: result.reply,
+      issueId: visit.issue.threadId || visit.issue.scenarioId || visit.issue.kind,
+      answeredQuestionTurnIds: playerText.includes("?") ? [`priest-${visit.history.length}`] : [],
+      referencedFactIds: result.claims.flatMap((claim) => claim.evidenceFactIds).slice(0, 12)
+    }];
+    result.conversationObligation = obligation;
+    result.promptTrace = boundedPromptTrace({
+      obligation,
+      prompt,
+      includedFactIds: visibleFacts.slice(0, 4).map((fact) => fact.id),
+      initialReply: result.reply,
+      finalReply: result.reply,
+      decisions: [],
+      mandatoryAnswerPassed: true,
+      retryUsed: false,
+      route: "fast_social_followup",
+      responseSource: fastFallbackUsed
+        ? "framework_emergency_fallback"
+        : (this.endpoint.includes("copilot") ? "copilot_dialogue" : "gemma_dialogue"),
+      gemmaCalled: true,
+      repetitionDetected: false,
+      semanticInterpretation: result.interpretation,
+      responsePlan: result.responsePlan,
+      claims: result.claims,
+      semanticValidation: report,
+      repairedClaimIds: report.defects.filter((defect) => defect.claimId).map((defect) => defect.claimId)
+    });
+    return result;
+  }
+
   async opening(state, person) {
     const visit = state.currentVisit;
     const mayDiscloseMatter = visit.issue.kind !== "confession" || visit.hiddenConcernDisclosed;
@@ -2163,6 +2309,43 @@ export class ParishAiClient extends EventTarget {
       .sort((left, right) => right.score - left.score)
       .slice(0, 8)
       .map((entry) => entry.fact);
+    const latestVisitorLine = [...visit.history].reverse().find((line) => line.speaker === "visitor")?.text || "";
+    const referencesPriorReply = /\b(?:why would|why did you|what did you mean|when you said|you said|what makes you say|how so)\b/i.test(playerText)
+      || repetitionScore(playerText, latestVisitorLine) >= 0.22;
+    const useFastSocialPath = this.splitSemantic
+      && visit.history.length >= 3
+      && reactionPreview.requiredReaction === "continue"
+      && !(visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed)
+      && !socialRequirement
+      && turnAnalysis.proposals.length === 0
+      && (
+        referencesPriorReply
+        || (
+          requiredFacts.length === 0
+          && turnAnalysis.categories.some((category) => ["compassionate", "apologetic", "validating"].includes(category))
+        )
+      );
+    if (useFastSocialPath) {
+      const fastObligation = referencesPriorReply
+        ? {
+          ...obligation,
+          requiredFactIds: [],
+          requiredAnswerSlots: [],
+          kind: "social_followup",
+          directAnswer: null,
+          reason: "The newest turn asks the visitor to explain their immediately preceding words."
+        }
+        : obligation;
+      return this.fastSocialConversation(
+        state,
+        person,
+        visit,
+        playerText,
+        fastObligation,
+        referencesPriorReply ? [] : visibleFacts,
+        reactionPreview
+      );
+    }
     const context = {
       town: state.town.name,
       date: state.calendar,

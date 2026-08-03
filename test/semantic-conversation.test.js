@@ -52,6 +52,89 @@ function semanticReply(plan, overrides = {}) {
   };
 }
 
+function fastSemanticReply(prompt, reply) {
+  return {
+    reply,
+    meaning: "The priest asks the visitor to explain their preceding remark.",
+    claimType: "belief"
+  };
+}
+
+test("follow-ups to the visitor's own remark use one compact semantic call", async () => {
+  const state = createGame("semantic-fast-prior-reply");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  recordExchange(state, "Ask the watch what they know.", {
+    reply: "I will speak with the watch, Father, though I fear they may offer little comfort.",
+    memory: "The visitor agreed to consult the watch."
+  });
+  let calls = 0;
+  let schemaName = "";
+  let prompt = "";
+  const client = new ParishAiClient({
+    splitSemantic: true,
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      const payload = JSON.parse(options.body);
+      schemaName = payload.response_format.json_schema.name;
+      prompt = payload.messages[1].content;
+      return responseBody(fastSemanticReply(
+        prompt,
+        "Because they have heard the same rumors and seen no soldiers themselves. I meant that they may know no more than we do."
+      ));
+    }
+  });
+  const response = await client.conversation(state, person, "Why would the watch offer little comfort?");
+  assert.equal(calls, 1);
+  assert.equal(schemaName, "parish_fast_conversation");
+  assert.equal(response.promptTrace.responseSource, "gemma_dialogue");
+  assert.match(response.reply, /heard the same rumors/i);
+  assert.ok(response.answeredObligations.includes(response.conversationObligation.obligationId));
+  assert.match(prompt, /FULL_ACTIVE_TRANSCRIPT=/);
+  assert.doesNotMatch(prompt, /WORLD_CONTEXT_JSON=/);
+  assert.deepEqual(response.promptTrace.includedFactIds, []);
+  recordExchange(state, "Why would the watch offer little comfort?", response);
+  assert.equal(visit.continuity.semantic.topics.at(-1).speechAct, "follow_up");
+  assert.match(visit.continuity.semantic.npcGoals.at(-1).text, /preceding remark/i);
+});
+
+test("compound proposals still use the full semantic pipeline after prior exchanges", async () => {
+  const state = createGame("semantic-fast-route-guard");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  recordExchange(state, "We should learn more.", {
+    reply: "Then we must decide who can be trusted.",
+    memory: "The visitor wanted trustworthy help."
+  });
+  const schemaNames = [];
+  const client = new ParishAiClient({
+    splitSemantic: true,
+    fetchImpl: async (_url, options) => {
+      const payload = JSON.parse(options.body);
+      const schemaName = payload.response_format.json_schema.name;
+      schemaNames.push(schemaName);
+      if (schemaName === "parish_turn_interpretation") {
+        return responseBody({
+          speechActs: [{
+            type: "request",
+            meaning: "The priest asks for two coordinated actions.",
+            referenceText: null,
+            confidence: 0.98
+          }],
+          implicitMeaning: "The watch and scouts should both gather evidence.",
+          tone: "practical",
+          mandatoryResponseNeeds: ["Respond to both proposed actions."]
+        });
+      }
+      const prompt = payload.messages[1].content;
+      const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
+      return responseBody(semanticReply(plan));
+    }
+  });
+  await client.conversation(state, person, "Ask the watch and send two trusted people to inspect the road.");
+  assert.deepEqual(schemaNames, ["parish_turn_interpretation", "parish_conversation_render"]);
+});
+
 test("ordinary factual questions are rendered by Gemma from supplied knowledge", async () => {
   const state = createGame("semantic-factual-render");
   const visit = beginVisit(state);
