@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ParishAiClient } from "../js/ai.js";
+import { semanticClient } from "./semantic-test-client.js";
+import { semanticResponse } from "./semantic-test-client.js";
 import { analyzePlayerTurn } from "../js/dialogue_clauses.js";
 import {
   beginVisit,
@@ -20,8 +22,9 @@ function modelClient(render) {
       const payload = JSON.parse(options.body);
       const prompt = payload.messages[1].content;
       const result = render(prompt);
+      const completed = result.interpretation ? result : semanticResponse(prompt, result);
       return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify(result) } }]
+        choices: [{ message: { content: JSON.stringify(completed) } }]
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
   });
@@ -54,18 +57,14 @@ test("panic-rumor questions preserve uncertainty instead of inventing an army", 
     break;
   }
   assert.ok(state);
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      throw new Error("War-status facts should be answered without Gemma.");
-    }
-  });
+  const client = semanticClient();
   const response = await client.conversation(
     state,
     person,
     "Are we currently at war with someone? What soldiers are supposedly coming, and from where?"
   );
-  assert.match(response.reply, /no (?:declared )?war|not.*declared|not.*verified/i);
-  assert.match(response.reply, /no (?:reliable|trustworthy) witness|witness has identified|not.*identified|unknown/i);
+  assert.match(response.reply, /no (?:declared )?war|not.*declared|not.*verified|no one.*seen an army|either danger is real/i);
+  assert.match(response.reply, /no (?:reliable|trustworthy) witness|no one i trust|witness has identified|not.*identified|unknown|confirmed a pestilence/i);
   assert.doesNotMatch(response.reply, /king's forces|from the south|plague-carrying company/i);
   assert.doesNotMatch(response.reply, /the visitor|concrete facts|present evidence consists/i);
 });
@@ -100,7 +99,7 @@ test("compound dialogue records partial acceptance, refusal, and deferral", asyn
     visit.continuity.visitorDecisions.map((decision) => decision.status).sort(),
     ["accepted", "accepted", "deferred"]
   );
-  const followup = await client.conversation(state, person, "Which part must you refuse?");
+  const followup = await semanticClient().conversation(state, person, "Which part must you refuse?");
   assert.match(followup.reply, /cannot yet promise|did not refuse|refuse/i);
   assert.equal(calls, 1);
   assert.doesNotThrow(() => deserializeState(serializeState(state)));
@@ -111,12 +110,16 @@ test("missing compound decisions receive one retry and then bounded deterministi
   const visit = beginVisit(state);
   const person = materializeResident(state, visit.personId, true);
   let calls = 0;
-  const client = modelClient(() => {
-    calls += 1;
-    return {
-      reply: "I will think about what you said.",
-      memory: "The visitor considered the advice."
-    };
+  const client = new ParishAiClient({
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({
+          reply: "I will think about what you said.",
+          memory: "The visitor considered the advice."
+        }) } }]
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
   });
   const response = await client.conversation(
     state,
@@ -311,6 +314,19 @@ test("unrelated, absurd, emotional, and non-solution speech remains open dialogu
     assert.ok(Array.isArray(analysis.actKinds));
     assert.ok(analysis.proposals.length <= 6);
   }
+});
+
+test("supportive predictions after a group instruction are not parsed as extra commands", async () => {
+  const state = createGame("group-mourning-instruction");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const text = "Speak to others who mourn Branias. Talk of him, memories, and how he affected you and your family. You will find that your burden gets lighter, and you lighten the burden of others.";
+  const analysis = analyzePlayerTurn(text, 1);
+  assert.equal(analysis.proposals.length, 1);
+  const client = semanticClient();
+  const response = await client.conversation(state, person, text);
+  assert.match(response.reply, /speak with others who mourn Branias/i);
+  assert.doesNotMatch(response.reply, /cannot promise yet|possible, lawful|within our actual means/i);
 });
 
 test("hundreds of speaking styles stay bounded and parse without throwing", () => {

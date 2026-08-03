@@ -32,17 +32,25 @@
     <div>
       <p class="eyebrow">The Common Confessor</p>
       <strong id="calendar-label"></strong>
-      <span class="small">Playtest 0.17</span>
+      <span class="small">Playtest 0.19</span>
     </div>
     <div class="top-actions">
       <span id="ai-status" data-state="checking">Gemma: checking...</span>
+      <select id="ai-provider" aria-label="AI provider">
+        <option value="gemma">Local Gemma</option>
+        <option value="copilot">GitHub Copilot</option>
+      </select>
+      <select id="ai-model" aria-label="Copilot model" hidden></select>
       <button id="save-game">Save</button>
       <button id="export-game">Export</button>
+      <button id="export-debug-log">Export Debug Log</button>
       <button id="import-game">Import</button>
       <button id="open-request-visits">Request Visits</button>
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
       <button id="open-reports">Reports</button>
+      <button id="pause-game">Pause</button>
+      <button id="undo-turn">Undo Turn</button>
     </div>
   </header>
 
@@ -79,6 +87,7 @@
     <div class="turn-row">
       <span id="turn-counter">0 / 10 things said</span>
       <span id="hour-state">The hour has begun.</span>
+      <span id="response-source">Source: opening</span>
     </div>
     <form id="counsel-form">
       <textarea id="counsel-input" maxlength="600" rows="2" placeholder="Type what you say, or leave blank to remain silent..."></textarea>
@@ -143,6 +152,13 @@
   <dialog id="period-report-dialog" class="parchment modal wide">
     <header><div><p class="eyebrow">The parish reckons its changes</p><h2>Day and Week Reports</h2></div><button data-close="period-report-dialog">Close</button></header>
     <div id="period-report-list" class="period-report-list"></div>
+  </dialog>
+
+  <dialog id="meta-pause-dialog" class="parchment modal">
+    <p class="eyebrow">Simulation paused</p>
+    <h2>No time is passing</h2>
+    <p>The current scene, visitor, schedules, and unresolved decisions are frozen exactly where they are.</p>
+    <button id="resume-game" class="primary">Return to the scene</button>
   </dialog>
 
   <dialog id="ending-dialog" class="parchment modal">

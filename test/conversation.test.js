@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyVisitOpening,
   beginVisit,
   createGame,
   fallbackConversation,
@@ -58,10 +59,7 @@ test("disclosure thresholds reveal hidden concerns organically", () => {
 test("agreeing to privacy moves the active conversation into the parish office", () => {
   const state = createGame("private-location-change");
   const visit = beginVisit(state);
-  visit.location = "nave";
-  visit.issue.location = "nave";
-  visit.history[0].text = "I would prefer to discuss this in private, if that is possible.";
-  visit.lastVisitorReplies = [visit.history[0].text];
+  applyVisitOpening(state, "I would prefer to discuss this in private, if that is possible.", "simulation");
   recordExchange(state, "Ok, let us go talk in private.", {
     reply: "Thank you, Father. I can speak more freely there.",
     memory: "The priest agreed to move somewhere private."
@@ -276,6 +274,7 @@ test("benign name mentions do not breach unrelated confidential facts", () => {
     const firstVisit = beginVisit(state);
     firstVisit.intent.hiddenConcern = "is hiding a worsening illness";
     firstVisit.intent.disclosureThreshold = 0;
+    firstVisit.hiddenConcernDisclosed = false;
     const subject = state.residents.find((person) => person.id === firstVisit.personId);
     recordExchange(state, "I hear you.", {
       reply: "Thank you.",
@@ -614,7 +613,7 @@ test("schema-v3 saves migrate strings into structured conversation state", () =>
   delete legacy.integrityHash;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 17);
+  assert.equal(migrated.schemaVersion, 19);
   assert.equal(typeof migrated.residents[0].memories[0], "object");
   assert.equal(migrated.residents[0].memories[0].privateMemory, true);
   assert.equal(typeof migrated.priest.promises[0], "object");

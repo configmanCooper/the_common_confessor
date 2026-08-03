@@ -1,6 +1,6 @@
 {
   "name": "the-common-confessor",
-  "version": "0.17.0-playtest",
+  "version": "0.19.0-playtest",
   "private": true,
   "type": "module",
   "description": "A painterly 16th-century parish conversation and village consequence simulation.",
@@ -12,6 +12,10 @@
     "balance:year": "node scripts/one-year-balance.mjs",
     "balance:social-12w": "node scripts/twelve-week-social-balance.mjs",
     "balance:reaction-year": "node scripts/one-year-reaction-balance.mjs",
-    "test:dialogue-matrix": "node scripts/dialogue-style-matrix.mjs"
+    "test:dialogue-matrix": "node scripts/dialogue-style-matrix.mjs",
+    "test:framework-soak": "node scripts/thirty-day-framework-soak.mjs"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.8"
   }
 }

@@ -20,6 +20,12 @@ export function selectConversationObligation({
   turnAnalysis = null
 }) {
   const questionTurnId = `priest-${visit.history.length}`;
+  const openObligations = (visit.continuity?.obligationStack || [])
+    .filter((obligation) => obligation.status === "open");
+  const proposalAddresses = (turnAnalysis?.proposals || []).length > 0;
+  const addressedObligationIds = proposalAddresses
+    ? openObligations.filter((obligation) => obligation.kind === "player_decision").map((obligation) => obligation.id)
+    : [];
   const base = {
     obligationId: `obligation-${visit.visitId}-${String(visit.turnsUsed + 1).padStart(2, "0")}`,
     latestPlayerText: String(playerText).trim().slice(0, 600),
@@ -38,6 +44,10 @@ export function selectConversationObligation({
     activeObjectiveIds: scenarioFactIds.filter((id) => !(visit.continuity?.mentionedFactIds || []).includes(id)),
     prohibitedFallbackFactIds: (visit.continuity?.mentionedFactIds || [])
       .filter((id) => !requiredFacts.some((fact) => fact.id === id)),
+    addressedObligationIds,
+    preservedObligationIds: openObligations
+      .filter((obligation) => !addressedObligationIds.includes(obligation.id))
+      .map((obligation) => obligation.id),
     directAnswer: directAnswer || "",
     modelNeeded: true,
     kind: "open_response",
@@ -69,20 +79,20 @@ export function selectConversationObligation({
     return {
       ...base,
       kind: socialRequirement.type,
-      modelNeeded: false,
-      routerConfidence: 0.98,
-      responseSource: "framework_static",
-      reason: "A deterministic social or factual handler can answer the newest speech act."
+      modelNeeded: true,
+      routerConfidence: 0.9,
+      responseSource: "gemma_dialogue",
+      reason: "Authoritative knowledge and response duties are available for Gemma to render naturally."
     };
   }
   if (requiredFacts.length) {
     return {
       ...base,
       kind: "factual_answer",
-      modelNeeded: false,
-      routerConfidence: 0.96,
-      responseSource: "router_fact",
-      reason: "Authoritative scenario facts directly answer the newest question."
+      modelNeeded: true,
+      routerConfidence: 0.9,
+      responseSource: "gemma_dialogue",
+      reason: "Authoritative facts answer the question, but Gemma should express them in character."
     };
   }
   if (socialRequirement) {
@@ -115,6 +125,11 @@ export function boundedPromptTrace(trace) {
       status: String(decision.status || "unknown").slice(0, 20),
       reason: String(decision.reason || "").slice(0, 120)
     })) : [],
+    semanticInterpretation: trace.semanticInterpretation || null,
+    responsePlan: trace.responsePlan || null,
+    claims: Array.isArray(trace.claims) ? trace.claims.slice(0, 12) : [],
+    semanticValidation: trace.semanticValidation || null,
+    repairedClaimIds: Array.isArray(trace.repairedClaimIds) ? trace.repairedClaimIds.slice(0, 12) : [],
     mandatoryAnswerPassed: Boolean(trace.mandatoryAnswerPassed),
     retryUsed: Boolean(trace.retryUsed),
     route: String(trace.route || "").slice(0, 80),

@@ -2,6 +2,11 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  copilotComplete,
+  copilotHealth,
+  stopCopilotProvider
+} from "./copilot-provider.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const contentTypes = {
@@ -26,7 +31,7 @@ function resolvePath(url, rootDirectory) {
 }
 
 export function createStaticServer(rootDirectory = root) {
-  return createServer((request, response) => {
+  return createServer(async (request, response) => {
     let requestUrl;
     try {
       requestUrl = new URL(request.url, "http://localhost");
@@ -34,7 +39,8 @@ export function createStaticServer(rootDirectory = root) {
       response.writeHead(400).end("Bad request");
       return;
     }
-    if (requestUrl.pathname === "/local-ai" || requestUrl.pathname.startsWith("/local-ai/")) {
+    if (requestUrl.pathname === "/local-ai" || requestUrl.pathname.startsWith("/local-ai/")
+      || requestUrl.pathname === "/copilot-ai" || requestUrl.pathname.startsWith("/copilot-ai/")) {
       const host = String(request.headers.host || "");
       const hostMatch = /^(127\.0\.0\.1|localhost):(\d+)$/.exec(host);
       const allowedOrigins = hostMatch
@@ -45,7 +51,42 @@ export function createStaticServer(rootDirectory = root) {
         response.end(JSON.stringify({ error: "Cross-origin local AI requests are forbidden" }));
         return;
       }
-      const targetPath = requestUrl.pathname.replace(/^\/local-ai/, "") || "/";
+      const isCopilot = requestUrl.pathname === "/copilot-ai" || requestUrl.pathname.startsWith("/copilot-ai/");
+      const targetPath = requestUrl.pathname.replace(isCopilot ? /^\/copilot-ai/ : /^\/local-ai/, "") || "/";
+      if (isCopilot) {
+        try {
+          if (request.method === "GET" && targetPath === "/health") {
+            const result = await copilotHealth();
+            response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            response.end(JSON.stringify(result));
+            return;
+          }
+          if (request.method !== "POST" || targetPath !== "/v1/chat/completions") {
+            response.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+            response.end(JSON.stringify({ error: "Unknown Copilot provider endpoint" }));
+            return;
+          }
+          const chunks = [];
+          let totalBytes = 0;
+          for await (const chunk of request) {
+            totalBytes += chunk.length;
+            if (totalBytes > 512 * 1024) {
+              response.writeHead(413, { "Content-Type": "application/json; charset=utf-8" });
+              response.end(JSON.stringify({ error: "Copilot request body is too large" }));
+              return;
+            }
+            chunks.push(chunk);
+          }
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const result = await copilotComplete(payload);
+          response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify(result));
+        } catch (error) {
+          response.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ error: error.message }));
+        }
+        return;
+      }
       const proxy = httpRequest({
         hostname: "127.0.0.1",
         port: 8095,
@@ -107,3 +148,6 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     console.log(`The Common Confessor is running at http://127.0.0.1:${port}`);
   });
 }
+
+process.once("SIGINT", () => stopCopilotProvider().finally(() => process.exit(0)));
+process.once("SIGTERM", () => stopCopilotProvider().finally(() => process.exit(0)));

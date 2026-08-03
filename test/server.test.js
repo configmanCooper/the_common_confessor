@@ -18,6 +18,19 @@ test("server serves the game and rejects foreign-origin AI requests", async () =
       headers: { Origin: "https://malicious.example" }
     });
     assert.equal(forbidden.status, 403);
+    const forbiddenCopilot = await fetch(`http://127.0.0.1:${port}/copilot-ai/health`, {
+      headers: { Origin: "https://malicious.example" }
+    });
+    assert.equal(forbiddenCopilot.status, 403);
+    const oversizedCopilot = await fetch(`http://127.0.0.1:${port}/copilot-ai/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Origin: `http://127.0.0.1:${port}`,
+        "Content-Type": "application/json"
+      },
+      body: "x".repeat(512 * 1024 + 1)
+    });
+    assert.equal(oversizedCopilot.status, 413);
     const rebound = await fetch(`http://127.0.0.1:${port}/local-ai/health`, {
       headers: { Host: "attacker.example", Origin: "http://attacker.example" }
     });

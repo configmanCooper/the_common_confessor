@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ParishAiClient } from "../js/ai.js";
+import { semanticClient } from "./semantic-test-client.js";
 import { buildGeneratedScenarioArchetypes } from "../js/scenario_catalog.js";
 import {
   beginVisit,
@@ -150,13 +151,16 @@ test("generated scenarios expose a compact investigative fact web", async () => 
   assert.match(feasibility.reply, /\b(?:reeve|steward|magistrate|watch|priest)\b/i);
   assert.match(feasibility.reply, new RegExp(person.occupation, "i"));
 
-  const skeptical = await Promise.all([
-    client.conversation(state, person, "Why should I believe this account? What proves it?"),
-    client.conversation(state, person, "What might you be mistaken about, and what do you still not know?"),
-    client.conversation(state, person, "What would the accused person say in their own defense?"),
-    client.conversation(state, person, "What observation, witness, or record could test the claim fairly?"),
-    client.conversation(state, person, "Until that test is made, what temporary action prevents harm without pretending certainty?")
-  ]);
+  const skeptical = [];
+  for (const question of [
+    "Why should I believe this account? What proves it?",
+    "What might you be mistaken about, and what do you still not know?",
+    "What would the accused person say in their own defense?",
+    "What observation, witness, or record could test the claim fairly?",
+    "Until that test is made, what temporary action prevents harm without pretending certainty?"
+  ]) {
+    skeptical.push(await semanticClient().conversation(state, person, question));
+  }
   assert.match(skeptical[0].reply, /\b(?:evidence|witness|record|symptoms|injuries|account)\b/i);
   assert.match(skeptical[1].reply, /\bunknown\b|do not know/i);
   assert.match(skeptical[2].reply, /\b(?:deny|dispute|claim|defense|no specific accused)\b/i);
@@ -232,11 +236,7 @@ test("investigator questions fill investigator and interviewer slots instead of 
   assert.ok(renth);
   visit.issue.relatedPersonId = renth.id;
   visit.issue.relatedName = renth.name;
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      throw new Error("A direct investigator question should not call Gemma.");
-    }
-  });
+  const client = semanticClient();
   const response = await client.conversation(
     state,
     person,
@@ -251,18 +251,14 @@ test("investigator questions fill investigator and interviewer slots instead of 
     response.conversationObligation.requiredAnswerSlots,
     ["investigator", "person_who_questions_related_person"]
   );
-  assert.equal(response.promptTrace.responseSource, "framework_static");
+  assert.equal(response.promptTrace.responseSource, "gemma_dialogue");
 });
 
 test("compound investigator questions also preserve the temporary safe-water obligation", async () => {
   const { state, visit, person } = wellState("compound-investigator-obligation");
   const renth = state.residents.find((resident) => resident.id !== person.id && resident.occupation === "tanner");
   visit.issue.relatedPersonId = renth.id;
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      throw new Error("A direct compound fact question should not call Gemma.");
-    }
-  });
+  const client = semanticClient();
   const response = await client.conversation(
     state,
     person,
@@ -277,11 +273,7 @@ test("multi-step contact instructions are acknowledged and schedule the promised
   const { state, visit, person } = wellState("instruction-obligation");
   const renth = state.residents.find((resident) => resident.id !== person.id && resident.occupation === "tanner");
   visit.issue.relatedPersonId = renth.id;
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      throw new Error("A direct instruction acknowledgment should not call Gemma.");
-    }
-  });
+  const client = semanticClient();
   const response = await client.conversation(
     state,
     person,

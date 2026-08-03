@@ -87,7 +87,7 @@ function seedHouseholdFamilies(state) {
       getRelationship(state, firstSpouse.id, secondSpouse.id, true);
       getRelationship(state, secondSpouse.id, firstSpouse.id, true);
     }
-    const parents = [firstSpouse, secondSpouse].filter(Boolean);
+    const parents = [firstSpouse || adults[0], secondSpouse].filter(Boolean);
     for (const member of members) {
       if (parents.includes(member)) continue;
       const eligibleParents = parents.filter((parent) => parent.age - member.age >= 16);
@@ -465,7 +465,9 @@ function processHouseholds(state, day, events) {
     const members = household.memberIds
       .map((id) => state.residents.find((person) => person.id === id))
       .filter((person) => person?.alive && person.active);
-    const workers = members.filter((person) => person.age >= 14 && person.occupation !== "unemployed" && person.occupation !== "infant");
+    const workers = members.filter((person) => (
+      person.age >= 14 && !["unemployed", "infant", "retired"].includes(person.occupation)
+    ));
     const harvestFactor = {
       Spring: 0.9,
       Summer: 1.25,
@@ -474,20 +476,26 @@ function processHouseholds(state, day, events) {
     }[state.material.season];
     const weatherFactor = ["storm", "frost", "snow"].includes(state.material.weather) ? 0.75 : state.material.weather === "sun" ? 1.12 : 1;
     const production = workers.reduce((total, worker) => {
-      const base = Math.max(0.25, worker.prosperity / 50);
+      const base = Math.max(0.35, worker.prosperity / 42);
       return total + base * (["farmer", "shepherd", "miller"].includes(worker.occupation) ? harvestFactor * weatherFactor : 1);
+    }, 0);
+    const householdSupport = members.reduce((total, member) => {
+      if (member.age >= 10 && member.age < 14 && member.occupation === "child laborer") return total + 0.22;
+      if (member.occupation === "retired" && member.health >= 35) return total + 0.18;
+      return total;
     }, 0);
     const consumption = members.reduce((total, member) => (
       total + (member.age < 10 ? 0.5 : 0.85) * (state.material.season === "Winter" ? 1.1 : 1)
     ), 0);
-    const shortage = Math.max(0, consumption - production);
-    const surplus = Math.max(0, production - consumption);
+    const totalProduction = production + householdSupport;
+    const shortage = Math.max(0, consumption - totalProduction);
+    const surplus = Math.max(0, totalProduction - consumption);
     const marketCost = shortage * (state.material.grainPrice / 50) * 0.15;
     const marketIncome = surplus * (state.material.grainPrice / 50) * 0.16;
-    household.dailyProduction = production;
-    household.food = clamp(household.food + production - consumption, 0, 100);
+    household.dailyProduction = totalProduction;
+    household.food = clamp(household.food + totalProduction - consumption, 0, 100);
     household.wealth = clamp(
-      household.wealth + production * 0.24 + marketIncome - consumption * 0.15 - marketCost - household.debt * 0.002,
+      household.wealth + totalProduction * 0.24 + marketIncome - consumption * 0.15 - marketCost - household.debt * 0.002,
       0,
       100
     );
@@ -559,7 +567,9 @@ function processHealthAndAging(state, day, events) {
       if (person.age >= 14 && person.occupation === "infant") person.occupation = "child laborer";
       if (person.age >= ADULT_AGE && ["infant", "child laborer"].includes(person.occupation)) {
         const workRng = new PopulationRng(`${state.seed}:mature-work:${person.id}`);
-        person.occupation = workRng.pick(OCCUPATIONS.filter((occupation) => !["unemployed", "infant"].includes(occupation)));
+        person.occupation = workRng.pick(OCCUPATIONS.filter((occupation) => (
+          !["unemployed", "infant", "retired"].includes(occupation)
+        )));
         connectToCommunity(state, person, 7);
       }
       events.push({
@@ -663,7 +673,7 @@ function processFamilyAndWork(state, day, events) {
       });
     }
     if (person.occupation === "unemployed" && person.age >= ADULT_AGE && rng.next() < 0.006) {
-      person.occupation = rng.pick(OCCUPATIONS.filter((occupation) => occupation !== "unemployed"));
+      person.occupation = rng.pick(OCCUPATIONS.filter((occupation) => !["unemployed", "retired"].includes(occupation)));
       events.push({
         type: "occupation_changed",
         actorId: person.id,

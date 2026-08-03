@@ -17,7 +17,10 @@ import {
   materializeResident,
   populationCount,
   requestVisits,
+  replayGame,
   recordExchange,
+  rewindLastConversationTurn,
+  setGameMode,
   sundayAttendance,
   sundayAttendanceReport
 } from "./simulation.js";
@@ -31,9 +34,11 @@ const LEGACY_AUTOSAVE_KEYS = [
   "the-common-confessor-autosave-1",
   "the-common-confessor-autosave-2"
 ];
+const DEBUG_LOG_KEY = "the-common-confessor-debug-v1";
 const elements = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const renderer = new ChurchRenderer(elements["church-canvas"]);
-const ai = new ParishAiClient();
+let ai = new ParishAiClient();
+let copilotModels = [];
 let state = null;
 let aiReady = false;
 let conversationInFlight = false;
@@ -45,16 +50,56 @@ let startActionInFlight = false;
 let toastTimer = null;
 let continueAfterPeriodReport = false;
 const requestedVisitSelection = new Set();
+let runtimeDebugLog = (() => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || "[]");
+    return Array.isArray(stored) ? stored.slice(-100) : [];
+  } catch {
+    return [];
+  }
+})();
 
 function setHidden(element, hidden) {
   element.hidden = hidden;
 }
 
-function showToast(message) {
+function persistDebugLog() {
+  try {
+    localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(runtimeDebugLog.slice(-100)));
+  } catch (error) {
+    console.warn("Debug log persistence failed:", error);
+  }
+}
+
+function logRuntimeError(phase, error, extra = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    phase,
+    message: String(error?.message || error || "Unknown error").slice(0, 1200),
+    stack: String(error?.stack || "").slice(0, 5000),
+    calendar: state?.calendar ? { ...state.calendar } : null,
+    mode: state?.mode ? { ...state.mode } : null,
+    visitId: state?.currentVisit?.visitId || null,
+    personId: state?.currentVisit?.personId || null,
+    latestHistory: state?.currentVisit?.history?.slice(-8) || [],
+    currentObligation: state?.currentVisit?.continuity?.currentObligation || null,
+    promptTraces: state?.currentVisit?.promptTraces?.slice(-3) || [],
+    ...extra
+  };
+  runtimeDebugLog.push(entry);
+  runtimeDebugLog = runtimeDebugLog.slice(-100);
+  persistDebugLog();
+  console.warn(`[${phase}]`, error, extra);
+  return entry;
+}
+
+function showToast(message, duration = null) {
+  const isError = /\b(?:failed|failure|error|unavailable|did not answer|could not|cannot read|timed out|invalid)\b/i.test(message);
   elements.toast.textContent = message;
+  elements.toast.classList.toggle("error", isError);
   elements.toast.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => elements.toast.classList.remove("show"), 2600);
+  toastTimer = setTimeout(() => elements.toast.classList.remove("show"), duration ?? (isError ? 15000 : 3500));
 }
 
 function setBusy(busy, title = "The village turns...", message = "Gemma is considering what follows.") {
@@ -127,6 +172,7 @@ function setGameplayMutationDisabled(disabled) {
   elements["sermon-theme"].disabled = disabled;
   elements["sermon-text"].disabled = disabled;
   elements["open-request-visits"].disabled = disabled;
+  elements["undo-turn"].disabled = disabled;
 }
 
 function restoreGameplayControls() {
@@ -137,11 +183,13 @@ function restoreGameplayControls() {
     elements["speak-button"].disabled = blocked || hourSpent || endedEarly;
     elements["counsel-input"].disabled = blocked || hourSpent || endedEarly;
     elements["next-hour"].disabled = blocked;
+    elements["undo-turn"].disabled = blocked || state.currentVisit.turnsUsed < 1;
   } else if (state?.calendar.dayIndex === 6) {
     const blocked = startActionInFlight || sermonInFlight;
     elements["deliver-sermon"].disabled = blocked;
     elements["sermon-theme"].disabled = blocked;
     elements["sermon-text"].disabled = blocked;
+    elements["undo-turn"].disabled = true;
   }
 }
 
@@ -162,6 +210,7 @@ function saveGame(silent = false, automatic = false) {
     if (!primarySaved && !automatic) throw new Error("Browser primary storage is unavailable");
     if (!silent) showToast("Parish saved.");
   } catch (error) {
+    logRuntimeError("save", error);
     showToast(`Save failed: ${error.message}`);
   }
 }
@@ -226,11 +275,56 @@ async function refreshAiStatus() {
     await ai.health();
     aiReady = true;
     elements["ai-status"].dataset.state = "ready";
-    elements["ai-status"].textContent = "Gemma: ready";
+    elements["ai-status"].textContent = state?.settings.aiProvider === "copilot"
+      ? "Copilot: ready"
+      : "Gemma: ready";
   } catch {
     aiReady = false;
     elements["ai-status"].dataset.state = "unavailable";
-    elements["ai-status"].textContent = "Gemma: parish rules";
+    elements["ai-status"].textContent = state?.settings.aiProvider === "copilot"
+      ? "Copilot: unavailable"
+      : "Gemma: parish rules";
+  }
+}
+
+function configureAiProvider() {
+  const provider = state?.settings?.aiProvider || "gemma";
+  const model = provider === "copilot" ? state?.settings?.copilotModel || "auto" : "local-gemma";
+  ai = new ParishAiClient({
+    endpoint: provider === "copilot" ? "/copilot-ai" : "/local-ai",
+    model,
+    splitSemantic: provider === "gemma",
+    timeoutMs: provider === "copilot" ? 120000 : 60000
+  });
+  elements["ai-provider"].value = provider;
+  setHidden(elements["ai-model"], provider !== "copilot");
+  if (provider === "copilot") elements["ai-model"].value = model;
+}
+
+async function probeCopilotProvider() {
+  const option = [...elements["ai-provider"].options].find((entry) => entry.value === "copilot");
+  try {
+    const response = await fetch("/copilot-ai/health", { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    copilotModels = Array.isArray(payload.models) ? payload.models : [];
+    elements["ai-model"].replaceChildren(...copilotModels.map((model) => {
+      const optionElement = document.createElement("option");
+      optionElement.value = model.id;
+      optionElement.textContent = model.name || model.id;
+      return optionElement;
+    }));
+    if (!copilotModels.some((model) => model.id === "auto")) {
+      const automatic = document.createElement("option");
+      automatic.value = "auto";
+      automatic.textContent = "Automatic";
+      elements["ai-model"].prepend(automatic);
+    }
+    option.disabled = false;
+    option.title = "Uses the signed-in GitHub Copilot account and its usage allowance.";
+  } catch (error) {
+    option.disabled = true;
+    option.title = `Copilot SDK unavailable: ${error.message}`;
   }
 }
 
@@ -311,6 +405,7 @@ function renderVisit() {
     : visit.mood;
   elements["visitor-backstory"].textContent = visit.hiddenConcernDisclosed ? person.backstory : person.publicBackstory;
   elements["turn-counter"].textContent = `${visit.turnsUsed} / ${visit.maxTurns} things said`;
+  elements["response-source"].textContent = `Source: ${visit.promptTraces.at(-1)?.responseSource || "opening"}`;
   elements["hour-state"].textContent = visit.turnsUsed >= visit.maxTurns ? "The hour is spent." : "The hour continues.";
   if (visit.reactionState?.endedEarly) {
     elements["hour-state"].textContent = `${person.firstName} has ended the meeting.`;
@@ -344,6 +439,7 @@ async function showVisit() {
       saveGame(true, true);
     } catch (error) {
       if (generation === stateGeneration && state === requestState && state.currentVisit?.visitId === visitToken) {
+        logRuntimeError("opening_ai", error);
         showToast(`Gemma could not shape the opening; the visitor spoke from parish rules. ${error.message}`);
       }
     } finally {
@@ -412,6 +508,7 @@ async function endHour() {
     plan = error.rejectedProposal
       ? { ...error.rejectedProposal, source: "ai" }
       : { ...fallbackDeparturePlan(requestState), source: "fallback" };
+    logRuntimeError("departure_ai", error);
     showToast(`Gemma unavailable; parish rules resolved the consequence. ${error.message}`);
   }
   if (generation !== stateGeneration || state.currentVisit?.visitId !== visitToken) {
@@ -446,6 +543,26 @@ async function submitCounsel(event) {
   if (startActionInFlight || conversationInFlight || departureInFlight) return;
   const enteredText = elements["counsel-input"].value.trim();
   if (!state.currentVisit || state.currentVisit.turnsUsed >= 10) return;
+  if (/^(?:pause|pause the game|pause game|meta pause)$/i.test(enteredText)) {
+    setGameMode(state, "META_PAUSED");
+    saveGame(true, true);
+    setGameplayMutationDisabled(true);
+    elements["meta-pause-dialog"].showModal();
+    elements["counsel-input"].value = "";
+    return;
+  }
+  if (/^(?:undo|undo last turn|rewind|rewind last turn|i did not mean to hit enter|i didn't mean to hit enter)$/i.test(enteredText)) {
+    try {
+      state = rewindLastConversationTurn(state, enteredText);
+      saveGame(true, true);
+      startGame(state, false);
+      showToast("The last conversation turn was rewound.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    elements["counsel-input"].value = "";
+    return;
+  }
   const text = enteredText || "[silence]";
   const person = materializeResident(state, state.currentVisit.personId, true);
   const requestState = state;
@@ -467,6 +584,7 @@ async function submitCounsel(event) {
   } catch (error) {
     if (generation !== stateGeneration || state !== requestState) return;
     response = { ...fallbackConversation(requestState, text), source: "fallback" };
+    logRuntimeError("conversation_ai", error, { playerText: text });
     showToast(`Gemma did not answer; the visitor continued locally. ${error.message}`);
   }
   if (generation !== stateGeneration || state !== requestState) return;
@@ -475,7 +593,15 @@ async function submitCounsel(event) {
   if (generation !== stateGeneration || currentToken !== visitToken) return;
   const previousHistoryLength = state.currentVisit.history.length;
   const previousLocation = state.currentVisit.location;
-  recordExchange(requestState, text, response);
+  const preTurnCommands = JSON.parse(JSON.stringify(requestState.commandLog));
+  try {
+    recordExchange(requestState, text, response);
+  } catch (error) {
+    state = replayGame(requestState.seed, preTurnCommands, requestState.replayBase);
+    startGame(state, false);
+    showToast(`The turn was not committed: ${error.message}`);
+    return;
+  }
   renderCommon();
   if (state.currentVisit.location !== previousLocation) {
     renderer.moveVisit(state.currentVisit.location);
@@ -538,6 +664,7 @@ async function deliverSermon() {
       return;
     }
     outcome = { ...fallbackSermonOutcome(requestState, theme, text), source: "fallback" };
+    logRuntimeError("sermon_ai", error);
     showToast(`Gemma unavailable; parish rules interpreted the sermon. ${error.message}`);
   }
   if (generation !== stateGeneration || state !== requestState) return;
@@ -768,6 +895,8 @@ function startGame(nextState, isNew) {
   elements["sermon-theme"].disabled = false;
   elements["sermon-text"].disabled = false;
   state = nextState;
+  configureAiProvider();
+  setGameplayMutationDisabled(false);
   setHidden(elements["start-screen"], true);
   document.querySelectorAll(".game-ui").forEach((element) => setHidden(element, false));
   setHidden(elements["sermon-panel"], true);
@@ -780,6 +909,10 @@ function startGame(nextState, isNew) {
     elements["prologue-dialog"].showModal();
   } else {
     proceedToCurrentPeriod();
+    if (state.mode.type === "META_PAUSED") {
+      setGameplayMutationDisabled(true);
+      elements["meta-pause-dialog"].showModal();
+    }
   }
 }
 
@@ -818,7 +951,43 @@ elements["export-game"].addEventListener("click", () => {
     link.click();
     URL.revokeObjectURL(link.href);
   } catch (error) {
+    logRuntimeError("game_export", error);
     showToast(`Export failed: ${error.message}`);
+  }
+});
+elements["export-debug-log"].addEventListener("click", () => {
+  try {
+    let stateSnapshot = null;
+    let stateError = null;
+    try {
+      stateSnapshot = JSON.parse(serializeState(state));
+    } catch (error) {
+      stateError = { message: error.message, stack: error.stack };
+    }
+    const payload = {
+      format: "the-common-confessor-debug-log",
+      exportedAt: new Date().toISOString(),
+      gameVersion: "0.19.0-playtest",
+      page: location.href,
+      userAgent: navigator.userAgent,
+      ai: {
+        ready: aiReady,
+        statusText: elements["ai-status"].textContent
+      },
+      errors: runtimeDebugLog,
+      stateError,
+      state: stateSnapshot
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${state?.town?.name?.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "parish"}-debug.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showToast("Debug log exported.");
+  } catch (error) {
+    logRuntimeError("debug_export", error);
+    showToast(`Debug export failed: ${error.message}`);
   }
 });
 elements["import-game"].addEventListener("click", () => {
@@ -843,6 +1012,7 @@ elements["import-file"].addEventListener("change", async (event) => {
       showToast("Imported parish loaded.");
     }
   } catch (error) {
+    logRuntimeError("game_import", error);
     showToast(`Import failed: ${error.message}`);
   } finally {
     startActionInFlight = false;
@@ -891,6 +1061,45 @@ elements["open-chronicle"].addEventListener("click", () => {
 elements["open-reports"].addEventListener("click", () => {
   showPeriodReports([...state.periodReports].reverse(), false);
 });
+elements["ai-provider"].addEventListener("change", async () => {
+  if (!state) return;
+  state.settings.aiProvider = elements["ai-provider"].value;
+  configureAiProvider();
+  await refreshAiStatus();
+  saveGame(true, true);
+  showToast(state.settings.aiProvider === "copilot"
+    ? "GitHub Copilot selected. Prompts count toward the signed-in account's usage allowance."
+    : "Local Gemma selected.");
+});
+elements["ai-model"].addEventListener("change", async () => {
+  if (!state) return;
+  state.settings.copilotModel = elements["ai-model"].value;
+  configureAiProvider();
+  await refreshAiStatus();
+  saveGame(true, true);
+});
+elements["pause-game"].addEventListener("click", () => {
+  setGameMode(state, "META_PAUSED");
+  saveGame(true, true);
+  setGameplayMutationDisabled(true);
+  elements["meta-pause-dialog"].showModal();
+});
+elements["resume-game"].addEventListener("click", () => {
+  setGameMode(state, "IN_WORLD");
+  saveGame(true, true);
+  elements["meta-pause-dialog"].close();
+  restoreGameplayControls();
+});
+elements["undo-turn"].addEventListener("click", () => {
+  try {
+    state = rewindLastConversationTurn(state);
+    saveGame(true, true);
+    startGame(state, false);
+    showToast("The last conversation turn was rewound.");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
 elements["period-report-dialog"].addEventListener("close", () => {
   if (!continueAfterPeriodReport) return;
   continueAfterPeriodReport = false;
@@ -899,6 +1108,21 @@ elements["period-report-dialog"].addEventListener("close", () => {
 elements["register-search"].addEventListener("input", (event) => renderRegister(event.target.value));
 document.querySelectorAll("[data-close]").forEach((button) => {
   button.addEventListener("click", () => elements[button.dataset.close].close());
+});
+elements.toast.addEventListener("click", () => {
+  elements.toast.classList.remove("show");
+  clearTimeout(toastTimer);
+});
+
+window.addEventListener("error", (event) => {
+  logRuntimeError("window_error", event.error || new Error(event.message), {
+    filename: event.filename,
+    line: event.lineno,
+    column: event.colno
+  });
+});
+window.addEventListener("unhandledrejection", (event) => {
+  logRuntimeError("unhandled_rejection", event.reason);
 });
 
 SERMON_THEMES.forEach((theme) => {
@@ -923,6 +1147,7 @@ async function initialize() {
       elements["start-screen"].querySelector(".small").textContent = `Art failed to load: ${error.message}`;
     });
     refreshAiStatus();
+    probeCopilotProvider();
   }
 }
 

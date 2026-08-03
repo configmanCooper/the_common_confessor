@@ -23,12 +23,12 @@ test("generated openings speak in the visitor's voice instead of narrating the v
     deadlineDays: 4
   });
   for (const scenario of scenarios) {
-    assert.match(scenario.opening, /^Father,/);
+    assert.match(scenario.opening, /^(?:Father|Forgive|I\b|There\b|May\b|Something\b)/);
     assert.doesNotMatch(scenario.opening, /\bRadel Roseham\b/);
   }
   const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
   assert.match(grain.opening, /I diverted 8 sacks of grain/i);
-  assert.match(grain.opening, /My household depends upon the outcome/i);
+  assert.match(grain.opening, /my own household will feel the loss/i);
 });
 
 test("scenario variants add a related practical stake rather than an unrelated debt", () => {
@@ -44,8 +44,9 @@ test("scenario variants add a related practical stake rather than an unrelated d
     deadlineDays: 10
   });
   const grain = scenarios.find((scenario) => scenario.id === "embezzled_grain_2");
-  assert.match(grain.facts[2], /Radel Roseham's household has a direct practical stake/i);
-  assert.doesNotMatch(grain.facts[2], /owes 14 silver pennies/i);
+  assert.match(grain.blueprint.pressure, /Radel Roseham's household bears material risk/i);
+  assert.doesNotMatch(grain.blueprint.pressure, /owes 14 silver pennies/i);
+  assert.match(grain.blueprint.mechanism, /inventory now points suspicion/i);
 });
 
 test("AI-written openings persist through canonical replay", () => {
@@ -109,5 +110,67 @@ test("scenario facts always provide concrete consequences and an alternative", (
     assert.ok(visit.scenarioFacts.some((fact) => fact.id === "stakes"));
     assert.ok(visit.scenarioFacts.some((fact) => fact.id === "alternative"));
     assert.ok(visit.scenarioFacts.every((fact) => fact.text.length > 25));
+  }
+});
+
+test("every generated family exposes a normalized blueprint and separate mechanical facts", () => {
+  const scenarios = buildGeneratedScenarioArchetypes({
+    town: "Alderwick",
+    person: "Radel Roseham",
+    relation: "Odowyn Oakshaw",
+    victim: "Anias Applecombe",
+    official: "Oswyn Page",
+    resource: "the common field",
+    sum: 8,
+    creditor: "Edwin Price",
+    debtSum: 14,
+    deadlineDays: 6,
+    occupation: "peddler",
+    age: 30,
+    relationOccupation: "merchant"
+  });
+  for (const scenario of scenarios) {
+    assert.ok(scenario.blueprint);
+    assert.ok(scenario.blueprint.mechanism.length > 30);
+    assert.ok(scenario.blueprint.responseDomains.length >= 2);
+    assert.ok(scenario.factRecords.some((fact) => fact.id === "mechanism" && fact.speakable));
+    assert.ok(scenario.factRecords.some((fact) => fact.category === "mechanical" && !fact.speakable));
+    assert.doesNotMatch(scenario.opening, /direct practical stake|matter reached me through|decision is expected within/i);
+  }
+});
+
+test("armed-company and sickness rumors are separate scenario families", () => {
+  const scenarios = buildGeneratedScenarioArchetypes({
+    town: "Alderwick",
+    person: "Radel Roseham",
+    relation: "Odowyn Oakshaw",
+    victim: "Anias Applecombe",
+    official: "Oswyn Page",
+    resource: "the south road",
+    sum: 8,
+    creditor: "Edwin Price",
+    debtSum: 14,
+    deadlineDays: 6,
+    occupation: "peddler",
+    age: 30,
+    relationOccupation: "merchant"
+  });
+  const armed = scenarios.find((scenario) => scenario.id === "panic_rumor_armed_1");
+  const sickness = scenarios.find((scenario) => scenario.id === "panic_rumor_sickness_1");
+  assert.ok(armed && sickness);
+  assert.match(armed.blueprint.mechanism, /banner|armed travelers/i);
+  assert.doesNotMatch(armed.opening, /plague|pestilence|sickness/i);
+  assert.match(sickness.blueprint.mechanism, /infected travelers|symptom/i);
+  assert.doesNotMatch(sickness.opening, /soldiers|armed company|invasion/i);
+});
+
+test("fallback openings avoid framework provenance and artificial deadline language", () => {
+  for (let index = 0; index < 120; index += 1) {
+    const state = createGame(`natural-fallback-opening-${index}`);
+    const visit = beginVisit(state);
+    assert.doesNotMatch(
+      visit.issue.opening,
+      /matter reached me through my household, work, travel|direct practical stake|decision is expected within|advice on the choice itself/i
+    );
   }
 });

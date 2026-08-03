@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $commonCrownRoot = Join-Path (Split-Path -Parent $projectRoot) "The Common Crown"
 $gamePort = if ($env:PORT) { [int]$env:PORT } else { 8086 }
+$aiContextSize = if ($env:LOCAL_AI_CONTEXT_SIZE) { [int]$env:LOCAL_AI_CONTEXT_SIZE } else { 8192 }
 
 while ($true) {
   try {
@@ -29,7 +30,8 @@ try {
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", $startAi,
-    "-GamePort", $gamePort
+    "-GamePort", $gamePort,
+    "-ContextSize", $aiContextSize
   ) -WorkingDirectory $commonCrownRoot
   $deadline = (Get-Date).AddMinutes(5)
   do {

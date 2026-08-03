@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ParishAiClient } from "../js/ai.js";
+import { semanticClient } from "./semantic-test-client.js";
 import {
   beginVisit,
   createGame,
@@ -116,8 +117,28 @@ test("a natural opening receives an explicit advice question when Gemma omits on
       }]
     }), { status: 200, headers: { "Content-Type": "application/json" } })
   });
+
   const response = await client.opening(state, person);
-  assert.match(response.opening, /should I return the grain and clear Anias Applecombe of blame\?/i);
+  assert.match(response.opening, /return the grain and clear Anias Applecombe of blame/i);
+  assert.match(response.opening, /\?/);
+});
+
+test("formulaic advice-question openings are rewritten in the visitor's voice", async () => {
+  const { state, person } = groundedDecisionState("humanized-opening-question");
+  const client = new ParishAiClient({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            opening: "Father, this problem troubles my household. I understand a decision is expected within the next six days. I need your advice on the choice itself, Father: should I accept the offer?"
+          })
+        }
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } })
+  });
+  const response = await client.opening(state, person);
+  assert.doesNotMatch(response.opening, /advice on the choice itself|decision is expected/i);
+  assert.match(response.opening, /\?/);
 });
 
 test("noun-phrase alternatives produce grammatical opening questions", async () => {
@@ -136,7 +157,8 @@ test("noun-phrase alternatives produce grammatical opening questions", async () 
     }), { status: 200, headers: { "Content-Type": "application/json" } })
   });
   const response = await client.opening(state, person);
-  assert.match(response.opening, /should I allow myself to grieve without pretending certainty\?/i);
+  assert.match(response.opening, /grieve without pretending certainty/i);
+  assert.match(response.opening, /\?/);
   assert.doesNotMatch(response.opening, /should I the immediate need/i);
 });
 
@@ -171,11 +193,7 @@ test("the model cannot deny a concrete act assigned to the visitor", async () =>
       text: "A fugitive has claimed sanctuary in the church after injuring a watchman.",
       anchors: ["fugitive", "sanctuary", "watchman"]
     }];
-    const client = new ParishAiClient({
-      fetchImpl: async () => {
-        throw new Error("The deterministic identity answer should not call Gemma.");
-      }
-    });
+    const client = semanticClient();
     const response = await client.conversation(state, person, "Who is the man who seeks refuge?");
     assert.match(response.reply, new RegExp(related.firstName, "i"));
     assert.match(response.reply, new RegExp(related.surname, "i"));
@@ -191,7 +209,7 @@ test("requests for help state the concrete advice the visitor wants", async () =
   visit.scenarioFacts[3].text = "Refuse Thomas's offer and ask Hemlock to form an honest partnership.";
   const client = repeatingClient();
   const response = await client.conversation(state, person, "So how can I help?");
-  assert.match(response.reply, /I need your advice|should I/i);
+  assert.match(response.reply, /advice|should i|would you|do you think|what would you have me do/i);
   assert.match(response.reply, /refuse Thomas|Hemlock|partnership/i);
   assert.doesNotMatch(response.reply, /prefer to discuss this in private/i);
 });

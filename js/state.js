@@ -1,8 +1,9 @@
-import { AI_ALLOWED_ACTIONS, SERMON_THEMES } from "./data.js";
+import { AI_ALLOWED_ACTIONS, EXTERNAL_ROLES, SERMON_THEMES, TOWN_NAMES } from "./data.js";
 import { validateConversation, validateSermonResponse } from "./ai.js";
 import { upgradeChurchResources } from "./church.js";
 import {
   createInitialReactionState,
+  ensureConversationContinuity,
   REACTIONS,
   validateReactionState
 } from "./conversation.js";
@@ -19,13 +20,67 @@ import {
   PROMPT_TRACE_MAX_CHARS
 } from "./dialogue_planner.js";
 
-export const STATE_SCHEMA_VERSION = 17;
-const COMMAND_TYPES = new Set(["begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon", "request_visits"]);
+export const STATE_SCHEMA_VERSION = 19;
+const COMMAND_TYPES = new Set([
+  "begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon",
+  "request_visits", "set_mode", "rewind_turn"
+]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
 
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function frameworkHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function frameworkRng(seed) {
+  let value = frameworkHash(seed) || 0x6d2b79f5;
+  return {
+    next() {
+      value ^= value << 13;
+      value ^= value >>> 17;
+      value ^= value << 5;
+      return (value >>> 0) / 4294967296;
+    },
+    int(minimum, maximum) {
+      return Math.floor(this.next() * (maximum - minimum + 1)) + minimum;
+    }
+  };
+}
+
+function migrateNeighboringParishes(state) {
+  if (state.neighboringParishes?.length) return;
+  const rng = frameworkRng(`${state.seed}:neighboring-parishes`);
+  const names = TOWN_NAMES.filter((name) => name !== state.town?.name);
+  const priests = ["Father Elias Ward", "Father Martin Hale", "Father Thomas Reed", "Father Julian Grey", "Father Peter Bell"];
+  const churches = ["Saint Anne's", "Saint Jude's", "Saint Martha's", "Saint Cuthbert's", "Saint Agnes's"];
+  state.neighboringParishes = [];
+  while (state.neighboringParishes.length < 3 && names.length) {
+    const index = rng.int(0, names.length - 1);
+    const name = names.splice(index, 1)[0];
+    const offset = state.neighboringParishes.length;
+    state.neighboringParishes.push({
+      id: `neighbor-${String(offset + 1).padStart(2, "0")}`,
+      name,
+      churchName: churches[offset % churches.length],
+      priestName: priests[offset % priests.length],
+      stewardName: EXTERNAL_ROLES.steward.names[offset % EXTERNAL_ROLES.steward.names.length],
+      lordName: EXTERNAL_ROLES.lord.names[offset % EXTERNAL_ROLES.lord.names.length],
+      travelDays: rng.int(1, 4),
+      pressures: { food: rng.int(52, 88), health: rng.int(35, 78), order: rng.int(30, 72) },
+      trust: rng.int(20, 45),
+      status: "uncontacted",
+      lastEventId: null
+    });
+  }
 }
 
 function upgradeDialoguePlannerState(state) {
@@ -35,6 +90,8 @@ function upgradeDialoguePlannerState(state) {
     obligation.proposals ||= [];
     obligation.requiredAnswerSlots ||= [];
     obligation.followupRequested ??= false;
+    obligation.addressedObligationIds ||= [];
+    obligation.preservedObligationIds ||= [];
     return obligation;
   };
   const upgradeTrace = (trace) => {
@@ -64,6 +121,46 @@ function upgradeDialoguePlannerState(state) {
   upgradeObligation(state.currentVisit.continuity.currentObligation);
   for (const trace of state.currentVisit.promptTraces) upgradeTrace(trace);
   for (const audit of state.currentVisit.turnAudits || []) upgradeObligation(audit.conversationObligation);
+  return state;
+}
+
+function upgradeRobustFrameworkState(state) {
+  state.settings ||= { aiEnabled: true };
+  state.settings.aiProvider ||= "gemma";
+  state.settings.copilotModel ||= "auto";
+  state.mode ||= { type: "IN_WORLD", returnVisitId: null };
+  state.supersededTurns ||= [];
+  state.commitments ||= [];
+  state.nextCommitmentSequence ||= state.commitments.length + 1;
+  state.narrativeThreads ||= [];
+  state.nextNarrativeThreadSequence ||= state.narrativeThreads.length + 1;
+  state.neighboringParishes ||= [];
+  state.pacing ||= { lastMajorDay: -999, consecutiveHighIntensity: 0 };
+  migrateNeighboringParishes(state);
+  if (!state.narrativeThreads.length && state.events?.length) {
+    const causeEventId = state.events[0].id;
+    for (const parish of state.neighboringParishes) {
+      state.narrativeThreads.push({
+        id: `narrative-${String(state.nextNarrativeThreadSequence++).padStart(6, "0")}`,
+        type: "external_relief_request",
+        title: `${parish.name} parish relief`,
+        stage: "seed",
+        participantIds: [parish.id],
+        causeEventIds: [causeEventId],
+        unresolvedQuestions: [
+          "Will need become severe enough to justify an appeal?",
+          "Will this parish have enough capacity to help without harming its own households?"
+        ],
+        pressure: Math.max(parish.pressures.food, parish.pressures.health, parish.pressures.order),
+        status: "dormant",
+        neighborParishId: parish.id,
+        lastMeaningfulEventId: causeEventId
+      });
+    }
+  }
+  if (state.currentVisit) {
+    ensureConversationContinuity(state.currentVisit);
+  }
   return state;
 }
 
@@ -107,6 +204,7 @@ function upgradeIssueThreadState(state) {
 }
 
 function upgradeReactionState(state) {
+  upgradeRobustFrameworkState(state);
   upgradeDialoguePlannerState(state);
   upgradeVisibilityState(state);
   upgradeFactProvenanceState(state);
@@ -342,7 +440,8 @@ function validateConversationObligation(obligation, label) {
   for (const field of [
     "answeredQuestionTurnIds", "requiredFactIds", "requiredAnswerSlots",
     "avoidRepeatingTexts", "mentionedFactIdsBefore", "completedObjectiveIds",
-    "activeObjectiveIds", "prohibitedFallbackFactIds", "actKinds"
+    "activeObjectiveIds", "prohibitedFallbackFactIds", "actKinds",
+    "addressedObligationIds", "preservedObligationIds"
   ]) {
     requireArray(obligation[field], `${label} ${field}`);
     if (obligation[field].some((entry) => typeof entry !== "string")) {
@@ -386,7 +485,7 @@ function validatePromptTrace(trace, label) {
   requireArray(trace.decisions, `${label} decisions`);
   for (const decision of trace.decisions) {
     if (typeof decision.proposalId !== "string"
-      || !["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
+      || !["accepted", "rejected", "modified", "deferred", "unknown"].includes(decision.status)
       || typeof decision.reason !== "string" || decision.reason.length > 120) {
       throw new Error(`${label} decision is invalid`);
     }
@@ -856,6 +955,7 @@ export function migrateState(rawState) {
     verifyIntegrity(state);
     upgradeReportingState(state, true);
     upgradeDialoguePlannerState(state);
+    upgradeRobustFrameworkState(state);
     upgradeLegacyActionEffects(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
@@ -881,6 +981,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 15) {
     verifyIntegrity(state);
     upgradeDialoguePlannerState(state);
+    upgradeRobustFrameworkState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -905,6 +1006,7 @@ export function migrateState(rawState) {
   if (detectedVersion === 16) {
     verifyIntegrity(state);
     upgradeDialoguePlannerState(state);
+    upgradeRobustFrameworkState(state);
     state.schemaVersion = STATE_SCHEMA_VERSION;
     state.version = STATE_SCHEMA_VERSION;
     const migrationSnapshot = cloneJson({
@@ -926,6 +1028,57 @@ export function migrateState(rawState) {
     };
     sealState(state);
   }
+  if (detectedVersion === 17) {
+    verifyIntegrity(state);
+    upgradeDialoguePlannerState(state);
+    upgradeRobustFrameworkState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 17,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
+  if (detectedVersion === 18) {
+    verifyIntegrity(state);
+    upgradeDialoguePlannerState(state);
+    upgradeRobustFrameworkState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 18,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
+  upgradeRobustFrameworkState(state);
   upgradeDialoguePlannerState(state);
   upgradeReportingState(state, detectedVersion < STATE_SCHEMA_VERSION);
   state.schemaVersion = STATE_SCHEMA_VERSION;
@@ -967,6 +1120,74 @@ export function validateState(state) {
   }
   if (state.calendar.dayIndex === 6 && state.calendar.slot !== 0) {
     throw new Error("Sunday cannot contain an ordinary appointment slot");
+  }
+  requireObject(state.mode, "Game mode");
+  if (!["IN_WORLD", "META_PAUSED", "PLAYER_AUTHORING", "REWIND_PENDING"].includes(state.mode.type)
+    || (state.mode.returnVisitId != null && typeof state.mode.returnVisitId !== "string")) {
+    throw new Error("Game mode is invalid");
+  }
+  requireArray(state.supersededTurns, "Superseded turns");
+  if (state.supersededTurns.length > 20) throw new Error("Too many superseded turns");
+  for (const turn of state.supersededTurns) {
+    if (typeof turn.commandId !== "string" || !Number.isInteger(turn.day) || !Number.isInteger(turn.slot)
+      || typeof turn.playerText !== "string" || typeof turn.visitorReply !== "string"
+      || typeof turn.reason !== "string") {
+      throw new Error("Superseded turn is invalid");
+    }
+  }
+  requireArray(state.commitments, "Commitments");
+  if (!Number.isInteger(state.nextCommitmentSequence) || state.nextCommitmentSequence < 1) {
+    throw new Error("Commitment sequence is invalid");
+  }
+  for (const commitment of state.commitments) {
+    requireObject(commitment, "Commitment");
+    if (typeof commitment.id !== "string" || typeof commitment.type !== "string"
+      || typeof commitment.actorId !== "string" || typeof commitment.targetId !== "string"
+      || !Number.isInteger(commitment.dueDay) || commitment.dueDay < 0
+      || !["open", "fulfilled", "cancelled", "failed"].includes(commitment.status)
+      || (commitment.sourceEventId != null && typeof commitment.sourceEventId !== "string")) {
+      throw new Error("Commitment is invalid");
+    }
+    requireObject(commitment.payload, "Commitment payload");
+  }
+  requireArray(state.narrativeThreads, "Narrative threads");
+  if (!Number.isInteger(state.nextNarrativeThreadSequence) || state.nextNarrativeThreadSequence < 1) {
+    throw new Error("Narrative thread sequence is invalid");
+  }
+  for (const thread of state.narrativeThreads) {
+    requireObject(thread, "Narrative thread");
+    requireArray(thread.participantIds, "Narrative thread participants");
+    requireArray(thread.causeEventIds, "Narrative thread causes");
+    requireArray(thread.unresolvedQuestions, "Narrative thread questions");
+    if (typeof thread.id !== "string" || typeof thread.type !== "string"
+      || !["seed", "pressure", "choice", "consequence", "echo", "resolved", "retired"].includes(thread.stage)
+      || typeof thread.title !== "string" || !Number.isFinite(thread.pressure)
+      || thread.pressure < 0 || thread.pressure > 100
+      || typeof thread.status !== "string") {
+      throw new Error("Narrative thread is invalid");
+    }
+  }
+  requireArray(state.neighboringParishes, "Neighboring parishes");
+  for (const parish of state.neighboringParishes) {
+    requireObject(parish, "Neighboring parish");
+    requireObject(parish.pressures, "Neighboring parish pressures");
+    if (typeof parish.id !== "string" || typeof parish.name !== "string"
+      || typeof parish.churchName !== "string" || typeof parish.priestName !== "string"
+      || typeof parish.stewardName !== "string" || typeof parish.lordName !== "string"
+      || !Number.isInteger(parish.travelDays) || parish.travelDays < 1 || parish.travelDays > 7
+      || typeof parish.status !== "string" || !Number.isFinite(parish.trust)
+      || parish.trust < 0 || parish.trust > 100) {
+      throw new Error("Neighboring parish is invalid");
+    }
+    for (const value of Object.values(parish.pressures)) {
+      if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error("Neighboring parish pressure is invalid");
+    }
+  }
+  requireObject(state.pacing, "Narrative pacing");
+  if (!Number.isInteger(state.pacing.lastMajorDay)
+    || !Number.isInteger(state.pacing.consecutiveHighIntensity)
+    || state.pacing.consecutiveHighIntensity < 0) {
+    throw new Error("Narrative pacing is invalid");
   }
   requireObject(state.priest, "Priest");
   if (state.priest.id !== "priest") throw new Error("Priest ID is invalid");
@@ -1203,6 +1424,10 @@ export function validateState(state) {
   requireObject(state.settings, "Settings");
   requireObject(state.statistics, "Statistics");
   if (typeof state.settings.aiEnabled !== "boolean") throw new Error("AI setting is invalid");
+  if (!["gemma", "copilot"].includes(state.settings.aiProvider)
+    || typeof state.settings.copilotModel !== "string") {
+    throw new Error("AI provider setting is invalid");
+  }
   for (const field of [
     "conversations", "confessions", "peopleRevealed", "cascades",
     "births", "arrivals", "departures"
@@ -1233,7 +1458,7 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(state.replayBase.sourceSchemaVersion)
+      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].includes(state.replayBase.sourceSchemaVersion)
         || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
         throw new Error("Replay migration source is invalid");
       }
@@ -1508,6 +1733,23 @@ export function validateState(state) {
     }
     priorEventIds.add(event.id);
   }
+  for (const commitment of state.commitments) {
+    if ((commitment.sourceEventId != null && !eventIds.has(commitment.sourceEventId))
+      || (commitment.fulfilledEventId != null && !eventIds.has(commitment.fulfilledEventId))) {
+      throw new Error("Commitment references a missing source event");
+    }
+  }
+  for (const thread of state.narrativeThreads) {
+    if (thread.causeEventIds.some((eventId) => !eventIds.has(eventId))
+      || (thread.lastMeaningfulEventId != null && !eventIds.has(thread.lastMeaningfulEventId))) {
+      throw new Error("Narrative thread references a missing cause event");
+    }
+  }
+  for (const parish of state.neighboringParishes) {
+    if (parish.lastEventId != null && !eventIds.has(parish.lastEventId)) {
+      throw new Error("Neighboring parish references a missing event");
+    }
+  }
   const archivedVisitIds = new Set();
   for (const visit of state.visitArchive) {
     requireObject(visit, "Archived visit");
@@ -1665,7 +1907,7 @@ export function validateState(state) {
     for (const field of [
       "unresolvedQuestions", "agreements", "retractions",
       "mentionedFactIds", "lastAnsweredQuestionTurnIds",
-      "proposals", "visitorDecisions"
+      "proposals", "visitorDecisions", "obligationStack"
     ]) {
       requireArray(state.currentVisit.continuity[field], `Current visit ${field}`);
     }
@@ -1682,7 +1924,7 @@ export function validateState(state) {
       if (typeof proposal.proposalId !== "string" || typeof proposal.rawText !== "string"
         || proposal.rawText.length > 180 || typeof proposal.actionHint !== "string"
         || !Number.isInteger(proposal.turn) || proposal.turn < 1
-        || !["pending", "accepted", "rejected", "deferred", "unknown"].includes(proposal.status)
+        || !["pending", "accepted", "rejected", "modified", "deferred", "unknown"].includes(proposal.status)
         || !Number.isFinite(proposal.priority) || proposal.priority < 0 || proposal.priority > 100) {
         throw new Error("Current visit proposal is invalid");
       }
@@ -1690,8 +1932,40 @@ export function validateState(state) {
     for (const decision of state.currentVisit.continuity.visitorDecisions) {
       if (typeof decision.proposalId !== "string" || typeof decision.reason !== "string"
         || decision.reason.length > 120 || !Number.isInteger(decision.turn) || decision.turn < 1
-        || !["accepted", "rejected", "deferred", "unknown"].includes(decision.status)) {
+        || !["accepted", "rejected", "modified", "deferred", "unknown"].includes(decision.status)) {
         throw new Error("Current visit proposal decision is invalid");
+      }
+    }
+    if (state.currentVisit.continuity.obligationStack.length > 12) {
+      throw new Error("Current visit obligation stack is too large");
+    }
+    for (const obligation of state.currentVisit.continuity.obligationStack) {
+      if (typeof obligation.id !== "string"
+        || !["player_decision", "answer_player_question", "npc_followup", "scene_transition", "meta_request"].includes(obligation.kind)
+        || typeof obligation.prompt !== "string" || obligation.prompt.length > 300
+        || !Number.isFinite(obligation.priority) || obligation.priority < 0 || obligation.priority > 100
+        || typeof obligation.resumable !== "boolean"
+        || !["open", "suspended", "resolved", "cancelled"].includes(obligation.status)
+        || !Number.isInteger(obligation.createdTurn) || obligation.createdTurn < 0
+        || (obligation.resolvedTurn != null && (!Number.isInteger(obligation.resolvedTurn) || obligation.resolvedTurn < 0))) {
+        throw new Error("Current visit obligation stack entry is invalid");
+      }
+    }
+    requireObject(state.currentVisit.continuity.semantic, "Current visit semantic state");
+    for (const field of [
+      "factsMentioned", "factsLearned", "questions", "agreements", "disagreements",
+      "refusals", "uncertainties", "suspicions", "topics", "emotionalChanges",
+      "npcGoals", "sceneGoals", "practicalNeeds", "commitments"
+    ]) {
+      requireArray(state.currentVisit.continuity.semantic[field], `Semantic ${field}`);
+      if (state.currentVisit.continuity.semantic[field].length > 24) {
+        throw new Error(`Semantic ${field} retention is invalid`);
+      }
+      for (const item of state.currentVisit.continuity.semantic[field]) {
+        if (typeof item.id !== "string" || !Number.isInteger(item.turn) || item.turn < 0
+          || typeof item.text !== "string" || typeof item.status !== "string") {
+          throw new Error(`Semantic ${field} item is invalid`);
+        }
       }
     }
     if (state.currentVisit.continuity.currentObligation != null) {
@@ -1757,6 +2031,21 @@ export function validateState(state) {
           throw new Error("Requested visit command result is invalid");
         }
       }
+    } else if (command.type === "set_mode") {
+      requireObject(command.payload.mode, "Mode command payload");
+      if (!["IN_WORLD", "META_PAUSED", "PLAYER_AUTHORING", "REWIND_PENDING"].includes(command.payload.mode.type)
+        || (command.payload.mode.returnVisitId != null && typeof command.payload.mode.returnVisitId !== "string")) {
+        throw new Error("Mode command is invalid");
+      }
+    } else if (command.type === "rewind_turn") {
+      requireObject(command.payload.superseded, "Rewind command payload");
+      const superseded = command.payload.superseded;
+      if (typeof superseded.commandId !== "string"
+        || !Number.isInteger(superseded.day) || !Number.isInteger(superseded.slot)
+        || typeof superseded.playerText !== "string" || typeof superseded.visitorReply !== "string"
+        || typeof superseded.reason !== "string") {
+        throw new Error("Rewind command is invalid");
+      }
     } else if (command.type === "conversation_exchange") {
       if (!activeVisitPersonId) throw new Error("Conversation command has no active visit");
       if (activeVisitTurns >= 10) throw new Error("Command log exceeds the ten-exchange visit limit");
@@ -1777,7 +2066,7 @@ export function validateState(state) {
       requireArray(command.payload.response.decisions || [], "Conversation command decisions");
       for (const decision of command.payload.response.decisions || []) {
         if (typeof decision.proposalId !== "string"
-          || !["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
+          || !["accepted", "rejected", "modified", "deferred", "unknown"].includes(decision.status)
           || typeof decision.reason !== "string" || decision.reason.length > 120) {
           throw new Error("Conversation command decision is invalid");
         }
@@ -2088,6 +2377,9 @@ export function compactReplayHistory(state) {
     ...state.rumors.map((rumor) => rumor.sourceEventId),
     ...[...state.residents, ...state.externalActors].flatMap((person) => person.memories.map((memory) => memory.sourceEventId)),
     ...state.eventQueue.map((event) => event.sourceEventId),
+    ...state.commitments.flatMap((commitment) => [commitment.sourceEventId, commitment.fulfilledEventId]),
+    ...state.narrativeThreads.flatMap((thread) => [...thread.causeEventIds, thread.lastMeaningfulEventId]),
+    ...state.neighboringParishes.map((parish) => parish.lastEventId),
     ...state.visitArchive.flatMap((visit) => visit.eventIds),
     ...state.periodReports.flatMap((report) => report.eventIds)
   ].filter(Boolean));

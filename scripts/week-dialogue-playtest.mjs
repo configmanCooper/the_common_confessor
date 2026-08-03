@@ -27,7 +27,7 @@ const profile = args.get("profile") || "ordinary";
 const useAiOpenings = args.get("ai-openings") !== "false";
 const outputPath = args.get("output") || "";
 const endpoint = args.get("endpoint") || "http://127.0.0.1:8095";
-const client = new ParishAiClient({ endpoint, timeoutMs: 90000 });
+const client = new ParishAiClient({ endpoint, timeoutMs: 90000, splitSemantic: true });
 
 function words(text) {
   return new Set(String(text).toLowerCase().match(/[a-z]{4,}/g) || []);

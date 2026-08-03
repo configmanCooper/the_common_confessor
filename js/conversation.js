@@ -748,6 +748,10 @@ export function clarificationFacts(visit, text) {
   if (/\b(?:why|how)\s+not\b/.test(speech)) return [];
   let wantedIds = [];
   const webIds = [];
+  if (String(visit.issue?.scenarioId || "").includes("panic_rumor")
+    && /\b(?:whispers?|rumou?rs?|panic|hoarding|people acting|acting like this)\b/.test(speech)) {
+    webIds.push("threat_status", "evidence", "witnesses", "mechanism");
+  }
   if (/\b(?:when|what time|how long ago|which day|deadline|how soon)\b/.test(speech)) webIds.push("timeline", "stakes");
   if (/\b(?:who became sick|who fell ill|who is sick|who is ill|which households?|what households?)\b/.test(speech)) webIds.push("affected_people");
   if (/\b(?:at war|declared war|what soldiers|which soldiers|whose soldiers|what army|which army|where are they coming from|what direction)\b/.test(speech)) webIds.push("threat_status", "evidence", "unknowns");
@@ -801,6 +805,42 @@ export function factIdsMentionedInText(facts, text) {
     const matches = anchors.filter((anchor) => speechWords.has(anchor) || speech.includes(anchor)).length;
     return matches >= Math.min(2, anchors.length);
   }).map((fact) => fact.id);
+}
+
+export function ensureConversationContinuity(visit) {
+  visit.continuity ||= {};
+  visit.continuity.unresolvedQuestions ||= [];
+  visit.continuity.agreements ||= [];
+  visit.continuity.retractions ||= [];
+  visit.continuity.mentionedFactIds ||= [];
+  visit.continuity.currentObligation ??= null;
+  visit.continuity.lastAnsweredQuestionTurnIds ||= [];
+  visit.continuity.proposals ||= [];
+  visit.continuity.visitorDecisions ||= [];
+  visit.continuity.obligationStack ||= [];
+  visit.continuity.semantic ||= {
+    factsMentioned: [],
+    factsLearned: [],
+    questions: [],
+    agreements: [],
+    disagreements: [],
+    refusals: [],
+    uncertainties: [],
+    suspicions: [],
+    topics: [],
+    emotionalChanges: [],
+    npcGoals: [],
+    sceneGoals: [],
+    practicalNeeds: [],
+    commitments: []
+  };
+  visit.promptTraces ||= [];
+  visit.turnAudits ||= [];
+  visit.revealedFactIds ||= [];
+  visit.lastVisitorReplies ||= [];
+  visit.counsel ||= [];
+  visit.history ||= [];
+  return visit.continuity;
 }
 
 function contradictionFor(state, intents, personId) {

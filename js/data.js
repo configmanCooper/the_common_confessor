@@ -56,7 +56,8 @@ export const OCCUPATIONS = Object.freeze([
   "butcher", "fishmonger", "herbalist", "midwife", "healer", "teacher", "scribe", "clerk",
   "reeve", "bailiff", "watchman", "soldier", "hunter", "forester", "woodcutter", "charcoal burner",
   "potter", "cooper", "candlemaker", "merchant", "peddler", "washerwoman", "servant", "laborer",
-  "beekeeper", "goatherd", "stablehand", "ferryman", "gravedigger", "sexton", "sacristan", "unemployed"
+  "beekeeper", "goatherd", "stablehand", "ferryman", "gravedigger", "sexton", "sacristan",
+  "retired", "unemployed"
 ]);
 
 export const TRAITS = Object.freeze([
@@ -371,6 +372,13 @@ export const EXTERNAL_ROLES = Object.freeze({
     opening: "The affairs of this parish now touch land, rents, and reputation beyond the village. I would hear your account before choosing a side.",
     location: "office",
     sprite: 35
+  },
+  neighbor_priest: {
+    title: "Visiting Parish Priest",
+    names: ["Father Elias Ward", "Father Martin Hale", "Father Thomas Reed"],
+    opening: "Father, I come from a neighboring parish because our own stores and officers can no longer meet the need before us. I ask that you hear the terms before deciding.",
+    location: "office",
+    sprite: 0
   }
 });
 

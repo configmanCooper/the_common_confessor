@@ -11,7 +11,8 @@ function normalizeClause(value) {
 function actionable(clause) {
   return ACTION_START.test(clause)
     || /^do nothing\b/i.test(clause)
-    || /\b(?:you|we|they|people|households?|men|someone|scouts?)\s+(?:should|must|need to|ought to|will)\b/i.test(clause)
+    || /\b(?:you|we|they|people|households?|men|someone|scouts?)\s+(?:should|must|need to|ought to)\b/i.test(clause)
+    || /\b(?:you|we)\s+will\s+(?:tell|ask|send|speak|talk|visit|go|bring|collect|verify|check|inspect|investigate|prepare|organize|warn|mark|close|move|leave|flee|defend|guard|report|give|share|repair|build|protect|help)\b/i.test(clause)
     || /\b(?:main|first|highest)\s+priority\s+(?:is|should be)\b/i.test(clause)
     || /\b(?:i want you to|i need you to|let us|let's|what if we|perhaps we|maybe we)\b/i.test(clause);
 }

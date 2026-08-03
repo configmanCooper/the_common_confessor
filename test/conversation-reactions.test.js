@@ -383,7 +383,7 @@ test("schema-13 active visits migrate into schema-14 reaction state", () => {
   legacy.version = 13;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 17);
+  assert.equal(migrated.schemaVersion, 19);
   assert.ok(migrated.currentVisit.reactionState);
   assert.deepEqual(migrated.currentVisit.turnAudits, []);
   assert.ok(migrated.currentVisit.continuity);
@@ -394,6 +394,8 @@ test("newly disclosed hidden concerns receive private visibility even in the nav
   const { state, visit, person } = reactionState("new-disclosure-privacy");
   visit.location = "nave";
   visit.issue.location = "nave";
+  visit.issue.kind = "confession";
+  visit.hiddenConcernDisclosed = false;
   visit.intent.disclosureThreshold = 0;
   recordExchange(state, "Tell me the truth plainly.", response("I will tell you."));
   const secret = person.memories.find((memory) => memory.type === "disclosed_secret");
@@ -415,6 +417,7 @@ test("private issue reactions do not create public awareness or rumors", () => {
   thread.danger = 70;
   thread.authorityRequestedRole = "magistrate";
   visit.intent.disclosureThreshold = 0;
+  visit.hiddenConcernDisclosed = false;
   recordExchange(state, "Tell me the truth plainly.", response("I will tell you."));
   assert.notEqual(thread.visibility.scope, "public");
   assert.equal(thread.publicAwareness, 0);

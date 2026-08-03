@@ -53,6 +53,19 @@ const errors = [];
 await page.route("**/local-ai/health", async (route) => {
   await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
 });
+await page.route("**/copilot-ai/health", async (route) => {
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      status: "ok",
+      models: [
+        { id: "auto", name: "Automatic" },
+        { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }
+      ]
+    })
+  });
+});
 await page.route("**/local-ai/v1/chat/completions", async (route) => {
   const payload = JSON.parse(route.request().postData() || "{}");
   const schemaName = payload.response_format?.json_schema?.name;
@@ -72,12 +85,42 @@ await page.route("**/local-ai/v1/chat/completions", async (route) => {
     });
     return;
   }
-  if (schemaName === "parish_conversation") {
+  if (schemaName === "parish_turn_interpretation") {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              speechActs: [{
+                type: "advice",
+                meaning: "The priest asks the visitor to consider the matter carefully.",
+                referenceText: null,
+                confidence: 0.95
+              }],
+              implicitMeaning: "The priest counsels patience.",
+              tone: "measured",
+              mandatoryResponseNeeds: ["Respond to the newest advice."]
+            })
+          }
+        }]
+      })
+    });
+    return;
+  }
+  if (schemaName === "parish_conversation" || schemaName === "parish_conversation_render") {
     await new Promise((resolve) => setTimeout(resolve, 800));
     if (payload.messages?.some((message) => message.content?.includes("FAIL_STALE"))) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ choices: [] }) });
       return;
     }
+    const prompt = payload.messages?.[1]?.content || "";
+    const plan = prompt.includes("RESPONSE_PLAN_JSON=")
+      ? JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0])
+      : { obligationId: "legacy", requiredAnswerSlots: [], requiredFactIds: [], proposals: [] };
+    const answered = plan.requiredAnswerSlots?.length ? plan.requiredAnswerSlots : [plan.obligationId];
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -86,10 +129,28 @@ await page.route("**/local-ai/v1/chat/completions", async (route) => {
           message: {
             content: JSON.stringify({
               reply: "I will consider that carefully, Father.",
-              mood: "contemplative",
-              trustDelta: 1,
-              stressDelta: -1,
-              memory: "The priest asked for patience."
+              memory: "The priest asked for patience.",
+              responsePlan: {
+                primaryObligationId: answered[0],
+                secondaryObligationIds: answered.slice(1),
+                knownFactIds: plan.requiredFactIds || [],
+                unknowns: [],
+                proposalPositions: (plan.proposals || []).map((proposal) => ({
+                  proposalId: proposal.proposalId,
+                  status: "deferred",
+                  reason: "The visitor needs time to consider it."
+                })),
+                desiredMovement: "Consider the advice without rushing.",
+                endConversation: false
+              },
+              claims: [],
+              answeredObligations: answered,
+              newQuestions: [],
+              decisions: (plan.proposals || []).map((proposal) => ({
+                proposalId: proposal.proposalId,
+                status: "deferred",
+                reason: "The visitor needs time to consider it."
+              }))
             })
           }
         }]
@@ -134,6 +195,9 @@ page.on("pageerror", (error) => errors.push(error.stack || error.message));
 
 try {
   await page.goto("http://127.0.0.1:8086", { waitUntil: "networkidle" });
+  await page.waitForFunction(() => (
+    document.querySelector('#ai-provider option[value="copilot"]')?.disabled === false
+  ));
   await page.locator("#seed-input").fill("browser-smoke-parish");
   await page.locator("#new-game").click();
   await page.locator("#prologue-dialog").waitFor({ state: "visible" });
@@ -148,22 +212,33 @@ try {
   beginVisit(staleImport);
   staleImport.currentVisit.location = "nave";
   staleImport.currentVisit.issue.location = "nave";
+  staleImport.currentVisit.issue.kind = "confession";
+  staleImport.currentVisit.hiddenConcernDisclosed = false;
   staleImport.currentVisit.intent.disclosureThreshold = 0;
   checkpointState(staleImport);
   await page.locator("#counsel-input").fill("Take time before you act.");
   await page.locator("#speak-button").click();
-  assert.equal(await page.locator("#next-hour").isDisabled(), true);
+  await page.waitForFunction(() => document.querySelector("#next-hour")?.disabled === true);
   await page.locator("#import-file").setInputFiles({
     name: "invalid-import.json",
     mimeType: "application/json",
     buffer: Buffer.from("{broken")
   });
   await page.waitForFunction(() => document.querySelector("#toast")?.textContent?.startsWith("Import failed:"));
+  const debugDownloadPromise = page.waitForEvent("download");
+  await page.locator("#export-debug-log").click();
+  const debugDownload = await debugDownloadPromise;
+  const debugPath = await debugDownload.path();
+  const debugPayload = JSON.parse(await (await import("node:fs/promises")).readFile(debugPath, "utf8"));
+  assert.equal(debugPayload.format, "the-common-confessor-debug-log");
+  assert.ok(debugPayload.errors.some((entry) => entry.phase === "game_import"));
+  assert.ok(debugPayload.state);
   assert.equal(await page.locator("#speak-button").isDisabled(), true);
   assert.equal(await page.locator("#next-hour").isDisabled(), true);
   await page.locator("#dialogue-log .visitor").nth(1).waitFor({ state: "visible" });
   assert.equal(await page.locator("#speak-button").isDisabled(), false);
   assert.match(await page.locator("#turn-counter").innerText(), /1 \/ 10/);
+  assert.match(await page.locator("#response-source").innerText(), /gemma_dialogue|gemma_repaired|framework_static/);
   await page.locator("#import-file").setInputFiles({
     name: "stale-guard.json",
     mimeType: "application/json",
@@ -210,7 +285,7 @@ try {
   }));
   const manualState = JSON.parse(saveMetadata.manualEnvelope.data);
   assert.equal(saveMetadata.manualEnvelope.format, "the-common-confessor-save");
-  assert.equal(manualState.schemaVersion, 17);
+  assert.equal(manualState.schemaVersion, 19);
   assert.equal(await page.locator("#open-request-visits").isDisabled(), true);
   assert.match(await page.locator("#church-resources").innerText(), /Bread/i);
   assert.equal(manualState.commandLog.length, 1);

@@ -178,7 +178,16 @@ test("AI chains cannot reuse participants for conflicting marriages", () => {
   ));
   if (!second.relationshipIds.includes(third.id)) second.relationshipIds.push(third.id);
   if (!third.relationshipIds.includes(second.id)) third.relationshipIds.push(second.id);
+  first.sex = "female";
+  second.sex = "male";
+  third.sex = "female";
   for (const person of [first, second, third]) {
+    const oldSpouse = state.residents.find((candidate) => candidate.id === person.spouseId);
+    if (oldSpouse) {
+      oldSpouse.spouseId = null;
+      oldSpouse.maritalStatus = "single";
+      oldSpouse.marriageDay = null;
+    }
     person.age = 30;
     person.ageDays = 30 * 365;
     person.maritalStatus = "single";
@@ -546,6 +555,14 @@ test("birth, adoption, rumors, and knowledge create persistent connected state",
   const state = createGame("birth-rumor-seed");
   const mother = state.residents.find((person) => person.sex === "female" && person.age >= 18 && person.age <= 40);
   const partner = state.residents.find((person) => person.sex === "male" && person.age >= 18);
+  for (const person of [mother, partner]) {
+    const oldSpouse = state.residents.find((candidate) => candidate.id === person.spouseId);
+    if (oldSpouse) {
+      oldSpouse.spouseId = null;
+      oldSpouse.maritalStatus = "single";
+      oldSpouse.marriageDay = null;
+    }
+  }
   mother.spouseId = partner.id;
   partner.spouseId = mother.id;
   mother.maritalStatus = "married";
@@ -1045,4 +1062,18 @@ test("twelve-week population runs retain referential integrity", () => {
     }
     assert.doesNotThrow(() => serializeState(state));
   }
+});
+
+test("starting population is young overall and working septuagenarians are rare", () => {
+  const residents = [];
+  for (let index = 0; index < 10; index += 1) {
+    residents.push(...createGame(`historical-age-distribution-${index}`).residents);
+  }
+  const children = residents.filter((person) => person.age < 14);
+  const seventies = residents.filter((person) => person.age >= 70);
+  const workingSeventies = seventies.filter((person) => person.occupation !== "retired");
+  assert.ok(children.length / residents.length >= 0.24);
+  assert.ok(seventies.length / residents.length <= 0.03);
+  assert.ok(workingSeventies.length / Math.max(1, seventies.length) <= 0.25);
+  assert.ok(residents.every((person) => person.age <= 79));
 });

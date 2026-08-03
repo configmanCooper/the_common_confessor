@@ -104,8 +104,18 @@ test("AI departure responses reject oversized chains instead of truncating", asy
     });
 
     test("AI conversation prompt hides the concern until deterministic disclosure", async () => {
-      const state = createGame("hidden-concern-prompt-seed");
-      const visit = beginVisit(state);
+      let state;
+      let visit;
+      for (let index = 0; index < 200; index += 1) {
+        const candidate = createGame(`hidden-concern-prompt-seed-${index}`);
+        const candidateVisit = beginVisit(candidate);
+        if (candidateVisit.issue.kind === "confession" && !candidateVisit.hiddenConcernDisclosed) {
+          state = candidate;
+          visit = candidateVisit;
+          break;
+        }
+      }
+      assert.ok(state);
       const person = state.residents.find((resident) => resident.id === visit.personId);
       let prompt = "";
       const client = new ParishAiClient({

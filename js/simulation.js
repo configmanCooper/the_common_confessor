@@ -34,6 +34,7 @@ import {
   createInitialReactionState,
   createVisitIntent,
   detectConfidentialityBreach,
+  ensureConversationContinuity,
   factIdsMentionedInText,
   previewConversationReaction,
   REACTIONS,
@@ -73,6 +74,58 @@ import {
 } from "./reporting.js";
 import { PROMPT_TRACE_LIMIT } from "./dialogue_planner.js";
 import { completeGeneratedText, completeStoredText } from "./text.js";
+
+function buildNeighboringParishes(seed, homeTown) {
+  const rng = new SeededRng(`${seed}:neighboring-parishes`);
+  const names = TOWN_NAMES.filter((name) => name !== homeTown);
+  const priestNames = ["Father Elias Ward", "Father Martin Hale", "Father Thomas Reed", "Father Julian Grey", "Father Peter Bell"];
+  const churchNames = ["Saint Anne's", "Saint Jude's", "Saint Martha's", "Saint Cuthbert's", "Saint Agnes's"];
+  const selected = [];
+  while (selected.length < 3 && names.length) {
+    const index = rng.int(0, names.length - 1);
+    const name = names.splice(index, 1)[0];
+    selected.push({
+      id: `neighbor-${String(selected.length + 1).padStart(2, "0")}`,
+      name,
+      churchName: churchNames[selected.length % churchNames.length],
+      priestName: priestNames[selected.length % priestNames.length],
+      stewardName: EXTERNAL_ROLES.steward.names[selected.length % EXTERNAL_ROLES.steward.names.length],
+      lordName: EXTERNAL_ROLES.lord.names[selected.length % EXTERNAL_ROLES.lord.names.length],
+      travelDays: rng.int(1, 4),
+      pressures: {
+        food: rng.int(52, 88),
+        health: rng.int(35, 78),
+        order: rng.int(30, 72)
+      },
+      trust: rng.int(20, 45),
+      status: "uncontacted",
+      lastEventId: null
+    });
+  }
+  return selected;
+}
+
+function initializeNarrativeThreads(state) {
+  const worldEventId = state.events[0]?.id || null;
+  for (const parish of state.neighboringParishes) {
+    state.narrativeThreads.push({
+      id: `narrative-${String(state.nextNarrativeThreadSequence++).padStart(6, "0")}`,
+      type: "external_relief_request",
+      title: `${parish.name} parish relief`,
+      stage: "seed",
+      participantIds: [parish.id],
+      causeEventIds: worldEventId ? [worldEventId] : [],
+      unresolvedQuestions: [
+        "Will need become severe enough to justify an appeal?",
+        "Will this parish have enough capacity to help without harming its own households?"
+      ],
+      pressure: Math.max(parish.pressures.food, parish.pressures.health, parish.pressures.order),
+      status: "dormant",
+      neighborParishId: parish.id,
+      lastMeaningfulEventId: worldEventId
+    });
+  }
+}
 
 export function hashString(value) {
   let hash = 2166136261;
@@ -154,6 +207,32 @@ function createResidents(seed, rng) {
   let surnameIndex = 0;
   let residentIndex = 0;
   const usedFullNames = new Set();
+  const sampleAge = (memberIndex) => {
+    const roll = rng.next();
+    if (memberIndex === 0) {
+      if (roll < 0.18) return rng.int(18, 24);
+      if (roll < 0.72) return rng.int(25, 44);
+      if (roll < 0.93) return rng.int(45, 59);
+      return rng.int(60, 69);
+    }
+    if (roll < 0.40) return rng.int(0, 13);
+    if (roll < 0.56) return rng.int(14, 24);
+    if (roll < 0.84) return rng.int(25, 44);
+    if (roll < 0.95) return rng.int(45, 59);
+    if (roll < 0.99) return rng.int(60, 69);
+    return rng.int(70, 79);
+  };
+  const lightWork = [
+    "teacher", "scribe", "clerk", "herbalist", "midwife", "tailor",
+    "spinner", "candlemaker", "beekeeper", "innkeeper", "sexton", "sacristan"
+  ];
+  const occupationForAge = (age) => {
+    if (age < 5) return "infant";
+    if (age < 14) return "child laborer";
+    if (age >= 70) return rng.next() < 0.9 ? "retired" : rng.pick(lightWork);
+    if (age >= 60) return rng.next() < 0.65 ? "retired" : rng.pick(lightWork);
+    return rng.pick(OCCUPATIONS.filter((occupation) => !["infant", "retired"].includes(occupation)));
+  };
   while (residentIndex < 200) {
     const householdSize = Math.min(rng.int(1, 6), 200 - residentIndex);
     const surname = surnames[surnameIndex];
@@ -170,7 +249,8 @@ function createResidents(seed, rng) {
       if (sex === "female") femaleIndex = nameIndex;
       else maleIndex = nameIndex;
       usedFullNames.add(`${firstName} ${surname}`);
-      const age = rng.int(14, 82);
+      const age = sampleAge(member);
+      const ageHealthPenalty = Math.max(0, age - 50) * 0.8;
       residents.push({
         id: `person-${String(residentIndex + 1).padStart(3, "0")}`,
         name: `${firstName} ${surname}`,
@@ -179,7 +259,7 @@ function createResidents(seed, rng) {
         sex,
         age,
         householdId,
-        occupation: age < 16 ? "child laborer" : rng.pick(OCCUPATIONS),
+        occupation: occupationForAge(age),
         sprite: 1 + (residentIndex % 41),
         active: true,
         profileRevealed: false,
@@ -191,7 +271,7 @@ function createResidents(seed, rng) {
         faith: rng.int(35, 75),
         morale: rng.int(38, 70),
         prosperity: rng.int(30, 70),
-        health: rng.int(50, 90),
+        health: clamp(rng.int(58, 94) - ageHealthPenalty, 25, 95),
         stress: rng.int(25, 68),
         reputation: rng.int(40, 62),
         relationshipIds: [],
@@ -201,7 +281,19 @@ function createResidents(seed, rng) {
       residentIndex += 1;
     }
   }
-
+  const requiredVillageRoles = [
+    "tanner", "healer", "reeve", "bailiff",
+    "watchman", "miller", "midwife", "carpenter"
+  ];
+  for (const occupation of requiredVillageRoles) {
+    if (residents.some((resident) => resident.occupation === occupation)) continue;
+    const candidate = residents.find((resident) => (
+      resident.age >= ADULT_AGE
+      && resident.age < 60
+      && !requiredVillageRoles.includes(resident.occupation)
+    ));
+    if (candidate) candidate.occupation = occupation;
+  }
   for (const resident of residents) {
     const household = residents.filter((other) => other.householdId === resident.householdId && other.id !== resident.id);
     const nearby = residents.filter((other) => other.id !== resident.id && Math.abs(Number(other.id.slice(-3)) - Number(resident.id.slice(-3))) < 12);
@@ -254,7 +346,15 @@ export function createGame(seed = String(Date.now())) {
     sermons: [],
     conversationHistory: [],
     aiDiagnostics: { lastCompletedVisit: null },
-    settings: { aiEnabled: true },
+    mode: { type: "IN_WORLD", returnVisitId: null },
+    supersededTurns: [],
+    commitments: [],
+    nextCommitmentSequence: 1,
+    narrativeThreads: [],
+    nextNarrativeThreadSequence: 1,
+    neighboringParishes: [],
+    pacing: { lastMajorDay: -999, consecutiveHighIntensity: 0 },
+    settings: { aiEnabled: true, aiProvider: "gemma", copilotModel: "auto" },
     statistics: {
       conversations: 0,
       confessions: 0,
@@ -265,6 +365,7 @@ export function createGame(seed = String(Date.now())) {
       departures: 0
     }
   };
+  state.neighboringParishes = buildNeighboringParishes(seed, town.name);
   upgradePopulationState(state);
   upgradeParishState(state);
   state.priest.positions = [];
@@ -275,6 +376,7 @@ export function createGame(seed = String(Date.now())) {
     facts: { population: 200, town: town.name }
   });
   addChronicle(state, "The parish register opens", "Exactly 200 living villagers are entered by name. Their inward lives remain unknown until events draw them into the parish story.", "faith");
+  initializeNarrativeThreads(state);
   upgradeReportingState(state);
   return sealState(state);
 }
@@ -326,7 +428,7 @@ function activeResidents(state) {
 }
 
 function counselEligibleResidents(state) {
-  return activeResidents(state).filter((person) => person.age >= 12);
+  return activeResidents(state).filter((person) => person.age >= ADULT_AGE);
 }
 
 function scenarioArchetypes(state, person, relation, victim, rng) {
@@ -459,8 +561,8 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
     if (["missing_relic", "church_relief_abuse"].includes(archetype.id)) {
       return churchAccess.has(person.occupation) || churchAccess.has(relation?.occupation);
     }
-    if (["forced_marriage", "secret_pregnancy"].includes(archetype.id)) return person.age >= 16;
-    if (archetype.id === "hidden_inheritance") {
+    if (["marriage_coercion", "secret_pregnancy"].includes(archetype.id)) return person.age >= 16;
+    if (archetype.id === "inheritance_document") {
       return manorAccess.has(person.occupation) || manorAccess.has(relation?.occupation) || person.age >= 18;
     }
     return true;
@@ -562,51 +664,68 @@ function expandScenarioFactWeb(state, issue, person) {
   const timing = issue.openingContext?.timing || "at a time that has not yet been independently established";
   const place = issue.openingContext?.place || "a place that has not yet been independently established";
   const witness = issue.openingContext?.witness || "No independent witness has yet given a complete account.";
-  const deadlineDays = Number(
-    (issue.scenarioFacts || [])
-      .map((fact) => fact.text)
-      .join(" ")
-      .match(/\bwithin (\d+) days\b/i)?.[1]
-  ) || 7;
+  const deadlineDays = Number(issue.deadlineDays) || 7;
   const additions = [
     {
       id: "participants",
+      category: "identity",
+      speakable: true,
       text: `${person.name} is a ${person.age}-year-old ${person.occupation}. ${relationshipToRelated(person, related)}${related ? ` ${related.name} is a ${related.age}-year-old ${related.occupation}.` : ""}`
     },
     {
       id: "timeline",
-      text: `The matter was noticed ${timing}. A decision is currently expected within ${deadlineDays} days.`
+      category: "mechanical_timing",
+      speakable: false,
+      text: issue.hasExplicitDeadline
+        ? `The matter was noticed ${timing}. A formal answer is required within ${deadlineDays} days.`
+        : `The matter was noticed ${timing}. No formal deadline is known, though delay may worsen the harm.`
     },
     {
       id: "place",
+      category: "location",
+      speakable: true,
       text: `The relevant place is ${place}.`
     },
     {
       id: "witnesses",
+      category: "evidence",
+      speakable: true,
       text: witness
     },
     {
       id: "evidence",
+      category: "evidence",
+      speakable: true,
       text: scenarioEvidenceText(issue)
     },
     {
       id: "authority",
+      category: "mechanical_authority",
+      speakable: false,
       text: scenarioAuthorityText(issue.scenarioId)
     },
     {
       id: "capacity",
+      category: "mechanical_capacity",
+      speakable: false,
       text: `${person.name}'s household has ${means}, ${food}, and ${properties}. As a ${person.occupation} in ${health}, ${person.firstName} can offer ${person.occupation} work and ordinary labor, but cannot promise authority, expertise, property, or resources the household does not possess.`
     },
     {
       id: "constraints",
+      category: "mechanical_constraint",
+      speakable: false,
       text: "Any plan must account for immediate safety, consent, lawful authority, actual household means, age and health, and the risk of retaliation or lost livelihood described in the stakes."
     },
     {
       id: "unknowns",
+      category: "uncertainty",
+      speakable: true,
       text: "I still do not know whether every accused person will admit the claim, whether independent witnesses agree, whether the responsible authority will cooperate, or which feared consequence will actually occur."
     },
     {
       id: "counterclaim",
+      category: "mechanical_hypothesis",
+      speakable: false,
       text: related
         ? `${related.name} might deny the allegation, dispute the evidence, claim necessity, mistake, lawful right, or self-defense, or give another account of the sequence. Those are possible defenses to test, not established facts.`
         : "No specific accused person is identified in this matter. The visitor should say that a request for an accused person's defense may not apply rather than inventing one."
@@ -630,6 +749,8 @@ function expandScenarioFactWeb(state, issue, person) {
     issue.affectedPersonIds = affected.map((resident) => resident.id);
     additions.push({
       id: "affected_people",
+      category: "people_affected",
+      speakable: true,
       text: affected.length
         ? `${affected.map((resident) => `${resident.name}'s household`).join(", ")} reported matching sickness after using the common well. The complete number of sick villagers is not yet known.`
         : "Several households reported sickness, but no complete named list has yet been established."
@@ -638,6 +759,8 @@ function expandScenarioFactWeb(state, issue, person) {
   if (String(issue.scenarioId || "").includes("panic_rumor")) {
     additions.push({
       id: "threat_status",
+      category: "uncertainty",
+      speakable: true,
       text: `No war involving ${state.town.name} has been declared or verified. The rumor conflicts: some people say soldiers, others say sickness, and no reliable witness has yet identified a banner, commander, company, number, intention, or confirmed direction of approach.`
     });
   }
@@ -675,12 +798,11 @@ function attachIssueThread(state, issue, person) {
     visibility: fact.visibility || factVisibility,
     allowedSpeakers: fact.allowedSpeakers || [person.id]
   }));
-  const statedDeadlineDays = Number(
-    issue.scenarioFacts
+  const statedDeadlineDays = Number(issue.deadlineDays)
+    || Number(issue.scenarioFacts
       .map((fact) => fact.text)
       .join(" ")
-      .match(/\bwithin (\d+) days\b/i)?.[1]
-  );
+      .match(/\bwithin (\d+) days\b/i)?.[1]);
   const thread = {
     id: threadId,
     kind: issue.kind,
@@ -769,6 +891,11 @@ function issueForPerson(state, person) {
     state.scenarioHistory.push(archetype.id);
     state.scenarioHistory = state.scenarioHistory.slice(-30);
     issue.scenarioId = archetype.id;
+    const embeddedDeadline = Number(
+      (archetype.facts || []).join(" ").match(/\b(?:within|returns? in)\s+(\d+)\s+days?\b/i)?.[1]
+    );
+    issue.deadlineDays = Number(archetype.deadlineDays) || embeddedDeadline || 7;
+    issue.hasExplicitDeadline = Boolean(archetype.hasExplicitDeadline || embeddedDeadline);
     if (!archetype.kinds.includes(issue.kind)) {
       issue.kind = archetype.kinds[0];
       issue.location = issue.kind === "confession"
@@ -795,15 +922,20 @@ function issueForPerson(state, person) {
     const witness = rng.pick(["No one else heard the whole exchange.", `${victimName} saw part of it.`, `A young apprentice may have overheard.`, `Two households are already whispering about it.`]);
     issue.opening = archetype.opening;
     issue.openingContext = { timing, place, witness };
-    issue.scenarioFacts = archetype.facts.map((text, index) => ({
+    issue.blueprint = archetype.blueprint || null;
+    issue.scenarioFacts = (archetype.factRecords || archetype.facts.map((text, index) => ({
       id: index === 0
         ? archetype.id === "trade_displacement" ? "trade" : "concrete_matter"
         : index === 1 ? "mechanism" : index === 2 ? "stakes" : "alternative",
       text,
-      anchors: (text.toLowerCase().match(/[a-z]{5,}/g) || []).slice(0, 5)
+      category: index === 3 ? "example_response" : "situation",
+      speakable: index !== 3
+    }))).map((fact) => ({
+      ...fact,
+      anchors: (fact.text.toLowerCase().match(/[a-z]{5,}/g) || []).slice(0, 8)
     }));
-    issue.detail = archetype.facts[0];
-    issue.openingDisclosesHidden = issue.kind === "confession" && person.personality.candor >= 55;
+    issue.detail = issue.scenarioFacts.find((fact) => fact.id === "concrete_matter")?.text || archetype.facts[0];
+    issue.openingDisclosesHidden = issue.kind !== "confession" || person.personality.candor >= 55;
     if (issue.kind === "confession" && !issue.openingDisclosesHidden) {
       issue.opening = `Forgive me, Father. Something I did ${timing}, ${place}, may cause another person to suffer. ${witness} I am not yet certain I can say every part aloud.`;
     }
@@ -875,7 +1007,15 @@ function issueForPerson(state, person) {
   return attachIssueThread(state, issue, person);
 }
 
-function scheduleExternalVisit(state, role, reason, delayDays, sourcePersonId = null, sourceEventId = null) {
+function scheduleExternalVisit(
+  state,
+  role,
+  reason,
+  delayDays,
+  sourcePersonId = null,
+  sourceEventId = null,
+  payload = {}
+) {
   if (state.eventQueue.some((event) => event.type === "external_visit" && event.role === role)) return null;
   const event = {
     id: `queue-${String(state.nextQueueSequence++).padStart(6, "0")}`,
@@ -887,7 +1027,7 @@ function scheduleExternalVisit(state, role, reason, delayDays, sourcePersonId = 
     sourceEventId,
     actorId: null,
     targetId: "priest",
-    payload: {}
+    payload: JSON.parse(JSON.stringify(payload))
   };
   state.eventQueue.push(event);
   return event;
@@ -1210,10 +1350,11 @@ function createExternalVisitor(state, queued) {
   const definition = EXTERNAL_ROLES[queued.role];
   if (!definition) throw new Error(`Unknown external role: ${queued.role}`);
   const rng = new SeededRng(`${state.seed}:external:${queued.id}:${queued.role}`);
+  const chosenName = queued.payload?.priestName || rng.pick(definition.names);
   const person = {
     id: `external-${String(state.nextExternalSequence++).padStart(4, "0")}`,
-    name: rng.pick(definition.names),
-    firstName: definition.names[0].split(" ")[0],
+    name: chosenName,
+    firstName: chosenName.replace(/^(?:Father|Bishop|Steward|Magistrate|Lord|Lady|Sheriff|Doctor)\s+/i, "").split(" ")[0],
     surname: "Outside",
     role: queued.role,
     occupation: definition.title,
@@ -1232,7 +1373,9 @@ function createExternalVisitor(state, queued) {
       boldness: rng.int(65, 95),
       piety: rng.int(45, 95)
     },
-    publicBackstory: `${definition.title} visiting from beyond the parish.`,
+    publicBackstory: queued.role === "neighbor_priest"
+      ? `Parish priest of ${queued.payload.churchName} in ${queued.payload.parishName}.`
+      : `${definition.title} visiting from beyond the parish.`,
     backstory: `${definition.title} visiting because ${queued.reason}.`,
     privatePressure: queued.reason,
     trustPriest: 50,
@@ -1245,6 +1388,35 @@ function createExternalVisitor(state, queued) {
   };
   state.externalActors.push(person);
   return { person, definition };
+}
+
+function initializeVisitObligations(visit) {
+  ensureConversationContinuity(visit);
+  if (visit.continuity.obligationStack.length) return visit;
+  const alternative = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed
+    ? "Decide whether to offer enough safety and trust for the visitor to speak more plainly."
+    : (visit.scenarioFacts || []).find((fact) => fact.id === "alternative")?.text
+      || visit.intent?.desiredOutcome
+      || "Respond to the visitor's request.";
+  visit.continuity.obligationStack.push({
+    id: `obligation-${visit.visitId}-decision`,
+    kind: "player_decision",
+    prompt: String(alternative).slice(0, 300),
+    priority: 80,
+    resumable: true,
+    status: "open",
+    createdTurn: 0,
+    resolvedTurn: null
+  });
+  if (!visit.continuity.semantic.sceneGoals.length) {
+    visit.continuity.semantic.sceneGoals.push({
+      id: `semantic-${visit.visitId}-scene-goal`,
+      turn: 0,
+      text: String(alternative).slice(0, 240),
+      status: "open"
+    });
+  }
+  return visit;
 }
 
 export function beginVisit(state, { record = true } = {}) {
@@ -1307,9 +1479,11 @@ export function beginVisit(state, { record = true } = {}) {
         currentObligation: null,
         lastAnsweredQuestionTurnIds: [],
         proposals: [],
-        visitorDecisions: []
+        visitorDecisions: [],
+        obligationStack: []
       }
     };
+    initializeVisitObligations(state.currentVisit);
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
   }
@@ -1446,9 +1620,11 @@ export function beginVisit(state, { record = true } = {}) {
         currentObligation: null,
         lastAnsweredQuestionTurnIds: [],
         proposals: [],
-        visitorDecisions: []
+        visitorDecisions: [],
+        obligationStack: []
       }
     };
+    initializeVisitObligations(state.currentVisit);
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
   }
@@ -1458,17 +1634,66 @@ export function beginVisit(state, { record = true } = {}) {
   if (queuedIndex >= 0) {
     const queued = state.eventQueue.splice(queuedIndex, 1)[0];
     const { person, definition } = createExternalVisitor(state, queued);
+    const neighborPayload = queued.role === "neighbor_priest" ? queued.payload : null;
     const issue = {
-      kind: "outside authority",
+      kind: neighborPayload ? "neighboring parish appeal" : "outside authority",
       location: definition.location,
       gravity: 5,
-      opening: definition.opening,
+      opening: neighborPayload
+        ? `Father, I serve ${neighborPayload.churchName} in ${neighborPayload.parishName}. Our stores are failing, and I have authority only to ask—not to bind your parish. The road between us takes ${neighborPayload.travelDays} days. Will you spare ${neighborPayload.amount} sacks of grain, send someone to inspect our need, refuse us, or propose different terms?`
+        : definition.opening,
       detail: queued.reason,
       relatedPersonId: queued.sourcePersonId,
       relatedName: queued.sourcePersonId
         ? state.residents.find((resident) => resident.id === queued.sourcePersonId)?.name
-        : null
+        : null,
+      scenarioId: neighborPayload ? "external_relief_request" : `external_${queued.role}`,
+      neighborParishId: neighborPayload?.neighborParishId || null,
+      narrativeThreadId: neighborPayload?.narrativeThreadId || null,
+      requestedResource: neighborPayload?.resource || null,
+      requestedAmount: neighborPayload?.amount || null,
+      deadlineDays: neighborPayload?.travelDays || 7,
+      hasExplicitDeadline: Boolean(neighborPayload),
+      scenarioFacts: neighborPayload ? [
+        {
+          id: "concrete_matter",
+          text: `${neighborPayload.churchName} in ${neighborPayload.parishName} has requested help because its local stores can no longer meet current need.`,
+          anchors: ["church", "stores", "help", "need"]
+        },
+        {
+          id: "authority",
+          text: `${neighborPayload.priestName} may request and receive aid. ${neighborPayload.stewardName} administers local stores, while ${neighborPayload.lordName} holds manor authority. None of them can bind this parish without consent.`,
+          anchors: ["priest", "steward", "lord", "authority"]
+        },
+        {
+          id: "stakes",
+          text: `The request is for ${neighborPayload.amount} sacks of grain. Giving it reduces this church's reserve; refusing leaves the neighboring shortage unresolved.`,
+          anchors: ["grain", "reserve", "shortage"]
+        },
+        {
+          id: "timeline",
+          text: `Travel between the parishes takes ${neighborPayload.travelDays} days each way.`,
+          anchors: ["travel", "days", "parishes"]
+        },
+        {
+          id: "alternative",
+          text: "Give the requested grain, send a delegate to verify the need, refuse, or negotiate smaller and conditional aid.",
+          anchors: ["give", "delegate", "refuse", "negotiate"]
+        }
+      ] : []
     };
+    if (neighborPayload) {
+      const visibility = { scope: "public", authorizedPersonIds: [person.id, "priest"] };
+      issue.scenarioFacts = issue.scenarioFacts.map((fact) => ({
+        ...fact,
+        issueId: issue.narrativeThreadId,
+        provenance: "state",
+        confidence: 100,
+        visibility,
+        allowedSpeakers: [person.id],
+        anchors: fact.anchors || []
+      }));
+    }
     const originEvent = appendEvent(state, {
       type: "external_visit_started",
       parentId: queued.sourceEventId || state.events.at(-1)?.id || null,
@@ -1490,7 +1715,7 @@ export function beginVisit(state, { record = true } = {}) {
       mood: "guarded",
       disclosure: 20,
       hiddenConcernDisclosed: Boolean(issue.openingDisclosesHidden),
-      scenarioFacts: [],
+      scenarioFacts: issue.scenarioFacts,
       revealedFactIds: [],
       stagnationCount: 0,
       lastVisitorReplies: [issue.opening],
@@ -1507,9 +1732,11 @@ export function beginVisit(state, { record = true } = {}) {
         currentObligation: null,
         lastAnsweredQuestionTurnIds: [],
         proposals: [],
-        visitorDecisions: []
+        visitorDecisions: [],
+        obligationStack: []
       }
     };
+    initializeVisitObligations(state.currentVisit);
     if (record) appendCommand(state, "begin_visit", { personId: person.id, visitId: state.currentVisit.visitId });
     return state.currentVisit;
   }
@@ -1566,13 +1793,15 @@ export function beginVisit(state, { record = true } = {}) {
       currentObligation: null,
       lastAnsweredQuestionTurnIds: [],
       proposals: [],
-      visitorDecisions: []
+      visitorDecisions: [],
+      obligationStack: []
     }
   };
+  initializeVisitObligations(state.currentVisit);
   if (issue.kind === "confession") {
     state.statistics.confessions += 1;
   }
-  if (state.currentVisit.hiddenConcernDisclosed) {
+  if (issue.kind === "confession" && state.currentVisit.hiddenConcernDisclosed) {
     addStructuredMemory(state, person, {
       type: "disclosed_secret",
       summary: state.currentVisit.intent.hiddenConcern,
@@ -1787,6 +2016,176 @@ function authoritativeReactionReply(person, reaction) {
   }[reaction] || `"I hear you, Father."`;
 }
 
+function recordNeighborParishDecision(state, person, visit, text) {
+  if (person.role !== "neighbor_priest" || !visit.issue.neighborParishId) return null;
+  const parish = state.neighboringParishes.find((entry) => entry.id === visit.issue.neighborParishId);
+  const thread = state.narrativeThreads.find((entry) => entry.id === visit.issue.narrativeThreadId);
+  if (!parish || !thread) return null;
+  const speech = String(text).toLowerCase();
+  if (/\b(?:we cannot help|i refuse|we refuse|send nothing|no aid|cannot spare)\b/.test(speech)) {
+    for (const commitment of state.commitments.filter((entry) => (
+      entry.targetId === parish.id && entry.status === "open"
+    ))) {
+      if (commitment.type === "neighbor_relief_resource") {
+        state.churchResources[commitment.payload.resource] += commitment.payload.amount;
+      }
+      commitment.status = "cancelled";
+      commitment.cancelReason = "The priest withdrew the pledge before dispatch.";
+    }
+    const event = appendEvent(state, {
+      type: "neighbor_relief_declined",
+      parentId: visit.originEventId,
+      actorId: "priest",
+      targetId: person.id,
+      facts: { neighborParishId: parish.id, narrativeThreadId: thread.id }
+    });
+    parish.status = "aid_declined";
+    parish.lastEventId = event.id;
+    thread.stage = "resolved";
+    thread.status = "declined";
+    thread.lastMeaningfulEventId = event.id;
+    thread.causeEventIds.push(event.id);
+    return { type: "declined", eventId: event.id };
+  }
+  const transfer = parseChurchTransferIntent(text);
+  const acceptsHelp = /\b(?:yes|we will help|i will help|we can help|send aid|send someone|inspect the need)\b/.test(speech);
+  if (!transfer && !acceptsHelp) return null;
+  const existingCommitment = state.commitments.find((entry) => (
+    entry.targetId === parish.id && entry.status === "open"
+  ));
+  if (existingCommitment) return existingCommitment;
+  let type = "neighbor_relief_assessment";
+  let payload = { neighborParishId: parish.id };
+  if (transfer?.direction === "outgoing") {
+    const resource = transfer.resource;
+    const amount = Math.min(transfer.amount, state.churchResources[resource] || 0);
+    if (amount <= 0) return null;
+    state.churchResources[resource] -= amount;
+    type = "neighbor_relief_resource";
+    payload = { neighborParishId: parish.id, resource, amount };
+  } else if (acceptsHelp && visit.issue.requestedResource && visit.issue.requestedAmount) {
+    const resource = visit.issue.requestedResource;
+    const amount = Math.min(visit.issue.requestedAmount, state.churchResources[resource] || 0);
+    if (amount > 0) {
+      state.churchResources[resource] -= amount;
+      type = "neighbor_relief_resource";
+      payload = { neighborParishId: parish.id, resource, amount };
+    }
+  }
+  const event = appendEvent(state, {
+    type: "commitment_created",
+    parentId: visit.originEventId,
+    actorId: "priest",
+    targetId: person.id,
+    facts: { type, neighborParishId: parish.id, payload }
+  });
+  const commitment = {
+    id: `commitment-${String(state.nextCommitmentSequence++).padStart(6, "0")}`,
+    type,
+    actorId: "priest",
+    targetId: parish.id,
+    dueDay: state.calendar.absoluteDay + parish.travelDays,
+    status: "open",
+    sourceEventId: event.id,
+    payload
+  };
+  state.commitments.push(commitment);
+  parish.status = "aid_promised";
+  parish.lastEventId = event.id;
+  thread.stage = "choice";
+  thread.status = "committed";
+  thread.lastMeaningfulEventId = event.id;
+  thread.causeEventIds.push(event.id);
+  return commitment;
+}
+
+function updateSemanticConversationState(state, person, visit, response, preview) {
+  const semantic = visit.continuity.semantic;
+  const turn = visit.turnsUsed;
+  let sequence = 1;
+  const item = (type, text, status = "open", extra = {}) => ({
+    id: `semantic-${visit.visitId}-${String(turn).padStart(2, "0")}-${type}-${String(sequence++).padStart(2, "0")}`,
+    turn,
+    text: String(text || "").slice(0, 240),
+    status,
+    ...extra
+  });
+  for (const act of response.interpretation?.speechActs || []) {
+    semantic.topics.push(item("topic", act.meaning, "active", {
+      speechAct: act.type,
+      confidence: act.confidence
+    }));
+  }
+  for (const claim of response.claims || []) {
+    const base = {
+      claimId: claim.claimId,
+      claimType: claim.type,
+      subjectId: claim.subjectId,
+      targetIds: claim.targetIds,
+      confidence: claim.confidence,
+      evidenceFactIds: claim.evidenceFactIds
+    };
+    if (claim.type === "fact") semantic.factsMentioned.push(item("fact", claim.text, "mentioned", base));
+    if (claim.type === "suspicion") semantic.suspicions.push(item("suspicion", claim.text, "open", base));
+    if (claim.type === "belief" || claim.type === "opinion" || claim.type === "prediction" || claim.type === "rumor") {
+      semantic.uncertainties.push(item("uncertainty", claim.text, claim.type, base));
+    }
+    if (claim.type === "proposal") semantic.practicalNeeds.push(item("proposal", claim.text, "proposed", base));
+    if (claim.type === "promise") {
+      semantic.commitments.push(item("commitment", claim.text, "promised", base));
+      const commitmentKey = `${visit.visitId}:${claim.claimId}`;
+      if (!state.commitments.some((entry) => entry.payload?.commitmentKey === commitmentKey)) {
+        state.commitments.push({
+          id: `commitment-${String(state.nextCommitmentSequence++).padStart(6, "0")}`,
+          type: "npc_intention",
+          actorId: person.id,
+          targetId: claim.targetIds[0] || person.id,
+          dueDay: state.calendar.absoluteDay + 1,
+          status: "open",
+          sourceEventId: visit.originEventId,
+          payload: {
+            commitmentKey,
+            claimId: claim.claimId,
+            text: claim.text,
+            confidence: claim.confidence,
+            targetIds: claim.targetIds
+          }
+        });
+      }
+    }
+  }
+  for (const question of response.newQuestions || []) {
+    semantic.questions.push(item("question", question, "open"));
+  }
+  for (const position of response.responsePlan?.proposalPositions || []) {
+    const target = position.status === "accepted" ? semantic.agreements
+      : position.status === "rejected" ? semantic.refusals
+        : position.status === "modified" ? semantic.disagreements
+          : semantic.uncertainties;
+    target.push(item("proposal-position", position.reason, position.status, {
+      proposalId: position.proposalId
+    }));
+  }
+  for (const obligationId of response.answeredObligations || []) {
+    const question = semantic.questions.find((entry) => entry.id === obligationId);
+    if (question) question.status = "answered";
+  }
+  if (response.responsePlan?.unknowns?.length) {
+    for (const unknown of response.responsePlan.unknowns) {
+      semantic.uncertainties.push(item("unknown", unknown, "open"));
+    }
+  }
+  if (response.responsePlan?.desiredMovement) {
+    semantic.npcGoals.push(item("npc-goal", response.responsePlan.desiredMovement, "active"));
+  }
+  const emotionalDelta = Object.entries(preview.deltas)
+    .filter(([, delta]) => Number(delta) !== 0)
+    .map(([field, delta]) => `${field} ${delta > 0 ? "+" : ""}${delta}`)
+    .join(", ");
+  if (emotionalDelta) semantic.emotionalChanges.push(item("emotion", emotionalDelta, "recorded"));
+  for (const key of Object.keys(semantic)) semantic[key] = semantic[key].slice(-24);
+}
+
 export function recordExchange(state, playerText, response, { record = true } = {}) {
   const visit = state.currentVisit;
   if (!visit) {
@@ -1798,6 +2197,8 @@ export function recordExchange(state, playerText, response, { record = true } = 
   if (visit.reactionState?.endedEarly) {
     throw new Error("The visitor has ended the meeting");
   }
+  ensureConversationContinuity(visit);
+  initializeVisitObligations(visit);
   const person = materializeResident(state, visit.personId, true);
   const cleanText = String(playerText).trim().slice(0, 600);
   if (!cleanText) {
@@ -1857,12 +2258,25 @@ export function recordExchange(state, playerText, response, { record = true } = 
   };
   visit.reactionState = JSON.parse(JSON.stringify(preview.nextState));
   visit.turnAudits.push(reactionAudit);
+  updateSemanticConversationState(state, person, visit, response, preview);
   const answeredQuestionIds = new Set(
     (response.segments || []).flatMap((segment) => segment.answeredQuestionTurnIds || [])
   );
   if (!Array.isArray(response.segments) && cleanText.includes("?")) answeredQuestionIds.add(questionTurnId);
   for (const question of visit.continuity.unresolvedQuestions) {
     if (answeredQuestionIds.has(question.turnId)) question.status = "answered";
+  }
+  if (cleanText.includes("?") && clarifiedFacts.length) {
+    visit.continuity.obligationStack.push({
+      id: `obligation-${visit.visitId}-fact-${String(visit.turnsUsed).padStart(2, "0")}`,
+      kind: "answer_player_question",
+      prompt: cleanText.slice(0, 300),
+      priority: 100,
+      resumable: false,
+      status: "resolved",
+      createdTurn: visit.turnsUsed,
+      resolvedTurn: visit.turnsUsed
+    });
   }
   const mentionedFactIds = new Set([
     ...(visit.continuity.mentionedFactIds || []),
@@ -1875,6 +2289,22 @@ export function recordExchange(state, playerText, response, { record = true } = 
     ? JSON.parse(JSON.stringify(response.conversationObligation))
     : null;
   visit.continuity.lastAnsweredQuestionTurnIds = [...answeredQuestionIds];
+  const resolvedDecision = !cleanText.includes("?")
+    && (
+      (response.conversationObligation?.proposals || []).length > 0
+      || ["exact_decision", "instruction_acknowledgment", "compound_turn", "voluntary_commitment", "departure_commitment"].includes(
+        response.conversationObligation?.kind
+      )
+    );
+  if (resolvedDecision) {
+    const pendingDecision = visit.continuity.obligationStack
+      .find((obligation) => obligation.kind === "player_decision" && obligation.status === "open");
+    if (pendingDecision) {
+      pendingDecision.status = "resolved";
+      pendingDecision.resolvedTurn = visit.turnsUsed;
+    }
+  }
+  visit.continuity.obligationStack = visit.continuity.obligationStack.slice(-12);
   for (const proposal of response.conversationObligation?.proposals || []) {
     if (visit.continuity.proposals.some((entry) => entry.proposalId === proposal.proposalId)) continue;
     visit.continuity.proposals.push({
@@ -1890,7 +2320,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
     const stored = {
       proposalId: String(decision.proposalId || "").slice(0, 80),
       turn: visit.turnsUsed,
-      status: ["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
+      status: ["accepted", "rejected", "modified", "deferred", "unknown"].includes(decision.status)
         ? decision.status
         : "unknown",
       reason: completeGeneratedText(decision.reason, 120)
@@ -1985,6 +2415,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
       }
     });
   }
+  recordNeighborParishDecision(state, person, visit, cleanText);
   if (preview.disclosed) {
     const disclosedVisibility = {
       scope: visit.location === "confessional" ? "private_confession" : "private_visit",
@@ -2055,7 +2486,22 @@ export function recordExchange(state, playerText, response, { record = true } = 
         groundedFallback: Boolean(response.groundedFallback),
         structuredFallback: Boolean(response.structuredFallback),
         stagnationCount: Math.max(0, Number(response.stagnationCount) || 0),
-        interpretation: String(response.interpretation || "").slice(0, 220),
+        interpretation: response.interpretation
+          ? JSON.parse(JSON.stringify(response.interpretation))
+          : null,
+        responsePlan: response.responsePlan
+          ? JSON.parse(JSON.stringify(response.responsePlan))
+          : null,
+        claims: Array.isArray(response.claims)
+          ? JSON.parse(JSON.stringify(response.claims.slice(0, 12)))
+          : [],
+        answeredObligations: Array.isArray(response.answeredObligations)
+          ? response.answeredObligations.slice(0, 12)
+          : [],
+        newQuestions: Array.isArray(response.newQuestions)
+          ? response.newQuestions.slice(0, 6)
+          : [],
+        structuredProvided: Boolean(response.structuredProvided),
         referencedTurnIndexes: Array.isArray(response.referencedTurnIndexes)
           ? response.referencedTurnIndexes.slice(0, 6)
           : [],
@@ -2189,6 +2635,229 @@ function addChronicle(state, title, text, tone = "neutral", event = {}) {
   state.chronicle = state.chronicle.slice(0, 250);
 }
 
+export function executeDueCommitments(state, parentEventId) {
+  for (const commitment of state.commitments
+    .filter((entry) => entry.status === "open" && entry.dueDay <= state.calendar.absoluteDay)
+    .sort((left, right) => left.dueDay - right.dueDay || left.id.localeCompare(right.id))) {
+    if (commitment.type === "npc_intention") {
+      const actor = state.residents.find((resident) => resident.id === commitment.actorId);
+      if (!actor?.active || !actor.alive) {
+        commitment.status = "failed";
+        continue;
+      }
+      const rng = new SeededRng(`${state.seed}:commitment:${commitment.id}:${state.calendar.absoluteDay}`);
+      const chance = clamp(
+        35
+          + (commitment.payload.confidence || 0.5) * 35
+          + actor.morale * 0.15
+          - actor.stress * 0.2,
+        10,
+        92
+      );
+      const fulfilled = rng.next() * 100 < chance;
+      commitment.status = fulfilled ? "fulfilled" : "failed";
+      addChronicle(
+        state,
+        fulfilled ? `${actor.name} follows through` : `${actor.name} fails to keep a promise`,
+        fulfilled
+          ? `${actor.name} acts on the earlier intention: ${commitment.payload.text}`
+          : `${actor.name} does not complete the earlier intention: ${commitment.payload.text}`,
+        fulfilled ? "change" : "danger",
+        {
+          type: fulfilled ? "npc_commitment_fulfilled" : "npc_commitment_failed",
+          parentId: commitment.sourceEventId || parentEventId,
+          actorId: actor.id,
+          targetId: commitment.targetId,
+          facts: { commitmentId: commitment.id }
+        }
+      );
+      commitment.fulfilledEventId = state.chronicle[0].eventId;
+      scheduleResidentFollowup(
+        state,
+        actor.id,
+        fulfilled
+          ? `${actor.name} returns to report what happened after keeping the promise.`
+          : `${actor.name} returns to explain why the promise was not kept.`,
+        commitment.fulfilledEventId
+      );
+      continue;
+    }
+    const parish = state.neighboringParishes.find((entry) => entry.id === commitment.targetId);
+    if (!parish) {
+      commitment.status = "failed";
+      continue;
+    }
+    if (commitment.type === "neighbor_relief_resource") {
+      const amount = Number(commitment.payload.amount) || 0;
+      parish.pressures.food = clamp(parish.pressures.food - amount * 4);
+      parish.trust = clamp(parish.trust + Math.min(18, amount * 3));
+      parish.status = "aided";
+      commitment.status = "fulfilled";
+      addChronicle(
+        state,
+        `Aid reaches ${parish.name}`,
+        `${amount} ${commitment.payload.resource} from ${state.town.name}'s church reaches ${parish.churchName} after ${parish.travelDays} days. ${parish.priestName} sends thanks and reports that the immediate shortage has eased.`,
+        "faith",
+        {
+          type: "neighbor_relief_delivered",
+          parentId: commitment.sourceEventId || parentEventId,
+          actorId: "priest",
+          facts: { commitmentId: commitment.id, neighborParishId: parish.id, amount }
+        }
+      );
+      commitment.fulfilledEventId = state.chronicle[0].eventId;
+    } else {
+      parish.trust = clamp(parish.trust + 5);
+      parish.status = "contacted";
+      commitment.status = "fulfilled";
+      addChronicle(
+        state,
+        `A delegation reaches ${parish.name}`,
+        `A church delegate completes the ${parish.travelDays}-day journey, compares stores and witnesses, and returns with a clearer account of what ${parish.churchName} needs.`,
+        "change",
+        {
+          type: "neighbor_assessment_completed",
+          parentId: commitment.sourceEventId || parentEventId,
+          actorId: "priest",
+          facts: { commitmentId: commitment.id, neighborParishId: parish.id }
+        }
+      );
+      commitment.fulfilledEventId = state.chronicle[0].eventId;
+    }
+    const thread = state.narrativeThreads.find((entry) => entry.neighborParishId === parish.id);
+    if (thread) {
+      thread.stage = "consequence";
+      thread.status = "active";
+      thread.pressure = Math.max(parish.pressures.food, parish.pressures.health, parish.pressures.order);
+      thread.lastMeaningfulEventId = commitment.fulfilledEventId;
+      thread.causeEventIds = [...new Set([...thread.causeEventIds, commitment.fulfilledEventId])].slice(-20);
+    }
+  }
+}
+
+export function advanceNarrativeDirector(state, parentEventId) {
+  const day = state.calendar.absoluteDay;
+  for (const parish of state.neighboringParishes) {
+    const rng = new SeededRng(`${state.seed}:neighbor-pressure:${parish.id}:${day}`);
+    parish.pressures.food = clamp(parish.pressures.food + rng.int(-1, 2));
+    parish.pressures.health = clamp(parish.pressures.health + rng.int(-1, 1));
+    parish.pressures.order = clamp(parish.pressures.order + rng.int(-1, 1));
+    const thread = state.narrativeThreads.find((entry) => entry.neighborParishId === parish.id);
+    if (!thread || ["resolved", "retired"].includes(thread.stage)) continue;
+    thread.pressure = Math.max(parish.pressures.food, parish.pressures.health, parish.pressures.order);
+    const lastEvent = state.events.find((event) => event.id === thread.lastMeaningfulEventId);
+    if (thread.stage === "consequence"
+      && lastEvent
+      && day - lastEvent.day >= 5) {
+      addChronicle(
+        state,
+        `${parish.name} remembers the aid`,
+        `${parish.priestName} reports that households in ${parish.name} now speak differently of ${state.town.name}. The help eased one danger, though local work remains.`,
+        "faith",
+        {
+          type: "neighbor_relief_echo",
+          parentId: thread.lastMeaningfulEventId,
+          facts: { narrativeThreadId: thread.id, neighborParishId: parish.id }
+        }
+      );
+      thread.stage = "echo";
+      thread.lastMeaningfulEventId = state.chronicle[0].eventId;
+      thread.causeEventIds.push(state.chronicle[0].eventId);
+    } else if (thread.stage === "echo"
+      && lastEvent
+      && day - lastEvent.day >= 10
+      && thread.pressure < 72) {
+      thread.stage = "resolved";
+      thread.status = "resolved";
+    }
+    if (thread.stage === "seed" && day >= 3 && thread.pressure >= 70) {
+      const event = appendEvent(state, {
+        type: "narrative_pressure",
+        parentId: parentEventId,
+        actorId: null,
+        targetId: null,
+        facts: {
+          narrativeThreadId: thread.id,
+          neighborParishId: parish.id,
+          pressure: thread.pressure
+        }
+      });
+      addChronicle(
+        state,
+        `Uneasy news arrives from ${parish.name}`,
+        `Travelers report that ${parish.churchName} is struggling with ${parish.pressures.food >= parish.pressures.health ? "food shortage" : "illness"}. No request has yet been made, but the strain is becoming visible.`,
+        "neutral",
+        {
+          type: "narrative_foreshadow",
+          parentId: event.id,
+          facts: { narrativeThreadId: thread.id, neighborParishId: parish.id }
+        }
+      );
+      thread.stage = "pressure";
+      thread.status = "active";
+      thread.lastMeaningfulEventId = state.chronicle[0].eventId;
+      thread.causeEventIds.push(event.id, state.chronicle[0].eventId);
+      parish.lastEventId = state.chronicle[0].eventId;
+    }
+  }
+  const activeChoice = state.narrativeThreads.some((thread) => thread.stage === "choice");
+  if (activeChoice || day < 7 || day - state.pacing.lastMajorDay < 3) return;
+  const eligible = state.narrativeThreads
+    .filter((thread) => thread.stage === "pressure" && thread.pressure >= 75)
+    .map((thread) => ({
+      thread,
+      parish: state.neighboringParishes.find((entry) => entry.id === thread.neighborParishId)
+    }))
+    .filter(({ parish }) => parish
+      && state.material.foodSecurity >= 40
+      && state.churchResources.grain >= 10
+      && state.priest.localTrust >= 42)
+    .sort((left, right) => right.thread.pressure - left.thread.pressure || left.thread.id.localeCompare(right.thread.id));
+  const selected = eligible[0];
+  if (!selected) return;
+  const development = appendEvent(state, {
+    type: "narrative_development",
+    parentId: selected.thread.lastMeaningfulEventId || parentEventId,
+    actorId: null,
+    targetId: "priest",
+    facts: {
+      narrativeThreadId: selected.thread.id,
+      neighborParishId: selected.parish.id,
+      seed: "external_relief_request",
+      pressure: selected.thread.pressure
+    }
+  });
+  const requestAmount = Math.min(6, Math.max(3, Math.ceil((selected.parish.pressures.food - 60) / 5)));
+  scheduleExternalVisit(
+    state,
+    "neighbor_priest",
+    `${selected.parish.priestName} seeks help for ${selected.parish.churchName} in ${selected.parish.name}.`,
+    1,
+    null,
+    development.id,
+    {
+      neighborParishId: selected.parish.id,
+      narrativeThreadId: selected.thread.id,
+      priestName: selected.parish.priestName,
+      churchName: selected.parish.churchName,
+      parishName: selected.parish.name,
+      stewardName: selected.parish.stewardName,
+      lordName: selected.parish.lordName,
+      travelDays: selected.parish.travelDays,
+      resource: "grain",
+      amount: requestAmount
+    }
+  );
+  selected.thread.stage = "choice";
+  selected.thread.status = "awaiting_player";
+  selected.thread.lastMeaningfulEventId = development.id;
+  selected.thread.causeEventIds.push(development.id);
+  selected.parish.status = "requesting_help";
+  selected.parish.lastEventId = development.id;
+  state.pacing.lastMajorDay = day;
+  state.pacing.consecutiveHighIntensity += 1;
+}
+
 function resolvePopulationDay(state) {
   const tick = appendEvent(state, {
     type: "population_day",
@@ -2205,6 +2874,8 @@ function resolvePopulationDay(state) {
     });
   }
   advanceIssueThreads(state, tick.id);
+  executeDueCommitments(state, tick.id);
+  advanceNarrativeDirector(state, tick.id);
 }
 
 function maximumIntensityForLicense(license) {
@@ -3395,7 +4066,10 @@ function counselContradictsAction(visit, actionType) {
   if (!intent) return false;
   const latestRelevant = [...visit.counsel].reverse().find((entry) => keywords[intent].test(entry.toLowerCase()));
   if (!latestRelevant) return false;
-  return !classifyPriestSpeech(latestRelevant).includes(intent);
+  const speech = latestRelevant.toLowerCase();
+  return new RegExp(
+    `\\b(?:do not|don't|must not|should not|cannot|can't|never|refuse to)\\b.{0,80}(?:${keywords[intent].source})`
+  ).test(speech);
 }
 
 function decisionScore(state, visit, actor, target, actionType) {
@@ -3437,6 +4111,13 @@ function decisionScore(state, visit, actor, target, actionType) {
   if (["leave_village", "change_job", "court"].includes(actionType)) score += (personality.boldness - 50) * 0.15;
   if (["forgive", "comfort", "share_food", "adopt_child"].includes(actionType)) score += (personality.empathy - 50) * 0.15;
   if (["pray_with", "seek_absolution", "confess_publicly"].includes(actionType)) score += (personality.piety - 50) * 0.15;
+  if (actionType === "report_priest_to_bishop"
+    && state.priestReports.some((report) => (
+      report.reporterId === actor.id
+      && report.status === "private_complaint"
+      && report.auditIds.length > 0
+      && report.eligibleRecipients.some((recipient) => ["archdeacon", "bishop"].includes(recipient))
+    ))) score += 24;
   if (["heal", "nurse"].includes(actionType) && target) {
     score += Math.max(0, 70 - target.health) * 0.25;
     if (target.illness) score += 8;
@@ -3492,7 +4173,16 @@ function resolveExternalJudgment(state, person, parentEventId) {
   const role = person.role;
   let title = `${person.name} concludes the visit`;
   let text = `${person.name} leaves after recording the parish's condition.`;
-  if (["archdeacon", "bishop", "inquisitor"].includes(role)) {
+  if (role === "neighbor_priest") {
+    const parish = state.neighboringParishes.find((entry) => entry.id === state.currentVisit?.issue.neighborParishId);
+    const commitment = state.commitments.find((entry) => (
+      entry.targetId === parish?.id && entry.status === "open"
+    ));
+    title = commitment ? `${person.name} leaves with a pledged answer` : `${person.name} returns without a pledge`;
+    text = commitment
+      ? `${person.name} accepts that aid or an inspection will arrive only after the recorded ${parish.travelDays}-day journey.`
+      : `${person.name} leaves knowing that no resource or journey has yet been promised.`;
+  } else if (["archdeacon", "bishop", "inquisitor"].includes(role)) {
     const favorable = state.priest.scandal < 35 && state.priest.moralAuthority >= 45;
     state.priest.bishopFavor = clamp(state.priest.bishopFavor + (favorable ? 8 : -12));
     state.priest.moralAuthority = clamp(state.priest.moralAuthority + (favorable ? 4 : -6));
@@ -4677,6 +5367,40 @@ export function knownResidents(state) {
   return state.residents.filter((person) => person.profileRevealed);
 }
 
+export function setGameMode(state, type, { record = true } = {}) {
+  if (!["IN_WORLD", "META_PAUSED", "PLAYER_AUTHORING", "REWIND_PENDING"].includes(type)) {
+    throw new Error("Unknown game mode");
+  }
+  state.mode = {
+    type,
+    returnVisitId: type === "IN_WORLD" ? null : state.currentVisit?.visitId || state.mode?.returnVisitId || null
+  };
+  if (record) appendCommand(state, "set_mode", { mode: JSON.parse(JSON.stringify(state.mode)) });
+  return state.mode;
+}
+
+export function rewindLastConversationTurn(state, reason = "Player corrected the last turn") {
+  if (!state.currentVisit) throw new Error("Only an active appointment can rewind a conversation turn");
+  const lastCommand = state.commandLog.at(-1);
+  if (lastCommand?.type !== "conversation_exchange") {
+    throw new Error("There is no uncompacted conversation turn to rewind");
+  }
+  const remaining = state.commandLog.slice(0, -1);
+  const restored = replayGame(state.seed, remaining, state.replayBase);
+  const superseded = {
+    commandId: lastCommand.id,
+    day: lastCommand.day,
+    slot: lastCommand.slot,
+    playerText: lastCommand.payload.playerText,
+    visitorReply: lastCommand.payload.response.reply,
+    reason: String(reason).slice(0, 180)
+  };
+  restored.supersededTurns.push(superseded);
+  restored.supersededTurns = restored.supersededTurns.slice(-20);
+  appendCommand(restored, "rewind_turn", { superseded });
+  return restored;
+}
+
 export function replayGame(seed, commands, replayBase = null) {
   const state = replayBase ? restoreReplayBase(replayBase) : createGame(seed);
   for (const command of commands) {
@@ -4752,6 +5476,12 @@ export function replayGame(seed, commands, replayBase = null) {
         ...validatedOutcome,
         source: command.source
       }, { record: false });
+    } else if (command.type === "set_mode") {
+      setGameMode(state, command.payload.mode.type, { record: false });
+      state.mode.returnVisitId = command.payload.mode.returnVisitId;
+    } else if (command.type === "rewind_turn") {
+      state.supersededTurns.push(JSON.parse(JSON.stringify(command.payload.superseded)));
+      state.supersededTurns = state.supersededTurns.slice(-20);
     } else {
       throw new Error(`Unknown replay command: ${command.type}`);
     }

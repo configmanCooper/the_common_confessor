@@ -219,7 +219,7 @@ test("schema-14 saves gain partial report baselines without fabricated history",
   legacy.version = 14;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 17);
+  assert.equal(migrated.schemaVersion, 19);
   assert.deepEqual(migrated.visitArchive, []);
   assert.deepEqual(migrated.periodReports, []);
   assert.equal(migrated.periodTracking.dayStart.partial, true);
