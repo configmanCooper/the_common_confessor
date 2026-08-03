@@ -119,8 +119,8 @@ test("a natural opening receives an explicit advice question when Gemma omits on
   });
 
   const response = await client.opening(state, person);
-  assert.match(response.opening, /return the grain and clear Anias Applecombe of blame/i);
-  assert.match(response.opening, /\?/);
+  assert.match(response.opening, /What would you have me do, Father\?$/);
+  assert.doesNotMatch(response.opening, /return the grain and clear Anias Applecombe of blame/i);
 });
 
 test("formulaic advice-question openings are rewritten in the visitor's voice", async () => {
@@ -157,8 +157,8 @@ test("noun-phrase alternatives produce grammatical opening questions", async () 
     }), { status: 200, headers: { "Content-Type": "application/json" } })
   });
   const response = await client.opening(state, person);
-  assert.match(response.opening, /grieve without pretending certainty/i);
-  assert.match(response.opening, /\?/);
+  assert.match(response.opening, /What would you have me do, Father\?$/);
+  assert.doesNotMatch(response.opening, /should I|would it be wrong/i);
   assert.doesNotMatch(response.opening, /should I the immediate need/i);
 });
 

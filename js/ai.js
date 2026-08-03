@@ -180,6 +180,13 @@ function humanizeOpeningQuestion(opening, visit, person) {
   return `${retained} ${adviceQuestion(visit, person)}`.trim();
 }
 
+function generalizeOpeningQuestion(opening) {
+  const withoutTrailingQuestion = String(opening)
+    .replace(/[^.!?]*\?\s*$/, "")
+    .trim();
+  return `${withoutTrailingQuestion} What would you have me do, Father?`.trim();
+}
+
 function normalizeAdvicePhrase(value) {
   let phrase = String(value || "").trim()
     .replace(/^this course\s*:?\s*/i, "")
@@ -1941,7 +1948,7 @@ export class ParishAiClient extends EventTarget {
       "Use two to five varied sentences, usually 35 to 100 words. The visitor may hesitate, pause, begin indirectly, or reveal details in an emotionally believable order.",
       "Do not mechanically list every supplied fact. Choose the details this person would actually say first, while preserving all names, quantities, relationships, and events you do mention.",
       "Never turn a supplied fact into an unsupported rumor, uncertainty, or denial. If a permitted fact says the visitor committed or witnessed an act, the visitor must not claim ignorance or innocence.",
-      "By the end, make clear what the visitor hopes to receive from the priest, but phrase it naturally for this person. They may ask directly, hesitate, contrast two fears, or simply ask where to begin.",
+      "End simply with: 'What would you have me do, Father?' Do not list proposed solutions, alternatives, or a menu of choices in the opening question.",
       "Never use stock design phrases such as 'the matter came to a head', 'the decision is driven by', 'the profitable choice', 'I find myself troubled', 'I am hoping you might offer some guidance', 'how best to proceed', 'I need your advice on the choice itself', 'what course of action would you counsel', or 'I understand a decision is expected'.",
       "If confessionIsGuarded is true, do not reveal the hidden act or permitted facts yet. Give a specific but guarded opening shaped by the person's occupation, stress, and reason for seeking the priest.",
       "Return only the opening field required by the schema.",
@@ -1956,9 +1963,8 @@ export class ParishAiClient extends EventTarget {
     );
     generated.opening = naturalizeDialogueNames(state, person, generated.opening);
     validateOpeningGrounding(generated.opening, context, state);
-    if (visit.intent.desiredOutcome === "guidance"
-      && !/\?|(?:tell me|help me decide|i need your advice|i need your counsel|what should i|how should i|should i)\b/i.test(generated.opening)) {
-      generated.opening = `${generated.opening} ${adviceQuestion(visit, person)}`.slice(0, 800);
+    if (visit.intent.desiredOutcome === "guidance") {
+      generated.opening = generalizeOpeningQuestion(generated.opening).slice(0, 800);
     }
     return validateOpening(generated, person.name, {
       requireExplicitAdvice: visit.intent.desiredOutcome === "guidance",
