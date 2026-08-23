@@ -298,6 +298,7 @@ export function buildAgentPrompt(state, moves, { steer = "", recent = [], person
     '{"move": <index>, "text": "<what you say, if the move needs words>", "theme": "<sermon theme, only for a sermon>", "gives": [{"resource":"bread","amount":2}], "reason": "<one sentence on why>"}',
     "",
     "Use \"gives\" only when you are handing something over from the church stores as you speak, and say so in your words as well. It is one act, not two.",
+    "Give only what answers the need actually in front of you, and say in your reason why that thing helps this person now. Medicine is for the sick, food for the hungry, firewood for the cold or the ill, coin for debt or restitution. Handing a man firewood because he is unhappy is not charity, it is waste, and the stores are finite.",
     "Speak as a real parish priest would to that person: plainly, in your own words, responding to what they actually just said.",
     "Do not narrate, do not use asterisks, and do not write stage directions."
   );

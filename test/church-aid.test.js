@@ -420,3 +420,68 @@ test("what is handed over is described to the visitor so they can react", async 
   assert.match(prompt, /firewood/i);
   assert.match(prompt, /React to being handed it/);
 });
+
+/* Charity has to do something. Watched play showed a generous priest handing
+   out firewood to people who were neither cold nor ill, so what is given now
+   has to answer the need actually in front of him. */
+
+test("medicine given to someone genuinely ill treats the illness", async () => {
+  const { state, visit, person } = scene("relevance-medicine");
+  person.illness = "fever";
+  person.illnessDays = 6;
+  person.health = 40;
+  visit.issue.kind = "illness";
+  visit.intent.primaryMatter = "a fever in the household";
+  const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+  const pressureBefore = thread?.pressure;
+  const client = naturalClient({
+    understoodPlayerAs: "u", reply: "Bless you, Father.", npcIntent: "n", proposedActions: [],
+    priestGivesFromChurch: [{ resource: "medicine", amount: 3 }]
+  });
+  const line = "Take medicinal herbs from the church stores for the fever.";
+  recordExchange(state, line, await client.conversation(state, person, line, {}));
+  assert.equal(person.illness, null, "the fever was not treated");
+  assert.ok(person.health > 40);
+  if (thread) assert.ok(thread.pressure < pressureBefore, "relevant charity did not ease the matter");
+});
+
+test("charity that answers nothing does not settle the quarrel", async () => {
+  const { state, visit, person } = scene("relevance-irrelevant");
+  visit.issue.kind = "dispute";
+  visit.intent.primaryMatter = "a boundary quarrel over a fence";
+  visit.scenarioFacts = [{ id: "m", text: "A fence was moved without consent.", anchors: [] }];
+  person.health = 95;
+  const household = state.households.find((entry) => entry.id === person.householdId);
+  household.food = 90;
+  const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+  const pressureBefore = thread?.pressure;
+  const client = naturalClient({
+    understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n", proposedActions: [],
+    priestGivesFromChurch: [{ resource: "firewood", amount: 2 }]
+  });
+  const line = "Take firewood from the church stores.";
+  recordExchange(state, line, await client.conversation(state, person, line, {}));
+  if (thread) assert.equal(thread.pressure, pressureBefore, "irrelevant charity settled a boundary quarrel");
+});
+
+test("food does far more for a household that is genuinely short", async () => {
+  const hungry = scene("relevance-hungry");
+  const comfortable = scene("relevance-comfortable");
+  const hungryHouse = hungry.state.households.find((entry) => entry.id === hungry.person.householdId);
+  const fullHouse = comfortable.state.households.find((entry) => entry.id === comfortable.person.householdId);
+  hungryHouse.food = 20;
+  fullHouse.food = 90;
+  const gain = async (setup, household) => {
+    const before = household.food;
+    const client = naturalClient({
+      understoodPlayerAs: "u", reply: "Thank you.", npcIntent: "n", proposedActions: [],
+      priestGivesFromChurch: [{ resource: "grain", amount: 2 }]
+    });
+    const line = "Take two sacks of grain from the church stores.";
+    recordExchange(setup.state, line, await client.conversation(setup.state, setup.person, line, {}));
+    return household.food - before;
+  };
+  const hungryGain = await gain(hungry, hungryHouse);
+  const fullGain = await gain(comfortable, fullHouse);
+  assert.ok(hungryGain > fullGain, "the same grain helped a full household as much as a starving one");
+});

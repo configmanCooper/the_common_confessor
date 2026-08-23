@@ -39,7 +39,10 @@ test("promised church aid transfers real stores to the visitor's household", () 
     memory: "The church promised bread."
   });
   assert.equal(state.churchResources.bread, breadBefore - 3);
-  assert.equal(household.food, Math.min(100, foodBefore + 6));
+  /* Bread is worth two to a household, and doubles again when that household
+     is genuinely short, so assert the rule rather than a fixed number. */
+  const hungry = foodBefore < 55;
+  assert.equal(household.food, Math.min(100, foodBefore + 3 * 2 * (hungry ? 2 : 1)));
   const replayed = replayGame(state.seed, state.commandLog, state.replayBase);
   assert.equal(replayed.churchResources.bread, state.churchResources.bread);
 });

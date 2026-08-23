@@ -64,6 +64,7 @@ import {
   applyChurchAid,
   applyChurchDonation,
   churchDonationCapacity,
+  giftAddressesMatter,
   grantChurchResource,
   parseChurchDonationDetail,
   parseChurchTransferIntent
@@ -2420,6 +2421,18 @@ export function recordExchange(state, playerText, response, { record = true } = 
     }
   }
   for (const churchAid of churchAids) {
+    const relevant = giftAddressesMatter(churchAid.resource, visit) || churchAid.addressedNeed;
+    /* Charity that speaks to the matter actually eases it. Charity that does
+       not is still a kindness, but it should not quietly settle a quarrel it
+       has nothing to do with. */
+    if (relevant) {
+      const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+      if (thread) {
+        thread.pressure = clamp(thread.pressure - Math.min(18, 4 + churchAid.amount * 2));
+        if (churchAid.resource === "medicine") thread.danger = clamp(thread.danger - 8);
+      }
+      person.trustPriest = clamp(person.trustPriest + 3);
+    }
     const aidEvent = appendEvent(state, {
       type: "church_aid_given",
       parentId: visit.originEventId,

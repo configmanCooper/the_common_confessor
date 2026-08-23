@@ -101,9 +101,16 @@ export function applyChurchAid(state, person, text) {
   return grantChurchResource(state, person, intent.resource, intent.amount);
 }
 
-/** Move a validated amount of a church resource to a person's household.
+/* Move a validated amount of a church resource to a person's household.
     Callers may reach this either from a parsed phrase or from a semantically
-    interpreted gift; the transfer rules are identical and live only here. */
+    interpreted gift; the transfer rules are identical and live only here.
+
+    What is given matters. Medicine given to somebody who is actually ill
+    treats the illness rather than merely cheering them up; food given to a
+    household that is genuinely short does far more than the same food given to
+    one that is comfortable; firewood matters most to the sick and the frail.
+    A gift that answers no real need is still a kindness, but it should not
+    quietly solve a problem it has nothing to do with. */
 export function grantChurchResource(state, person, resource, requestedAmount) {
   const definition = CHURCH_RESOURCE_DEFINITIONS[resource];
   if (!definition) return null;
@@ -113,16 +120,31 @@ export function grantChurchResource(state, person, resource, requestedAmount) {
   const household = state.households.find((entry) => entry.id === person.householdId);
   if (!household) return null;
   resources[resource] -= amount;
+
+  let addressedNeed = false;
   if (resource === "coin") {
     household.wealth = clamp(household.wealth + amount);
+    addressedNeed = (household.debt || 0) > 0 || household.wealth < 25;
   } else if (resource === "medicine") {
-    person.health = clamp(person.health + amount * 5);
+    const ill = Boolean(person.illness);
+    addressedNeed = ill || person.health < 55;
+    person.health = clamp(person.health + amount * (ill ? 9 : 4));
     person.stress = clamp(person.stress - amount * 2);
+    if (ill) {
+      person.illnessDays = Math.max(0, (person.illnessDays || 0) - amount * 2);
+      if (person.illnessDays <= 0 || person.health >= 70) {
+        person.illness = null;
+        person.illnessDays = 0;
+      }
+    }
   } else if (resource === "firewood") {
-    person.health = clamp(person.health + amount);
+    addressedNeed = person.health < 60 || Boolean(person.illness) || (household.food ?? 100) < 45;
+    person.health = clamp(person.health + amount * (addressedNeed ? 3 : 1));
     person.stress = clamp(person.stress - amount * 2);
   } else {
-    household.food = clamp(household.food + amount * definition.householdValue);
+    const hungry = (household.food ?? 100) < 55;
+    addressedNeed = hungry;
+    household.food = clamp(household.food + amount * definition.householdValue * (hungry ? 2 : 1));
   }
   return {
     direction: "outgoing",
@@ -130,8 +152,24 @@ export function grantChurchResource(state, person, resource, requestedAmount) {
     amount,
     label: definition.label,
     unit: definition.unit,
+    addressedNeed,
     remaining: resources[resource]
   };
+}
+
+/* Whether this kind of help speaks to the matter the visitor actually brought.
+   Used to decide whether charity eases the situation itself or is simply a
+   kindness alongside it. */
+export function giftAddressesMatter(resource, visit) {
+  const text = [
+    visit?.issue?.kind,
+    visit?.intent?.primaryMatter,
+    ...(visit?.scenarioFacts || []).map((fact) => fact.text)
+  ].join(" ").toLowerCase();
+  if (resource === "medicine") return /\b(?:ill|illness|sick|sickness|fever|cough|injur|wound|dying|midwife|babe|childbed|plague|pestilence)\b/.test(text);
+  if (resource === "coin") return /\b(?:debt|owed|owes|rent|fine|restitution|repay|creditor|coin|money|poverty|poor)\b/.test(text);
+  if (resource === "firewood") return /\b(?:cold|winter|fuel|firewood|freez|ill|sick|fever)\b/.test(text);
+  return /\b(?:hunger|hungry|starv|food|bread|grain|famine|poverty|poor|feed|eat|winter)\b/.test(text);
 }
 
 export function applyChurchDonation(state, person, resource, requestedAmount) {
