@@ -55,7 +55,8 @@ export function selectConversationObligation({
     responseSource: "gemma_dialogue",
     reason: "No deterministic reaction, direct social answer, or factual answer was required."
   };
-  if (reactionPreview.requiredReaction !== "continue") {
+  if (reactionPreview.requiredReaction !== "continue"
+    && ["leave", "call_for_help", "threaten_priest", "attack_priest"].includes(reactionPreview.requiredReaction)) {
     return {
       ...base,
       kind: "required_reaction",
@@ -126,6 +127,18 @@ export function boundedPromptTrace(trace) {
       reason: String(decision.reason || "").slice(0, 120)
     })) : [],
     semanticInterpretation: trace.semanticInterpretation || null,
+    understoodPlayerAs: String(trace.understoodPlayerAs || "").slice(0, 220),
+    suppliedKnowledge: Array.isArray(trace.suppliedKnowledge)
+      ? trace.suppliedKnowledge.slice(0, 6).map((line) => String(line).slice(0, 300))
+      : [],
+    rawModelReply: String(trace.rawModelReply || "").slice(0, 600),
+    transformations: Array.isArray(trace.transformations)
+      ? trace.transformations.slice(0, 8).map((entry) => ({
+        type: String(entry?.type || "").slice(0, 40),
+        detail: String(entry?.detail || "").slice(0, 200),
+        code: String(entry?.code || "").slice(0, 60)
+      }))
+      : [],
     responsePlan: trace.responsePlan || null,
     claims: Array.isArray(trace.claims) ? trace.claims.slice(0, 12) : [],
     semanticValidation: trace.semanticValidation || null,

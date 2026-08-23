@@ -121,114 +121,10 @@ test("generic scenario variants no longer fuse an unrelated debt into a well pro
   }
 });
 
-test("generated scenarios expose a compact investigative fact web", async () => {
-  const state = createGame("investigative-fact-web");
-  const visit = beginVisit(state);
-  const person = materializeResident(state, visit.personId, true);
-  visit.issue.kind = "village concern";
-  const facts = new Map(visit.scenarioFacts.map((fact) => [fact.id, fact]));
-  for (const id of [
-    "participants", "timeline", "place", "witnesses", "evidence",
-    "authority", "capacity", "constraints", "unknowns", "counterclaim"
-  ]) {
-    assert.ok(facts.has(id), `missing ${id}`);
-  }
-  const client = repeatingClient("I cannot answer those details.");
-  const circumstances = await client.conversation(
-    state,
-    person,
-    "When and where did this happen, and who witnessed any part of it?"
-  );
-  assert.match(circumstances.reply, new RegExp(facts.get("timeline").text.split(" ").slice(0, 4).join("\\s+"), "i"));
-  assert.match(circumstances.reply, new RegExp(facts.get("place").anchors.at(-1), "i"));
-  assert.doesNotMatch(circumstances.reply, /cannot answer those details/i);
 
-  const feasibility = await client.conversation(
-    state,
-    person,
-    "Who has lawful authority, and what resources or work can you actually provide?"
-  );
-  assert.match(feasibility.reply, /\b(?:reeve|steward|magistrate|watch|priest)\b/i);
-  assert.match(feasibility.reply, new RegExp(person.occupation, "i"));
 
-  const skeptical = [];
-  for (const question of [
-    "Why should I believe this account? What proves it?",
-    "What might you be mistaken about, and what do you still not know?",
-    "What would the accused person say in their own defense?",
-    "What observation, witness, or record could test the claim fairly?",
-    "Until that test is made, what temporary action prevents harm without pretending certainty?"
-  ]) {
-    skeptical.push(await semanticClient().conversation(state, person, question));
-  }
-  assert.match(skeptical[0].reply, /\b(?:evidence|witness|record|symptoms|injuries|account)\b/i);
-  assert.match(skeptical[1].reply, /\bunknown\b|do not know/i);
-  assert.match(skeptical[2].reply, /\b(?:deny|dispute|claim|defense|no specific accused)\b/i);
-  assert.match(skeptical[3].reply, /\b(?:evidence|witness|record|symptoms|injuries|account)\b/i);
-  assert.match(skeptical[4].reply, /\b(?:first|safety|consent|authority|plan|immediate)\b/i);
-});
 
-test("household assets, children, and work questions answer every requested part", async () => {
-  const { state, visit, person } = wellState("household-capacity-answer");
-  const child = state.residents.find((resident) => resident.householdId === person.householdId && resident.id !== person.id);
-  if (child) {
-    child.age = 12;
-    if (!person.childrenIds.includes(child.id)) person.childrenIds.push(child.id);
-  }
-  const client = repeatingClient();
-  const response = await client.conversation(
-    state,
-    person,
-    "What do you have at home? Do you have children who can work for him? Can you work for him to pay the debt?"
-  );
-  assert.match(response.reply, /household has|ready coin|food stores/i);
-  assert.match(response.reply, /child|no child/i);
-  assert.match(response.reply, /work|labor/i);
-  assert.doesNotMatch(response.reply, /^Renth dumped/i);
-});
 
-test("expert questions name a real eligible villager", async () => {
-  const { state, person } = wellState("real-water-expert");
-  const expert = state.residents
-    .filter((resident) => ["healer", "herbalist", "midwife", "reeve", "miller", "tanner"].includes(resident.occupation))
-    .sort((left, right) => {
-      const rank = { healer: 0, herbalist: 1, midwife: 2, reeve: 3, miller: 4, tanner: 5 };
-      return rank[left.occupation] - rank[right.occupation] || left.id.localeCompare(right.id);
-    })[0];
-  const client = repeatingClient();
-  const response = await client.conversation(
-    state,
-    person,
-    "Do you know someone with the expertise to determine whether the well is causing the illness?"
-  );
-  assert.ok(expert);
-  assert.match(response.reply, new RegExp(expert.firstName, "i"));
-  assert.match(response.reply, new RegExp(expert.occupation, "i"));
-});
-
-test("the visitor does not invent another clean well", async () => {
-  const { state, person } = wellState("no-invented-second-well");
-  const client = repeatingClient();
-  const response = await client.conversation(
-    state,
-    person,
-    "Tell people near the well to use another nearby well."
-  );
-  assert.match(response.reply, /do not know of another nearby well|no other/i);
-  assert.doesNotMatch(response.reply, /I will send them to the other well/i);
-});
-
-test("saying that a reply failed repairs the unanswered household question", async () => {
-  const { state, visit, person } = wellState("answer-repair-household");
-  const client = repeatingClient();
-  const question = "What can you sell, and can you work for the creditor?";
-  const first = await client.conversation(state, person, question);
-  recordExchange(state, question, { ...first, source: "ai" });
-  const repaired = await client.conversation(state, person, "That did not answer my question.");
-  assert.match(repaired.reply, /household|tools|work|labor/i);
-  assert.doesNotMatch(repaired.reply, /^Renth dumped/i);
-  assert.ok(visit.continuity.unresolvedQuestions.some((entry) => entry.text === question));
-});
 
 test("investigator questions fill investigator and interviewer slots instead of repeating the well premise", async () => {
   const { state, visit, person } = wellState("investigator-obligation");
@@ -289,42 +185,6 @@ test("multi-step contact instructions are acknowledged and schedule the promised
   )));
 });
 
-test("unsupported village elders are replaced with named parish authority and traced through compaction", async () => {
-  const { state, person } = wellState("unsupported-elder-grounding");
-  let calls = 0;
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      calls += 1;
-      return new Response(JSON.stringify({
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              reply: "Perhaps the village elder can influence the steward before anyone else acts.",
-              memory: "The visitor suggested a village elder."
-            })
-          }
-        }]
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-  });
-  const priestText = "Have the steward investigate the workplace while we arrange safe water.";
-  const response = await client.conversation(state, person, priestText);
-  assert.ok(calls >= 1);
-  assert.match(response.reply, /do not know of a separate village elder/i);
-  assert.match(response.reply, /\b(?:reeve|bailiff)\b/i);
-  assert.match(response.promptTrace.prompt, /RESPONSE_PLAN_JSON=/);
-  assert.match(response.promptTrace.prompt, /CONVERSATIONAL PRIORITY:/);
-  assert.match(response.promptTrace.prompt, /LATEST_PRIEST_STATEMENT=/);
-  recordExchange(state, priestText, response);
-  finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
-  compactReplayHistory(state);
-  const restored = deserializeState(serializeState(state));
-  assert.equal(restored.aiDiagnostics.lastCompletedVisit.promptTraces.length, 1);
-  assert.equal(
-    restored.aiDiagnostics.lastCompletedVisit.promptTraces[0].responseSource,
-    response.promptTrace.responseSource
-  );
-});
 
 test("AI-planned continuity and prompt traces survive canonical mid-visit replay", async () => {
   const state = createGame("planner-mid-visit-replay");
@@ -349,26 +209,6 @@ test("AI-planned continuity and prompt traces survive canonical mid-visit replay
   assert.deepEqual(restored.currentVisit.promptTraces, state.currentVisit.promptTraces);
 });
 
-test("a mandatory social answer gets one Gemma regeneration before deterministic fallback", async () => {
-  const { state, person } = wellState("mandatory-answer-regeneration");
-  let calls = 0;
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      calls += 1;
-      const reply = calls === 1
-        ? "Several households became ill after drawing from the common well."
-        : "No thank you, Father. I should keep my thoughts on the well for now.";
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({ reply, memory: "The visitor answered an offer." }) } }]
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-  });
-  const response = await client.conversation(state, person, "Would you like some cheese?");
-  assert.equal(calls, 2);
-  assert.match(response.reply, /no thank you|cheese/i);
-  assert.equal(response.promptTrace.retryUsed, true);
-  assert.equal(response.promptTrace.responseSource, "gemma_regeneration");
-});
 
 test("contaminated-well scenarios assign the runoff source to an actual tanner", () => {
   let found = 0;
@@ -382,4 +222,142 @@ test("contaminated-well scenarios assign the runoff source to an actual tanner",
     found += 1;
   }
   assert.ok(found >= 3);
+});
+
+/* ---- Grounding under the natural-conversation architecture ----
+   The framework no longer speaks for the visitor. What it must still
+   guarantee is that authoritative knowledge REACHES the model, that the
+   world's real people are offered, and that ungrounded inventions are
+   repaired at sentence level rather than by discarding the reply. */
+
+test("investigative scenarios carry a complete fact web for the model to draw on", () => {
+  const state = createGame("investigative-fact-web");
+  const visit = beginVisit(state);
+  materializeResident(state, visit.personId, true);
+  visit.issue.kind = "village concern";
+  const facts = new Map(visit.scenarioFacts.map((fact) => [fact.id, fact]));
+  for (const id of [
+    "participants", "timeline", "place", "witnesses", "evidence",
+    "authority", "capacity", "constraints", "unknowns", "counterclaim"
+  ]) {
+    assert.ok(facts.has(id), `missing ${id}`);
+  }
+});
+
+test("circumstance and capacity questions supply the matching facts to the model", async () => {
+  const state = createGame("investigative-fact-web");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  visit.issue.kind = "village concern";
+  const supplied = [];
+  const client = semanticClient((parsed) => {
+    supplied.push(parsed.knowledge.join(" "));
+    return {
+      understoodPlayerAs: "The priest asks about the circumstances.",
+      reply: "I will tell you what little I know for certain, Father.",
+      npcIntent: "Answer the question.",
+      proposedActions: []
+    };
+  });
+  await client.conversation(state, person, "When and where did this happen, and who witnessed any part of it?");
+  assert.ok(supplied[0].length > 0, "no authoritative knowledge was supplied for a circumstance question");
+});
+
+test("the real eligible expert is offered to the model rather than invented", async () => {
+  const { state, person, visit } = wellState("real-water-expert");
+  let parsed = null;
+  const client = semanticClient((entry) => {
+    parsed = entry;
+    return {
+      understoodPlayerAs: "The priest asks who could judge the well.",
+      reply: "There is someone who might know, Father.",
+      npcIntent: "Offer a name.",
+      proposedActions: []
+    };
+  });
+  await client.conversation(
+    state,
+    person,
+    "Do you know someone with the expertise to determine whether the well is causing the illness?"
+  );
+  const offered = `${parsed.people.join("; ")} ${parsed.knowledge.join(" ")}`;
+  assert.ok(offered.trim().length > 0, "no real people were offered to the model");
+  assert.ok(
+    state.residents.some((resident) => (
+      resident.active && resident.id !== person.id && offered.includes(resident.firstName)
+    )),
+    "the offered people are not real residents"
+  );
+  assert.ok(visit.scenarioFacts.length > 0);
+});
+
+test("a weak model reply is kept rather than replaced by framework prose", async () => {
+  const { state, person } = wellState("weak-reply-preserved");
+  let calls = 0;
+  const client = semanticClient(() => {
+    calls += 1;
+    return {
+      understoodPlayerAs: "The priest offered me cheese.",
+      reply: "No thank you, Father.",
+      npcIntent: "Decline politely.",
+      proposedActions: []
+    };
+  });
+  const response = await client.conversation(state, person, "Would you like some cheese?");
+  assert.equal(calls, 1);
+  assert.equal(response.reply, "No thank you, Father.");
+  assert.ok(!response.groundedFallback);
+  assert.equal(response.promptTrace.responseSource, "gemma_dialogue");
+});
+
+test("unsupported village elders are repaired and traced through compaction", async () => {
+  const { state, person } = wellState("unsupported-elder-grounding");
+  const client = semanticClient({
+    understoodPlayerAs: "The priest wants the steward to investigate.",
+    reply: "Perhaps the village elder can influence the steward before anyone else acts.",
+    npcIntent: "Suggest a route to the steward.",
+    proposedActions: []
+  });
+  const priestText = "Have the steward investigate the workplace while we arrange safe water.";
+  const response = await client.conversation(state, person, priestText);
+  assert.doesNotMatch(response.reply, /village elder can influence/i);
+  assert.match(response.reply, /\b(?:reeve|bailiff|no named reeve)\b/i);
+  assert.ok(response.promptTrace.transformations.some((entry) => entry.type === "sentence_repaired"));
+  recordExchange(state, priestText, response);
+  finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
+  compactReplayHistory(state);
+  const restored = deserializeState(serializeState(state));
+  assert.equal(restored.aiDiagnostics.lastCompletedVisit.promptTraces.length, 1);
+  assert.equal(
+    restored.aiDiagnostics.lastCompletedVisit.promptTraces[0].responseSource,
+    response.promptTrace.responseSource
+  );
+});
+
+test("an unanswered question stays open across turns", async () => {
+  const { state, visit, person } = wellState("answer-repair-household");
+  const question = "What can you sell, and can you work for the creditor?";
+  const client = semanticClient({
+    understoodPlayerAs: "The priest asks about my means.",
+    reply: "I would rather not speak of that yet, Father.",
+    npcIntent: "Deflect.",
+    proposedActions: []
+  });
+  const first = await client.conversation(state, person, question);
+  recordExchange(state, question, { ...first, source: "ai" });
+  assert.ok(visit.continuity.unresolvedQuestions.some((entry) => entry.text === question));
+  let parsed = null;
+  const second = semanticClient((entry) => {
+    parsed = entry;
+    return {
+      understoodPlayerAs: "The priest says I dodged the question.",
+      reply: "You are right. We have the plough and little else, and I could work his fields.",
+      npcIntent: "Answer properly this time.",
+      proposedActions: []
+    };
+  });
+  const repaired = await second.conversation(state, person, "That did not answer my question.");
+  assert.match(parsed.prompt, /not answered|still unsettled|unsettled between you/i);
+  assert.match(repaired.reply, /plough/);
+  assert.ok(!repaired.groundedFallback);
 });

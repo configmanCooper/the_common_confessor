@@ -74,64 +74,57 @@ test("compound dialogue records partial acceptance, refusal, and deferral", asyn
   const visit = beginVisit(state);
   const person = materializeResident(state, visit.personId, true);
   let calls = 0;
-  const client = modelClient((prompt) => {
+  const client = semanticClient((parsed) => {
     calls += 1;
-    const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
     return {
+      understoodPlayerAs: "The priest asks for scouting, preparation, and armed defence.",
       reply: "I will send scouts and ready my household, Father, but the reeve must decide whether armed men are gathered.",
-      memory: "The visitor accepted scouting and household preparation but deferred defense to lawful authority.",
-      decisions: plan.proposals.map((proposal) => ({
+      npcIntent: "Take what I can and leave armed defence to lawful authority.",
+      proposedActions: [],
+      decisions: parsed.proposals.map((proposal) => ({
         proposalId: proposal.proposalId,
-        status: proposal.actionHint === "organize_defense" ? "deferred" : "accepted",
-        reason: proposal.actionHint === "organize_defense"
-          ? "A lawful officer must lead armed defense."
-          : "This is possible within the visitor's means."
+        status: /defend|men/i.test(proposal.text) ? "deferred" : "accepted"
       }))
     };
   });
   const priest = "Send quick scouts to verify the road. At the same time prepare your household to leave. Have men prepare to defend, but scouting is the priority.";
   const response = await client.conversation(state, person, priest);
   assert.equal(calls, 1);
-  assert.equal(response.conversationObligation.kind, "compound_turn");
   assert.equal(response.decisions.length, 3);
+  assert.match(response.reply, /the reeve must decide/);
   recordExchange(state, priest, response);
   assert.deepEqual(
     visit.continuity.visitorDecisions.map((decision) => decision.status).sort(),
     ["accepted", "accepted", "deferred"]
   );
-  const followup = await semanticClient().conversation(state, person, "Which part must you refuse?");
-  assert.match(followup.reply, /cannot yet promise|did not refuse|refuse/i);
-  assert.equal(calls, 1);
   assert.doesNotThrow(() => deserializeState(serializeState(state)));
 });
 
-test("missing compound decisions receive one retry and then bounded deterministic decisions", async () => {
+test("decisions the model omits default to unknown without discarding its words", async () => {
   const state = createGame("compound-dialogue-fallback");
   const visit = beginVisit(state);
   const person = materializeResident(state, visit.personId, true);
   let calls = 0;
-  const client = new ParishAiClient({
-    fetchImpl: async () => {
-      calls += 1;
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({
-          reply: "I will think about what you said.",
-          memory: "The visitor considered the advice."
-        }) } }]
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
+  const client = semanticClient(() => {
+    calls += 1;
+    return {
+      understoodPlayerAs: "The priest listed several things to do.",
+      reply: "I will think about what you said, Father.",
+      npcIntent: "Buy myself a moment.",
+      proposedActions: [],
+      decisions: []
+    };
   });
   const response = await client.conversation(
     state,
     person,
     "Verify the road, prepare your household to leave, and organize men to defend the village."
   );
-  assert.equal(calls, 2);
+  assert.equal(calls, 1, "the model was called more than once for an ordinary turn");
+  assert.equal(response.reply, "I will think about what you said, Father.");
+  assert.ok(!response.groundedFallback, "the model's own words were discarded");
   assert.equal(response.decisions.length, 3);
-  assert.equal(response.groundedFallback, true);
-  assert.ok(response.decisions.every((decision) => (
-    ["accepted", "rejected", "deferred", "unknown"].includes(decision.status)
-  )));
+  assert.ok(response.decisions.every((decision) => decision.status === "unknown"));
 });
 
 test("accepted compound proposals become parallel visitor action roots", () => {

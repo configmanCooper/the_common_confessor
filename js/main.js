@@ -59,6 +59,15 @@ let runtimeDebugLog = (() => {
   }
 })();
 
+let conversationDebugLog = (() => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`${DEBUG_LOG_KEY}-conversations`) || "[]");
+    return Array.isArray(stored) ? stored.slice(-120) : [];
+  } catch {
+    return [];
+  }
+})();
+
 function setHidden(element, hidden) {
   element.hidden = hidden;
 }
@@ -66,9 +75,68 @@ function setHidden(element, hidden) {
 function persistDebugLog() {
   try {
     localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(runtimeDebugLog.slice(-100)));
+    localStorage.setItem(`${DEBUG_LOG_KEY}-conversations`, JSON.stringify(conversationDebugLog.slice(-120)));
   } catch (error) {
     console.warn("Debug log persistence failed:", error);
   }
+}
+
+function describeTransformations(trace) {
+  const applied = trace?.transformations || [];
+  const flags = {
+    "semantic repair": applied.some((entry) => entry.type === "sentence_repaired"),
+    "sentence removed": applied.some((entry) => entry.type === "sentence_removed"),
+    "deterministic fallback": applied.some((entry) => entry.type === "deterministic_reaction")
+      || trace?.responseSource === "scripted_reaction",
+    "reaction override": applied.some((entry) => entry.type === "deterministic_reaction"),
+    "repetition override": applied.some((entry) => entry.type.startsWith("repetition_")),
+    "name normalisation": applied.some((entry) => entry.type === "names_naturalized"),
+    "action dropped": applied.some((entry) => entry.type === "action_dropped")
+  };
+  return { flags, applied };
+}
+
+function recordConversationTelemetry(playerText, response) {
+  const trace = response?.promptTrace || null;
+  const { flags, applied } = describeTransformations(trace);
+  const shown = String(response?.reply || "");
+  const raw = String(trace?.rawModelReply || trace?.initialReply || "");
+  const entry = {
+    timestamp: new Date().toISOString(),
+    visitId: state?.currentVisit?.visitId || null,
+    personId: state?.currentVisit?.personId || null,
+    turn: state?.currentVisit?.turnsUsed ?? null,
+    player: String(playerText || ""),
+    interpretedMeaning: trace?.understoodPlayerAs || "",
+    suppliedKnowledge: trace?.suppliedKnowledge || [],
+    includedFactIds: trace?.includedFactIds || [],
+    rawModelResponse: raw,
+    finalResponse: shown,
+    unchanged: Boolean(raw) && raw === shown,
+    responseSource: trace?.responseSource || response?.source || "unknown",
+    route: trace?.route || "",
+    modelCalled: Boolean(trace?.gemmaCalled),
+    promptChars: trace?.promptLength ?? 0,
+    transformations: flags,
+    transformationDetail: applied,
+    decisions: response?.decisions || [],
+    proposedActions: response?.proposedActions || []
+  };
+  entry.readable = [
+    `PLAYER:\n${entry.player}`,
+    `MODEL CONTEXT:\n${(entry.suppliedKnowledge.length ? entry.suppliedKnowledge : ["(no authoritative facts supplied)"]).join("\n")}`,
+    `INTERPRETED MEANING:\n${entry.interpretedMeaning || "(model returned none)"}`,
+    `RAW MODEL RESPONSE:\n${entry.rawModelResponse || "(model not called)"}`,
+    `FINAL DISPLAYED RESPONSE:\n${entry.finalResponse}`,
+    `TRANSFORMATIONS:\n${Object.entries(flags).map(([label, value]) => `- ${label}: ${value ? "yes" : "no"}`).join("\n")}`,
+    applied.length
+      ? `IF CHANGED:\n${applied.map((change) => `- ${change.type}: ${change.detail} [${change.code}]`).join("\n")}`
+      : "IF CHANGED:\n- unchanged; the displayed text is exactly what the model produced"
+  ].join("\n\n");
+  conversationDebugLog.push(entry);
+  conversationDebugLog = conversationDebugLog.slice(-120);
+  persistDebugLog();
+  return entry;
 }
 
 function logRuntimeError(phase, error, extra = {}) {
@@ -405,7 +473,12 @@ function renderVisit() {
     : visit.mood;
   elements["visitor-backstory"].textContent = visit.hiddenConcernDisclosed ? person.backstory : person.publicBackstory;
   elements["turn-counter"].textContent = `${visit.turnsUsed} / ${visit.maxTurns} things said`;
-  elements["response-source"].textContent = `Source: ${visit.promptTraces.at(-1)?.responseSource || "opening"}`;
+  const latestTrace = visit.promptTraces.at(-1);
+  const latestEntry = conversationDebugLog.at(-1);
+  const changes = (latestTrace?.transformations || []).map((entry) => entry.type);
+  elements["response-source"].textContent = latestTrace
+    ? `Source: ${latestTrace.responseSource}${changes.length ? ` (framework changed: ${changes.join(", ")})` : (latestEntry?.unchanged ? " (unchanged)" : "")}`
+    : "Source: opening";
   elements["hour-state"].textContent = visit.turnsUsed >= visit.maxTurns ? "The hour is spent." : "The hour continues.";
   if (visit.reactionState?.endedEarly) {
     elements["hour-state"].textContent = `${person.firstName} has ended the meeting.`;
@@ -589,6 +662,7 @@ async function submitCounsel(event) {
   }
   if (generation !== stateGeneration || state !== requestState) return;
   conversationInFlight = false;
+  recordConversationTelemetry(text, response);
   const currentToken = state.currentVisit?.visitId || "";
   if (generation !== stateGeneration || currentToken !== visitToken) return;
   const previousHistoryLength = state.currentVisit.history.length;
@@ -975,6 +1049,17 @@ elements["export-debug-log"].addEventListener("click", () => {
         statusText: elements["ai-status"].textContent
       },
       errors: runtimeDebugLog,
+      conversations: conversationDebugLog,
+      conversationTranscript: conversationDebugLog.map((entry) => entry.readable).join("\n\n========================\n\n"),
+      conversationSummary: {
+        turns: conversationDebugLog.length,
+        modelCalled: conversationDebugLog.filter((entry) => entry.modelCalled).length,
+        displayedExactlyAsModelWroteIt: conversationDebugLog.filter((entry) => entry.unchanged).length,
+        transformedByFramework: conversationDebugLog.filter((entry) => entry.modelCalled && !entry.unchanged).length,
+        averagePromptChars: conversationDebugLog.length
+          ? Math.round(conversationDebugLog.reduce((sum, entry) => sum + (entry.promptChars || 0), 0) / conversationDebugLog.length)
+          : 0
+      },
       stateError,
       state: stateSnapshot
     };

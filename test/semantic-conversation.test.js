@@ -8,277 +8,309 @@ import {
   recordExchange
 } from "../js/simulation.js";
 import { deserializeState, serializeState } from "../js/state.js";
+import { clarificationFacts } from "../js/conversation.js";
+import { naturalClient } from "./semantic-test-client.js";
 
-function responseBody(content) {
-  return new Response(JSON.stringify({
-    choices: [{ message: { content: JSON.stringify(content) } }]
-  }), { status: 200, headers: { "Content-Type": "application/json" } });
-}
-
-function semanticReply(plan, overrides = {}) {
-  const required = plan.requiredAnswerSlots.length ? plan.requiredAnswerSlots : [plan.obligationId];
-  return {
-    reply: "I have not seen proof myself, Father, but I can tell you exactly what I heard and what remains uncertain.",
-    memory: "The visitor distinguished evidence from uncertainty.",
-    interpretation: {
-      speechActs: [{ type: "question", meaning: "The priest asks what evidence exists.", referenceText: null, confidence: 0.96 }],
-      implicitMeaning: "The priest wants evidence rather than repetition.",
-      tone: "skeptical",
-      mandatoryResponseNeeds: ["Answer the evidence question and state uncertainty."]
-    },
-    responsePlan: {
-      primaryObligationId: required[0],
-      secondaryObligationIds: required.slice(1),
-      knownFactIds: plan.requiredFactIds,
-      unknowns: ["The full truth has not been independently confirmed."],
-      proposalPositions: [],
-      desiredMovement: "Clarify evidence without forcing a decision.",
-      endConversation: false
-    },
-    claims: plan.requiredFactIds.length ? [{
-      claimId: "claim-evidence",
-      sentenceIndex: 0,
-      type: "fact",
-      text: "The visitor has only the supplied evidence.",
-      subjectId: null,
-      targetIds: [],
-      evidenceFactIds: [plan.requiredFactIds[0]],
-      confidence: 0.85
-    }] : [],
-    answeredObligations: required,
-    newQuestions: [],
-    decisions: [],
-    ...overrides
-  };
-}
-
-function fastSemanticReply(prompt, reply) {
-  return {
-    reply,
-    meaning: "The priest asks the visitor to explain their preceding remark.",
-    claimType: "belief"
-  };
-}
-
-test("follow-ups to the visitor's own remark use one compact semantic call", async () => {
-  const state = createGame("semantic-fast-prior-reply");
+function scene(seed) {
+  const state = createGame(seed);
   const visit = beginVisit(state);
   const person = materializeResident(state, visit.personId, true);
-  recordExchange(state, "Ask the watch what they know.", {
-    reply: "I will speak with the watch, Father, though I fear they may offer little comfort.",
-    memory: "The visitor agreed to consult the watch."
-  });
+  return { state, visit, person };
+}
+
+function withSchemaSpy(client, sink) {
+  const original = client.fetchImpl;
+  client.fetchImpl = async (url, options) => {
+    sink.schema = JSON.parse(options.body).response_format.json_schema;
+    return original(url, options);
+  };
+  return client;
+}
+
+test("an ordinary turn costs exactly one model call with a compact prompt", async () => {
+  const { state, person } = scene("natural-single-call");
   let calls = 0;
-  let schemaName = "";
+  let promptChars = 0;
+  const sink = {};
+  const client = withSchemaSpy(naturalClient((_parsed, prompt) => {
+    calls += 1;
+    promptChars = prompt.length;
+    return {
+      understoodPlayerAs: "The priest asks what is troubling me.",
+      reply: "The rent is owed by Sunday and I have not the coin, Father.",
+      npcIntent: "Explain the immediate pressure.",
+      proposedActions: []
+    };
+  }), sink);
+  const response = await client.conversation(state, person, "What troubles you today?");
+  assert.equal(calls, 1);
+  assert.equal(sink.schema.name, "parish_natural_conversation");
+  assert.ok(promptChars < 6000, `prompt was ${promptChars} characters`);
+  assert.equal(response.promptTrace.route, "natural_conversation");
+  assert.equal(response.promptTrace.responseSource, "gemma_dialogue");
+  assert.match(response.reply, /rent is owed by Sunday/);
+  assert.doesNotMatch(
+    response.promptTrace.prompt,
+    /BACKGROUND_CONTEXT_JSON|RESPONSE_PLAN_JSON|APPROVED_TURN_INTERPRETATION/
+  );
+  recordExchange(state, "What troubles you today?", response);
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+});
+
+test("the prompt sends recent turns and a summary rather than the whole transcript", async () => {
+  const { state, person } = scene("natural-compact-history");
+  for (let index = 0; index < 6; index += 1) {
+    recordExchange(state, `Priest line number ${index} about the matter.`, {
+      reply: `Visitor answer number ${index} about the matter.`,
+      memory: "m"
+    });
+  }
+  let parsed = null;
+  const client = naturalClient((entry) => {
+    parsed = entry;
+    return {
+      understoodPlayerAs: "The priest asks again.",
+      reply: "I will answer something new, Father.",
+      npcIntent: "Move forward.",
+      proposedActions: []
+    };
+  });
+  await client.conversation(state, person, "And what will you do now?");
+  assert.equal(parsed.playerText, "And what will you do now?");
+  assert.ok(parsed.recent.length <= 6, `sent ${parsed.recent.length} verbatim turns`);
+  assert.match(parsed.prompt, /Earlier in this conversation:/);
+  assert.equal(parsed.recent.join("\n").includes("number 0 about the matter"), false);
+  assert.equal(parsed.recent.join("\n").includes("number 5 about the matter"), true);
+  assert.ok(parsed.prompt.length < 4000, `turn prompt was ${parsed.prompt.length} characters`);
+});
+
+test("the newest player text is presented last and verbatim", async () => {
+  const { state, person } = scene("natural-newest-priority");
   let prompt = "";
-  const client = new ParishAiClient({
-    splitSemantic: true,
-    fetchImpl: async (_url, options) => {
-      calls += 1;
-      const payload = JSON.parse(options.body);
-      schemaName = payload.response_format.json_schema.name;
-      prompt = payload.messages[1].content;
-      return responseBody(fastSemanticReply(
-        prompt,
-        "Because they have heard the same rumors and seen no soldiers themselves. I meant that they may know no more than we do."
-      ));
-    }
+  const client = naturalClient((_entry, raw) => {
+    prompt = raw;
+    return { understoodPlayerAs: "u", reply: "I understand, Father.", npcIntent: "n", proposedActions: [] };
   });
-  const response = await client.conversation(state, person, "Why would the watch offer little comfort?");
-  assert.equal(calls, 1);
-  assert.equal(schemaName, "parish_fast_conversation");
-  assert.equal(response.promptTrace.responseSource, "gemma_dialogue");
-  assert.match(response.reply, /heard the same rumors/i);
-  assert.ok(response.answeredObligations.includes(response.conversationObligation.obligationId));
-  assert.match(prompt, /FULL_ACTIVE_TRANSCRIPT=/);
-  assert.doesNotMatch(prompt, /WORLD_CONTEXT_JSON=/);
-  assert.deepEqual(response.promptTrace.includedFactIds, []);
-  recordExchange(state, "Why would the watch offer little comfort?", response);
-  assert.equal(visit.continuity.semantic.topics.at(-1).speechAct, "follow_up");
-  assert.match(visit.continuity.semantic.npcGoals.at(-1).text, /preceding remark/i);
+  await client.conversation(state, person, "No, that is not what I meant. I meant the other man.");
+  const said = prompt.indexOf("THE PRIEST JUST SAID:");
+  assert.ok(said > 0);
+  assert.match(prompt.slice(said), /No, that is not what I meant\. I meant the other man\./);
 });
 
-test("compound proposals still use the full semantic pipeline after prior exchanges", async () => {
-  const state = createGame("semantic-fast-route-guard");
-  const visit = beginVisit(state);
-  const person = materializeResident(state, visit.personId, true);
-  recordExchange(state, "We should learn more.", {
-    reply: "Then we must decide who can be trusted.",
-    memory: "The visitor wanted trustworthy help."
+test("supplied knowledge reaches the model as knowledge, not as canned dialogue", async () => {
+  const { state, visit, person } = scene("natural-knowledge-supplied");
+  const question = "What exactly happened, and how does it harm you?";
+  const expected = clarificationFacts(visit, question);
+  let parsed = null;
+  const client = naturalClient((entry) => {
+    parsed = entry;
+    return {
+      understoodPlayerAs: "The priest wants the specifics.",
+      reply: "In my own words: it went up without our consent and we cannot graze there now.",
+      npcIntent: "Give the specifics naturally.",
+      proposedActions: []
+    };
   });
-  const schemaNames = [];
-  const client = new ParishAiClient({
-    splitSemantic: true,
-    fetchImpl: async (_url, options) => {
-      const payload = JSON.parse(options.body);
-      const schemaName = payload.response_format.json_schema.name;
-      schemaNames.push(schemaName);
-      if (schemaName === "parish_turn_interpretation") {
-        return responseBody({
-          speechActs: [{
-            type: "request",
-            meaning: "The priest asks for two coordinated actions.",
-            referenceText: null,
-            confidence: 0.98
-          }],
-          implicitMeaning: "The watch and scouts should both gather evidence.",
-          tone: "practical",
-          mandatoryResponseNeeds: ["Respond to both proposed actions."]
-        });
-      }
-      const prompt = payload.messages[1].content;
-      const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
-      return responseBody(semanticReply(plan));
-    }
-  });
-  await client.conversation(state, person, "Ask the watch and send two trusted people to inspect the road.");
-  assert.deepEqual(schemaNames, ["parish_turn_interpretation", "parish_conversation_render"]);
+  const response = await client.conversation(state, person, question);
+  assert.equal(parsed.knowledge.length, expected.length);
+  assert.match(response.reply, /In my own words/);
+  assert.ok(!response.groundedFallback);
+  assert.deepEqual(response.promptTrace.suppliedKnowledge, parsed.knowledge);
+  for (const line of parsed.knowledge) {
+    assert.doesNotMatch(response.reply, new RegExp(line.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
 
-test("ordinary factual questions are rendered by Gemma from supplied knowledge", async () => {
-  const state = createGame("semantic-factual-render");
-  const visit = beginVisit(state);
-  const person = materializeResident(state, visit.personId, true);
-  let calls = 0;
-  const client = new ParishAiClient({
-    fetchImpl: async (_url, options) => {
-      calls += 1;
-      const prompt = JSON.parse(options.body).messages[1].content;
-      const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
-      return responseBody(semanticReply(plan));
-    }
+test("a model reply survives even when it uses none of the expected wording", async () => {
+  const { state, person } = scene("natural-no-keyword-replacement");
+  const client = naturalClient({
+    understoodPlayerAs: "The priest offers bread from the church stores.",
+    reply: "That would ease things more than you know. I would be grateful.",
+    npcIntent: "Accept the offer warmly.",
+    proposedActions: []
   });
-  const response = await client.conversation(state, person, "Whose eyes will be on the channel, then");
-  assert.equal(calls, 1);
-  assert.equal(response.structuredProvided, true);
-  assert.equal(response.groundedFallback, undefined);
-  assert.match(response.reply, /not seen proof myself/i);
-  assert.equal(response.promptTrace.responseSource, "gemma_dialogue");
+  const response = await client.conversation(state, person, "Would some bread from the church help?");
+  assert.match(response.reply, /I would be grateful/);
+  assert.ok(!response.groundedFallback);
+  assert.deepEqual(response.promptTrace.transformations, []);
 });
 
-test("implicit questions without punctuation can satisfy semantic obligations", async () => {
-  const state = createGame("semantic-implicit-question");
-  const visit = beginVisit(state);
-  const person = materializeResident(state, visit.personId, true);
-  const client = new ParishAiClient({
-    fetchImpl: async (_url, options) => {
-      const prompt = JSON.parse(options.body).messages[1].content;
-      const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
-      return responseBody(semanticReply(plan, {
-        interpretation: {
-          speechActs: [{ type: "implicit_question", meaning: "The priest implicitly asks who can inspect.", referenceText: "whose eyes", confidence: 0.92 }],
-          implicitMeaning: "An investigator is still needed.",
-          tone: "practical",
-          mandatoryResponseNeeds: ["Propose or admit uncertainty about an investigator."]
-        },
-        answeredObligations: [plan.obligationId]
-      }));
-    }
+test("promises become simulated commitments rather than immediate mechanics", async () => {
+  const { state, person } = scene("natural-promise-commitment");
+  const target = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
+  const targetStress = target.stress;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest asks me to speak with him.",
+    reply: `I will speak with ${target.firstName} tomorrow, Father, if he will hear me.`,
+    npcIntent: "Commit to approaching him.",
+    proposedActions: [{ action: "speak_to", target: target.name }]
   });
-  const response = await client.conversation(state, person, "Someone still needs to see whether the runoff reaches the well");
-  assert.equal(response.structuredProvided, true);
-  assert.ok(response.answeredObligations.includes(response.conversationObligation.obligationId));
+  const response = await client.conversation(state, person, "Could you speak with them tomorrow?");
+  assert.equal(response.proposedActions.length, 1);
+  assert.equal(response.proposedActions[0].targetId, target.id);
+  recordExchange(state, "Could you speak with them tomorrow?", response);
+  const commitment = state.commitments.find((entry) => (
+    entry.type === "npc_intention" && entry.actorId === person.id
+  ));
+  assert.ok(commitment, "the promise did not become a commitment");
+  assert.equal(commitment.status, "open");
+  assert.equal(target.stress, targetStress, "the promise changed world state immediately");
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
 });
 
-test("invalid claim sentences are repaired without replacing valid sentences", async () => {
-  const state = createGame("semantic-claim-repair");
-  const visit = beginVisit(state);
-  const person = materializeResident(state, visit.personId, true);
-  const knownTarget = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
-  let calls = 0;
-  const client = new ParishAiClient({
-    fetchImpl: async (_url, options) => {
-      calls += 1;
-      const payload = JSON.parse(options.body);
-      const schemaName = payload.response_format.json_schema.name;
-      if (schemaName === "parish_conversation_claim_repair") {
-        return responseBody({
-          replacements: [{
-            sentenceIndex: 1,
-            text: `Perhaps ${knownTarget.firstName} could look at it, though I have not asked yet.`,
-            claims: [{
-              claimId: "claim-repaired",
-              sentenceIndex: 1,
-              type: "proposal",
-              text: `${knownTarget.name} could inspect it.`,
-              subjectId: person.id,
-              targetIds: [knownTarget.id],
-              evidenceFactIds: [],
-              confidence: 0.55
-            }]
-          }],
-          answeredObligations: [],
-          newQuestions: []
-        });
-      }
-      const prompt = payload.messages[1].content;
-      const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
-      const base = semanticReply(plan);
-      base.reply = "I am frightened, Father. King Nobody has already ordered the arrest.";
-      base.claims = [
-        {
-          claimId: "claim-valid",
-          sentenceIndex: 0,
-          type: "opinion",
-          text: "The visitor is frightened.",
-          subjectId: person.id,
-          targetIds: [],
-          evidenceFactIds: [],
-          confidence: 1
-        },
-        {
-          claimId: "claim-invalid",
-          sentenceIndex: 1,
-          type: "fact",
-          text: "King Nobody ordered an arrest.",
-          subjectId: "person-does-not-exist",
-          targetIds: [],
-          evidenceFactIds: ["fact-does-not-exist"],
-          confidence: 1
-        }
-      ];
-      return responseBody(base);
-    }
+test("actions aimed at people who do not exist are dropped without discarding the reply", async () => {
+  const { state, person } = scene("natural-invalid-action");
+  const client = naturalClient({
+    understoodPlayerAs: "The priest asks who could help.",
+    reply: "I could ask someone I trust, though I am not certain they would agree.",
+    npcIntent: "Offer a tentative path.",
+    proposedActions: [{ action: "speak_to", target: "Lord Nobody of Nowhere" }]
   });
-  const response = await client.conversation(state, person, "What do you think we should do?");
-  assert.equal(calls, 2);
-  assert.match(response.reply, /^I am frightened, Father\./);
-  assert.match(response.reply, new RegExp(knownTarget.firstName));
-  assert.doesNotMatch(response.reply, /King Nobody/);
+  const response = await client.conversation(state, person, "Is there anyone who could help you?");
+  assert.match(response.reply, /someone I trust/);
+  assert.equal(response.proposedActions.length, 0);
+  assert.ok(response.promptTrace.transformations.some((entry) => entry.type === "action_dropped"));
+});
+
+test("an invented village elder is repaired at sentence level, keeping the rest", async () => {
+  const { state, person } = scene("natural-elder-repair");
+  const client = naturalClient({
+    understoodPlayerAs: "The priest asks who can settle it.",
+    reply: "I am frightened of what comes next, Father. The village elder has already ruled against us.",
+    npcIntent: "Explain who decides.",
+    proposedActions: []
+  });
+  const response = await client.conversation(state, person, "Who has the authority to settle this?");
+  assert.match(response.reply, /I am frightened of what comes next, Father\./);
+  assert.doesNotMatch(response.reply, /village elder has already ruled/);
+  assert.ok(response.promptTrace.transformations.some((entry) => entry.type === "sentence_repaired"));
   assert.equal(response.promptTrace.responseSource, "gemma_repaired");
 });
 
-test("model promises create persistent intentions without immediate mechanics", async () => {
-  const state = createGame("semantic-promise-commitment");
-  const visit = beginVisit(state);
-  const person = materializeResident(state, visit.personId, true);
-  const target = state.residents.find((resident) => person.relationshipIds.includes(resident.id));
-  const targetStress = target.stress;
+test("a repeated reply triggers one regeneration instead of canned stagnation prose", async () => {
+  const { state, person } = scene("natural-repetition-retry");
+  const repeated = "I simply do not know what to do about the debt and the winter coming.";
+  recordExchange(state, "Tell me more.", { reply: repeated, memory: "m" });
+  let calls = 0;
+  const client = naturalClient(() => {
+    calls += 1;
+    return calls === 1
+      ? { understoodPlayerAs: "u", reply: repeated, npcIntent: "n", proposedActions: [] }
+      : {
+        understoodPlayerAs: "u",
+        reply: "Perhaps I could sell the good plough and settle part of it.",
+        npcIntent: "n",
+        proposedActions: []
+      };
+  });
+  const response = await client.conversation(state, person, "And what might you actually do?");
+  assert.equal(calls, 2);
+  assert.match(response.reply, /sell the good plough/);
+  assert.ok(response.promptTrace.transformations.some((entry) => entry.type === "repetition_regeneration"));
+});
+
+test("compound proposals request decisions and record each one", async () => {
+  const { state, person } = scene("natural-compound-decisions");
+  let parsed = null;
+  const sink = {};
+  const client = withSchemaSpy(naturalClient((entry) => {
+    parsed = entry;
+    return {
+      understoodPlayerAs: "The priest wants two things done.",
+      reply: "I will ask the watch, but I cannot spare anyone for the road tonight.",
+      npcIntent: "Accept one part and refuse the other.",
+      proposedActions: [],
+      decisions: entry.proposals.map((proposal, index) => ({
+        proposalId: proposal.proposalId,
+        status: index === 0 ? "accepted" : "rejected"
+      }))
+    };
+  }), sink);
+  const response = await client.conversation(
+    state,
+    person,
+    "Ask the watch what they know, and send two trusted men to inspect the road."
+  );
+  assert.equal(sink.schema.name, "parish_natural_conversation_decisions");
+  assert.ok(parsed.proposals.length >= 2);
+  assert.equal(response.decisions.length, parsed.proposals.length);
+  assert.equal(response.decisions[0].status, "accepted");
+  assert.equal(response.decisions[1].status, "rejected");
+  assert.match(response.reply, /I cannot spare anyone/);
+});
+
+test("soft emotional reactions keep the model's own wording", async () => {
+  const { state, visit, person } = scene("natural-soft-reaction");
+  visit.reactionState.anger = 72;
+  visit.reactionState.offense = 68;
+  visit.reactionState.trust = 12;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest mocked me again.",
+    reply: "You go too far, Father. I came here for help, not to be laughed at.",
+    npcIntent: "Push back at the priest.",
+    proposedActions: []
+  });
+  const response = await client.conversation(state, person, "You are being a fool about all this.");
+  assert.match(response.reply, /You go too far, Father/);
+  assert.notEqual(response.promptTrace.responseSource, "scripted_reaction");
+});
+
+test("hard mechanical thresholds end the meeting without consulting the model", async () => {
+  const { state, visit, person } = scene("natural-hard-threshold");
+  visit.reactionState.anger = 96;
+  visit.reactionState.offense = 95;
+  visit.reactionState.fear = 92;
+  visit.reactionState.perceivedDanger = 95;
+  visit.reactionState.willingnessToContinue = 4;
+  visit.reactionState.harmfulTurnCount = 5;
+  visit.reactionState.harmEvidence = 12;
+  let called = false;
+  const client = naturalClient(() => {
+    called = true;
+    return { understoodPlayerAs: "u", reply: "Nothing at all.", npcIntent: "n", proposedActions: [] };
+  });
+  const response = await client.conversation(state, person, "Get out before I have you whipped, you worthless liar.");
+  if (response.endsConversation) {
+    assert.equal(called, false, "the model was consulted for a mechanical break-off");
+    assert.equal(response.promptTrace.responseSource, "scripted_reaction");
+    assert.ok(response.promptTrace.transformations.some((entry) => entry.type === "deterministic_reaction"));
+  } else {
+    assert.ok(called);
+  }
+});
+
+test("telemetry distinguishes model understanding from framework transformation", async () => {
+  const { state, person } = scene("natural-telemetry");
+  const client = naturalClient({
+    understoodPlayerAs: "The priest is asking why I distrust the watch.",
+    reply: "Because they answer to the manor before they answer to us, Father.",
+    npcIntent: "Explain my distrust.",
+    proposedActions: []
+  });
+  const response = await client.conversation(state, person, "Why would the watch offer little comfort?");
+  const trace = response.promptTrace;
+  assert.equal(trace.understoodPlayerAs, "The priest is asking why I distrust the watch.");
+  assert.equal(trace.rawModelReply, "Because they answer to the manor before they answer to us, Father.");
+  assert.equal(trace.finalReply, trace.rawModelReply);
+  assert.deepEqual(trace.transformations, []);
+  assert.equal(trace.gemmaCalled, true);
+  assert.ok(trace.prompt.includes("THE PRIEST JUST SAID"));
+});
+
+test("the model is never asked to satisfy claim, obligation, or response-plan schemas", async () => {
+  const { state, person } = scene("natural-simple-schema");
+  let schema = null;
   const client = new ParishAiClient({
     fetchImpl: async (_url, options) => {
-      const prompt = JSON.parse(options.body).messages[1].content;
-      const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
-      return responseBody(semanticReply(plan, {
-        reply: `I will speak with ${target.firstName} tomorrow, Father, if they will hear me.`,
-        claims: [{
-          claimId: "promise-speak",
-          sentenceIndex: 0,
-          type: "promise",
-          text: `Speak with ${target.name} tomorrow.`,
-          subjectId: person.id,
-          targetIds: [target.id],
-          evidenceFactIds: [],
-          confidence: 0.72
-        }]
-      }));
+      schema = JSON.parse(options.body).response_format.json_schema.schema;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({
+          understoodPlayerAs: "u", reply: "Plainly said, Father.", npcIntent: "n", proposedActions: []
+        }) } }]
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
   });
-  const response = await client.conversation(state, person, "Could you speak with them tomorrow");
-  recordExchange(state, "Could you speak with them tomorrow", response);
-  const commitment = state.commitments.find((entry) => entry.type === "npc_intention" && entry.actorId === person.id);
-  assert.ok(commitment);
-  assert.equal(commitment.status, "open");
-  assert.equal(target.stress, targetStress);
-  assert.ok(visit.continuity.semantic.commitments.length >= 1);
-  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+  await client.conversation(state, person, "I am listening.");
+  const fields = Object.keys(schema.properties).sort();
+  assert.deepEqual(fields, ["npcIntent", "proposedActions", "reply", "understoodPlayerAs"]);
 });

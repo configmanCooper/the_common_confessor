@@ -158,6 +158,40 @@ await page.route("**/local-ai/v1/chat/completions", async (route) => {
     });
     return;
   }
+  if (schemaName === "parish_natural_conversation"
+    || schemaName === "parish_natural_conversation_decisions"
+    || schemaName === "parish_natural_conversation_retry") {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    if (payload.messages?.some((message) => message.content?.includes("FAIL_STALE"))) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ choices: [] }) });
+      return;
+    }
+    const prompt = payload.messages?.[1]?.content || "";
+    const decisionPrefix = "decisions: for each of these, say accepted, rejected, deferred or unknown: ";
+    let proposals = [];
+    if (prompt.includes(decisionPrefix)) {
+      try {
+        proposals = JSON.parse(prompt.split(decisionPrefix)[1].split("\n")[0]);
+      } catch {
+        proposals = [];
+      }
+    }
+    const body = {
+      understoodPlayerAs: "The priest counsels patience about the matter at hand.",
+      reply: "I will consider that carefully, Father.",
+      npcIntent: "Accept the counsel and take time over it.",
+      proposedActions: []
+    };
+    if (proposals.length) {
+      body.decisions = proposals.map((proposal) => ({ proposalId: proposal.proposalId, status: "deferred" }));
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(body) } }] })
+    });
+    return;
+  }
   if (schemaName === "sunday_sermon") {
     await new Promise((resolve) => setTimeout(resolve, 350));
     await route.fulfill({
@@ -218,7 +252,16 @@ try {
   checkpointState(staleImport);
   await page.locator("#counsel-input").fill("Take time before you act.");
   await page.locator("#speak-button").click();
-  await page.waitForFunction(() => document.querySelector("#next-hour")?.disabled === true);
+  await page.waitForFunction(() => (
+    /1 \/ 10/.test(document.querySelector("#turn-counter")?.textContent || "")
+  ), null, { timeout: 120000 });
+  await page.locator("#dialogue-log .visitor").nth(1).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#speak-button").isDisabled(), false);
+  assert.match(await page.locator("#turn-counter").innerText(), /1 \/ 10/);
+  assert.match(
+    await page.locator("#response-source").innerText(),
+    /gemma_dialogue|gemma_repaired|copilot_dialogue|copilot_repaired|scripted_reaction|framework_static/
+  );
   await page.locator("#import-file").setInputFiles({
     name: "invalid-import.json",
     mimeType: "application/json",
@@ -233,12 +276,12 @@ try {
   assert.equal(debugPayload.format, "the-common-confessor-debug-log");
   assert.ok(debugPayload.errors.some((entry) => entry.phase === "game_import"));
   assert.ok(debugPayload.state);
-  assert.equal(await page.locator("#speak-button").isDisabled(), true);
-  assert.equal(await page.locator("#next-hour").isDisabled(), true);
-  await page.locator("#dialogue-log .visitor").nth(1).waitFor({ state: "visible" });
-  assert.equal(await page.locator("#speak-button").isDisabled(), false);
-  assert.match(await page.locator("#turn-counter").innerText(), /1 \/ 10/);
-  assert.match(await page.locator("#response-source").innerText(), /gemma_dialogue|gemma_repaired|framework_static/);
+  assert.equal(debugPayload.conversations.length, 1, "the turn was not recorded exactly once");
+  const telemetry = debugPayload.conversations[0];
+  assert.equal(telemetry.player, "Take time before you act.");
+  assert.ok(telemetry.readable.includes("FINAL DISPLAYED RESPONSE:"));
+  assert.ok(telemetry.readable.includes("TRANSFORMATIONS:"));
+  assert.equal(typeof telemetry.unchanged, "boolean");
   await page.locator("#import-file").setInputFiles({
     name: "stale-guard.json",
     mimeType: "application/json",

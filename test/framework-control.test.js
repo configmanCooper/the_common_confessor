@@ -77,12 +77,22 @@ test("factual interruptions preserve the pending player decision", async () => {
   const initialDecision = visit.continuity.obligationStack[0];
   assert.equal(initialDecision.kind, "player_decision");
   assert.equal(initialDecision.status, "open");
-  const client = semanticClient();
+  let parsed = null;
+  const client = semanticClient((entry) => {
+    parsed = entry;
+    return {
+      understoodPlayerAs: "The priest asks when this happened.",
+      reply: "It was the night before last, Father.",
+      npcIntent: "Answer the question of timing.",
+      proposedActions: []
+    };
+  });
   const response = await client.conversation(state, person, "When did this happen?");
   recordExchange(state, "When did this happen?", response);
   assert.equal(initialDecision.status, "open");
   assert.ok(visit.continuity.obligationStack.some((obligation) => (
     obligation.kind === "answer_player_question" && obligation.status === "resolved"
   )));
-  assert.match(response.reply, /still need your counsel/i);
+  assert.match(parsed.prompt, /still waiting on the priest's counsel about/i);
+  assert.equal(response.reply, "It was the night before last, Father.");
 });

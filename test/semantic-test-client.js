@@ -1,72 +1,76 @@
 import { ParishAiClient } from "../js/ai.js";
 
-function parsePrompt(prompt) {
-  const plan = JSON.parse(prompt.split("RESPONSE_PLAN_JSON=")[1].split("\nCONVERSATIONAL PRIORITY:")[0]);
-  const context = JSON.parse(prompt.split("BACKGROUND_CONTEXT_JSON=")[1].split("\nRESPONSE_PLAN_JSON=")[0]);
-  return { plan, context };
-}
+const KNOWLEDGE_HEADER = "True things you know, in your own words if they come up:";
+const DECISION_PREFIX = "decisions: for each of these, say accepted, rejected, deferred or unknown: ";
 
-export function semanticResponse(prompt, overrides = {}) {
-  const { plan, context } = parsePrompt(prompt);
-  const visibleFacts = context.activeIssues?.[0]?.facts || [];
-  const factById = new Map(visibleFacts.map((fact) => [fact.factId, fact]));
-  const required = plan.requiredAnswerSlots.length ? plan.requiredAnswerSlots : [plan.obligationId];
-  const decisions = (plan.proposals || []).map((proposal) => ({
-    proposalId: proposal.proposalId,
-    status: "accepted",
-    reason: "The visitor believes this part is possible enough to attempt."
-  }));
-  const claims = (plan.requiredFactIds || [])
-    .filter((factId) => factById.has(factId))
-    .map((factId, index) => ({
-      claimId: `claim-${index + 1}`,
-      sentenceIndex: 0,
-      type: "fact",
-      text: factById.get(factId).text,
-      subjectId: null,
-      targetIds: [],
-      evidenceFactIds: [factId],
-      confidence: 0.95
-    }));
+export function parseNaturalPrompt(prompt) {
+  const text = String(prompt || "");
+  const saidMatch = text.match(/THE PRIEST JUST SAID: "([\s\S]*?)"\n/);
+  const playerText = saidMatch ? saidMatch[1] : "";
+  const knowledge = [];
+  const knowledgeIndex = text.indexOf(KNOWLEDGE_HEADER);
+  if (knowledgeIndex >= 0) {
+    const block = text.slice(knowledgeIndex + KNOWLEDGE_HEADER.length).split("\n").slice(1);
+    for (const line of block) {
+      if (!line.startsWith("- ")) break;
+      knowledge.push(line.slice(2).trim());
+    }
+  }
+  let proposals = [];
+  const decisionIndex = text.indexOf(DECISION_PREFIX);
+  if (decisionIndex >= 0) {
+    const raw = text.slice(decisionIndex + DECISION_PREFIX.length).split("\n")[0];
+    try {
+      proposals = JSON.parse(raw);
+    } catch {
+      proposals = [];
+    }
+  }
+  const recentMatch = text.match(/The conversation just now:\n([\s\S]*?)\n(?:You ALREADY said:|THE PRIEST JUST SAID:)/);
+  const recent = recentMatch ? recentMatch[1].split("\n") : [];
+  const peopleMatch = text.match(/People you know: ([\s\S]*?)\.\n/);
   return {
-    reply: plan.knownAnswer || "I hear what you are asking, Father, and I will answer as plainly as I can.",
-    memory: "The visitor answered the priest's newest meaning.",
-    interpretation: {
-      speechActs: [{
-        type: plan.latestPlayerText.includes("?") ? "question" : "request",
-        meaning: plan.latestPlayerText,
-        referenceText: null,
-        confidence: 0.95
-      }],
-      implicitMeaning: "The newest player meaning has priority.",
-      tone: "measured",
-      mandatoryResponseNeeds: required
-    },
-    responsePlan: {
-      primaryObligationId: required[0] || null,
-      secondaryObligationIds: required.slice(1),
-      knownFactIds: plan.requiredFactIds || [],
-      unknowns: [],
-      proposalPositions: decisions,
-      desiredMovement: "Answer naturally and preserve unresolved matters.",
-      endConversation: false
-    },
-    claims,
-    answeredObligations: required,
-    newQuestions: [],
-    decisions,
-    ...overrides
+    playerText,
+    knowledge,
+    proposals,
+    recent,
+    people: peopleMatch ? peopleMatch[1].split("; ") : [],
+    prompt: text
   };
 }
 
-export function semanticClient(overrides = {}) {
+export function naturalResponse(prompt, overrides = {}) {
+  const { playerText, knowledge, proposals } = parseNaturalPrompt(prompt);
+  const reply = knowledge.length
+    ? knowledge.join(" ").slice(0, 560)
+    : "I hear what you are asking, Father, and I will answer it plainly rather than repeat myself.";
+  const base = {
+    understoodPlayerAs: `The priest said: ${playerText}`.slice(0, 220),
+    reply,
+    npcIntent: "Answer the priest's newest words directly.",
+    proposedActions: []
+  };
+  if (proposals.length) {
+    base.decisions = proposals.map((proposal) => ({ proposalId: proposal.proposalId, status: "accepted" }));
+  }
+  return { ...base, ...overrides };
+}
+
+export function naturalClient(overrides = {}, options = {}) {
   return new ParishAiClient({
-    fetchImpl: async (_url, options) => {
-      const payload = JSON.parse(options.body);
+    ...options,
+    fetchImpl: async (_url, requestOptions) => {
+      const payload = JSON.parse(requestOptions.body);
       const prompt = payload.messages[1].content;
+      const body = typeof overrides === "function"
+        ? overrides(parseNaturalPrompt(prompt), prompt)
+        : naturalResponse(prompt, overrides);
       return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify(semanticResponse(prompt, overrides)) } }]
+        choices: [{ message: { content: JSON.stringify(body) } }]
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
   });
 }
+
+export const semanticResponse = naturalResponse;
+export const semanticClient = naturalClient;
