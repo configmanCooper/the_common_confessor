@@ -190,12 +190,21 @@ export function validateAgentChoice(moves, choice) {
   return { ok: true, move, reason };
 }
 
-export function buildAgentPrompt(state, moves, { steer = "", recent = [] } = {}) {
+export function buildAgentPrompt(state, moves, { steer = "", recent = [], persona = null } = {}) {
   const board = describeBoard(state);
   const lines = [
     "You are playing the priest in a 16th-century English village parish simulation.",
     "You counsel whoever comes to you. What you say changes what people do afterwards, and those consequences accumulate over weeks.",
-    "",
+    ""
+  ];
+  if (persona?.description) {
+    lines.push(
+      `WHO YOU ARE: ${persona.description}`,
+      "Play this priest honestly, including where his instincts serve the parish badly. Do not soften him into a neutral counsellor.",
+      ""
+    );
+  }
+  lines.push(
     "You see exactly what a human player sees on screen, and nothing more. People keep things from you until they trust you.",
     "",
     "BOARD:",
@@ -204,7 +213,7 @@ export function buildAgentPrompt(state, moves, { steer = "", recent = [] } = {})
     "LEGAL MOVES — you may only choose one of these, by index:",
     ...moves.map((move) => `[${move.index}] ${move.label}\n      ${move.detail}${move.themes ? `\n      themes: ${move.themes.join(", ")}` : ""}`),
     ""
-  ];
+  );
   if (recent.length) {
     lines.push("YOUR LAST FEW MOVES (do not simply repeat them):", ...recent.slice(-5).map((entry) => `- ${entry}`), "");
   }

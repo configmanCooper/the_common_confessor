@@ -17,6 +17,7 @@
     "test:framework-soak": "node scripts/thirty-day-framework-soak.mjs"
   },
   "dependencies": {
-    "@github/copilot-sdk": "^1.0.8"
+    "@github/copilot-sdk": "^1.0.8",
+    "docx": "^9.7.1"
   }
 }

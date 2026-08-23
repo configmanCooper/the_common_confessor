@@ -44,9 +44,41 @@ function trimToSentence(value) {
 
 function parseContent(payload) {
   const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content === "string") return JSON.parse(content);
   if (content && typeof content === "object") return content;
-  throw new Error("The local model returned no usable content");
+  if (typeof content !== "string") throw new Error("The local model returned no usable content");
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    /* A small model asked for JSON will occasionally run past its token
+       budget and stop mid-string, which throws away an otherwise good reply
+       over a missing brace. Recover the fields we actually need before
+       giving up and spending another call. */
+    const salvaged = salvageJsonFields(content);
+    if (salvaged) return salvaged;
+    throw error;
+  }
+}
+
+function salvageJsonFields(raw) {
+  const text = String(raw);
+  const field = (name) => {
+    const match = new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`, "s").exec(text);
+    if (!match) return "";
+    try {
+      return JSON.parse(`"${match[1].replace(/\\?$/, "")}"`);
+    } catch {
+      return match[1].replace(/\\n/g, " ").replace(/\\"/g, '"').trim();
+    }
+  };
+  const reply = field("reply");
+  if (!reply || reply.length < 4) return null;
+  return {
+    reply,
+    understoodPlayerAs: field("understoodPlayerAs"),
+    npcIntent: field("npcIntent"),
+    memory: field("memory"),
+    truncatedRecovery: true
+  };
 }
 
 function naturalReference(state, resident) {
@@ -1528,15 +1560,19 @@ const legacyConversationSchema = {
 };
 
 const churchGiftProperty = {
-  type: ["object", "null"],
-  additionalProperties: false,
-  required: ["resource", "amount"],
-  properties: {
-    resource: {
-      type: "string",
-      enum: ["coin", "grain", "bread", "beans", "onions", "saltedFish", "cheese", "firewood", "medicine"]
-    },
-    amount: { type: "integer", minimum: 1, maximum: 100 }
+  type: "array",
+  maxItems: 4,
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["resource", "amount"],
+    properties: {
+      resource: {
+        type: "string",
+        enum: ["coin", "grain", "bread", "beans", "onions", "saltedFish", "cheese", "firewood", "medicine"]
+      },
+      amount: { type: "integer", minimum: 1, maximum: 100 }
+    }
   }
 };
 
@@ -1966,10 +2002,12 @@ export class ParishAiClient extends EventTarget {
       "- Answer what the priest just said before anything else. If he changes the subject, follow him; never restart your original problem.",
       "- References like 'that', 'him', 'the other one' and 'why' point at things already said. Work out what they mean.",
       "- If he corrects you, take the correction and answer what he actually meant.",
-      "- 1 to 3 short sentences, spoken aloud, first person. No narration, no asterisks, no stage directions, no lists.",
-      "- You may agree, disagree, refuse, hesitate, ask a question, or admit you do not know. If his suggestion genuinely settles your worry and you trust it, simply accept it and say so. Never drag things out to fill time.",
+      "- Speak aloud, in the first person. No narration, no asterisks, no stage directions, no lists.",
+      "- Let the length follow the thought. A flat refusal or a hard admission can be four words. Explaining something difficult may take three sentences. Do not pad a short answer out to a comfortable length.",
+      "- You are not only being questioned. Ask the priest something back when you would really want to know: whether he will come with you, what to tell your family, whether it is a sin, what happens if you refuse.",
+      "- You may agree, disagree, refuse, hesitate, or admit you do not know. If his suggestion genuinely settles your worry and you trust it, simply accept it and say so. Never drag things out to fill time.",
       "- Only name people you know or who were already named. Never invent an official, expert, place, or institution; say plainly if no one suitable exists.",
-      "- End on something the priest can actually act on: what you want, what you refuse, or what would have to change.",
+      "- Leave the priest something to take hold of: what you want, what you refuse, what would have to change, or a question he must answer.",
       "- Stay in character. You are not an assistant. Return only the JSON asked for."
     ].filter(Boolean).join("\n");
 
@@ -2016,7 +2054,7 @@ export class ParishAiClient extends EventTarget {
       "understoodPlayerAs: plainly, what the priest just meant. Write this first.",
       "reply: what you say aloud.",
       "npcIntent: what you are trying to do by saying it.",
-      "priestGivesFromChurch: if the priest is handing you something from the church's stores right now, give its resource key and amount, for example {\"resource\":\"coin\",\"amount\":4}. Use null if he is not giving you anything, is only promising something later, or is asking you to give something.",
+      "priestGivesFromChurch: a list of everything the priest is handing you from the church stores right now, for example [{\"resource\":\"coin\",\"amount\":4},{\"resource\":\"bread\",\"amount\":2}]. Include every item he names in this breath. Leave it empty if he is giving nothing, is only promising something later, or is asking you to give something.",
       turnAnalysis.proposals.length
         ? `decisions: for each of these, say accepted, rejected, deferred or unknown: ${JSON.stringify(turnAnalysis.proposals.map((proposal) => ({ proposalId: proposal.proposalId, text: proposal.rawText })))}`
         : "proposedActions: anything you say you will actually do, as action plus target. Leave empty if none."
@@ -2049,7 +2087,7 @@ export class ParishAiClient extends EventTarget {
       prompt,
       schema,
       useDecisions ? "parish_natural_conversation_decisions" : "parish_natural_conversation",
-      200,
+      320,
       Math.min(this.timeoutMs, 45000),
       { system }
     );
@@ -2135,35 +2173,56 @@ export class ParishAiClient extends EventTarget {
     }
 
     // The model may notice that the priest handed something over, but the
-    // engine decides whether the church can actually spare it.
-    let churchGift = null;
-    if (raw.priestGivesFromChurch && typeof raw.priestGivesFromChurch === "object") {
-      const requested = raw.priestGivesFromChurch;
+    // engine decides whether the church can actually spare it. A priest who
+    // offers grain, bread and firewood in one breath is giving three things.
+    const churchGifts = [];
+    const requestedGifts = Array.isArray(raw.priestGivesFromChurch)
+      ? raw.priestGivesFromChurch
+      : (raw.priestGivesFromChurch ? [raw.priestGivesFromChurch] : []);
+    const remaining = Object.fromEntries(
+      churchResourceRows(state.churchResources).map((row) => [row.key, row.amount])
+    );
+    for (const requested of requestedGifts.slice(0, 4)) {
       const row = churchResourceRows(state.churchResources)
-        .find((entry) => entry.key === requested.resource);
-      const amount = Math.max(0, Math.min(100, Math.floor(Number(requested.amount) || 0)));
+        .find((entry) => entry.key === requested?.resource);
+      const amount = Math.max(0, Math.min(100, Math.floor(Number(requested?.amount) || 0)));
       if (!row) {
         transformations.push({
           type: "gift_rejected",
-          detail: `unknown church resource "${requested.resource}"`,
+          detail: `unknown church resource "${requested?.resource}"`,
           code: "naturalConversation:churchGift"
         });
-      } else if (amount <= 0) {
+        continue;
+      }
+      if (amount <= 0) {
         transformations.push({
           type: "gift_rejected",
           detail: "the amount given was not a positive number",
           code: "naturalConversation:churchGift"
         });
-      } else if (row.amount < amount) {
+        continue;
+      }
+      const available = remaining[row.key] ?? 0;
+      if (available <= 0) {
         transformations.push({
-          type: "gift_reduced",
-          detail: `the church holds only ${row.amount} ${row.unit} of ${row.label.toLowerCase()}`,
+          type: "gift_rejected",
+          detail: `the church has no ${row.label.toLowerCase()} left`,
           code: "naturalConversation:churchGift"
         });
-        if (row.amount > 0) churchGift = { resource: row.key, amount: row.amount, shortfall: amount - row.amount };
-      } else {
-        churchGift = { resource: row.key, amount };
+        continue;
       }
+      if (available < amount) {
+        transformations.push({
+          type: "gift_reduced",
+          detail: `the church holds only ${available} ${row.unit} of ${row.label.toLowerCase()}`,
+          code: "naturalConversation:churchGift"
+        });
+        churchGifts.push({ resource: row.key, amount: available, shortfall: amount - available });
+        remaining[row.key] = 0;
+        continue;
+      }
+      churchGifts.push({ resource: row.key, amount });
+      remaining[row.key] = available - amount;
     }
 
     const claims = proposedActions.map((action, index) => ({
@@ -2228,7 +2287,8 @@ export class ParishAiClient extends EventTarget {
       stagnationCount: 0,
       conversationObligation: obligation,
       proposedActions,
-      churchGift,
+      churchGifts,
+      churchGift: churchGifts[0] || null,
       understoodPlayerAs: understood,
       segments: [{
         text: reply,
@@ -2682,3 +2742,4 @@ export class ParishAiClient extends EventTarget {
     return validateSermonResponse(result, attendees.map((person) => person.id));
   }
 }
+

@@ -342,7 +342,7 @@ function upgradeGroundedConversationState(state) {
     if (command.type === "conversation_exchange") {
       command.payload.response.groundedFallback ??= false;
       command.payload.response.stagnationCount ??= 0;
-      command.payload.response.churchGift ??= null;
+      command.payload.response.churchGifts ??= (command.payload.response.churchGift ? [command.payload.response.churchGift] : []);
     }
   }
   return state;

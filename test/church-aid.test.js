@@ -27,7 +27,7 @@ function givingClient(gift, reply = "Thank you, Father. It is a kindness.") {
     understoodPlayerAs: `The priest said: ${parsed.playerText}`,
     reply,
     npcIntent: "Accept what the priest is handing me.",
-    priestGivesFromChurch: gift,
+    priestGivesFromChurch: gift ? [gift] : [],
     proposedActions: []
   }));
 }
@@ -141,4 +141,53 @@ test("the older phrase parser still works when the model reports no gift", async
   const response = await client.conversation(state, person, line);
   recordExchange(state, line, response);
   assert.equal(state.churchResources.bread, before - 2);
+});
+
+test("a priest who names several things in one breath gives all of them", async () => {
+  const { state, person } = scene("gift-multiple-items");
+  const before = { ...state.churchResources };
+  const client = naturalClient((parsed) => ({
+    understoodPlayerAs: `The priest said: ${parsed.playerText}`,
+    reply: "Bless you, Father. This will carry us through the week.",
+    npcIntent: "Accept all of it gratefully.",
+    proposedActions: [],
+    priestGivesFromChurch: [
+      { resource: "grain", amount: 2 },
+      { resource: "bread", amount: 4 },
+      { resource: "firewood", amount: 1 }
+    ]
+  }));
+  const line = "Take two sacks of grain, four loaves, and a bundle of firewood.";
+  const response = await client.conversation(state, person, line);
+  assert.equal(response.churchGifts.length, 3);
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.grain, before.grain - 2);
+  assert.equal(state.churchResources.bread, before.bread - 4);
+  assert.equal(state.churchResources.firewood, before.firewood - 1);
+  assert.equal(response.churchAidsApplied.length, 3);
+  assert.equal(state.events.filter((event) => event.type === "church_aid_given").length, 3);
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+});
+
+test("one impossible item does not prevent the possible ones", async () => {
+  const { state, person } = scene("gift-partial-possible");
+  state.churchResources.medicine = 0;
+  const before = { ...state.churchResources };
+  const client = naturalClient({
+    understoodPlayerAs: "u",
+    reply: "Thank you for what you can spare, Father.",
+    npcIntent: "n",
+    proposedActions: [],
+    priestGivesFromChurch: [
+      { resource: "medicine", amount: 2 },
+      { resource: "bread", amount: 3 }
+    ]
+  });
+  const line = "Take medicine and three loaves.";
+  const response = await client.conversation(state, person, line);
+  assert.equal(response.churchGifts.length, 1);
+  assert.equal(response.churchGifts[0].resource, "bread");
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.bread, before.bread - 3);
+  assert.equal(state.churchResources.medicine, 0);
 });

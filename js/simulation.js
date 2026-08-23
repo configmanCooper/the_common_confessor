@@ -2403,10 +2403,15 @@ export function recordExchange(state, playerText, response, { record = true } = 
       visit.originEventId
     );
   }
-  const churchAid = response.churchGift
-    ? grantChurchResource(state, person, response.churchGift.resource, response.churchGift.amount)
-    : applyChurchAid(state, person, cleanText);
-  if (churchAid) {
+  const requestedGifts = Array.isArray(response.churchGifts)
+    ? response.churchGifts
+    : (response.churchGift ? [response.churchGift] : []);
+  const churchAids = requestedGifts.length
+    ? requestedGifts
+      .map((gift) => grantChurchResource(state, person, gift.resource, gift.amount))
+      .filter(Boolean)
+    : [applyChurchAid(state, person, cleanText)].filter(Boolean);
+  for (const churchAid of churchAids) {
     appendEvent(state, {
       type: "church_aid_given",
       parentId: visit.originEventId,
@@ -2424,6 +2429,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
       unit: churchAid.unit,
       remaining: churchAid.remaining
     };
+    (response.churchAidsApplied ||= []).push(response.churchAidApplied);
   }
   recordNeighborParishDecision(state, person, visit, cleanText);
   if (preview.disclosed) {
@@ -2494,12 +2500,10 @@ export function recordExchange(state, playerText, response, { record = true } = 
         disclosure: preview.disclosure,
         contradictionId: preview.contradictionId,
         groundedFallback: Boolean(response.groundedFallback),
-        churchGift: response.churchGift
-          ? {
-            resource: String(response.churchGift.resource),
-            amount: Math.max(0, Math.floor(Number(response.churchGift.amount) || 0))
-          }
-          : null,
+        churchGifts: requestedGifts.map((gift) => ({
+          resource: String(gift.resource),
+          amount: Math.max(0, Math.floor(Number(gift.amount) || 0))
+        })),
         structuredFallback: Boolean(response.structuredFallback),
         stagnationCount: Math.max(0, Number(response.stagnationCount) || 0),
         interpretation: response.interpretation

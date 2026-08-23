@@ -170,6 +170,103 @@ report.sermonThemes = sermons.reduce((totals, entry) => {
 const noUnderstanding = exchanges.filter((entry) => !entry.understoodAs).length;
 report.repliesWithoutInterpretation = noUnderstanding;
 
+/* 11. Did the simulation's numbers actually move?
+   This is the part a transcript cannot tell you. Every value sampled during
+   the run is compared start against end; anything that never moved is either
+   unreachable through play or quietly broken. */
+const snapshots = data.snapshots || [];
+if (snapshots.length >= 2) {
+  const first = snapshots[0];
+  const last = snapshots[snapshots.length - 1];
+  const movement = {};
+  const stuck = [];
+
+  const walk = (a, b, path) => {
+    for (const key of Object.keys(a || {})) {
+      const left = a[key];
+      const right = b?.[key];
+      const label = path ? `${path}.${key}` : key;
+      if (left && typeof left === "object") {
+        walk(left, right || {}, label);
+        continue;
+      }
+      if (typeof left !== "number") continue;
+      const delta = Number(((right ?? left) - left).toFixed(2));
+      movement[label] = { start: left, end: right ?? left, delta };
+      const everMoved = snapshots.some((entry) => {
+        const value = label.split(".").reduce((node, part) => node?.[part], entry);
+        return typeof value === "number" && value !== left;
+      });
+      if (!everMoved) stuck.push(label);
+    }
+  };
+  walk(
+    { churchStores: first.churchStores, priest: first.priest, town: first.town, population: first.population, counts: first.counts },
+    { churchStores: last.churchStores, priest: last.priest, town: last.town, population: last.population, counts: last.counts },
+    ""
+  );
+
+  report.stateMovement = movement;
+  report.neverMoved = stuck;
+  report.daysSampled = last.day - first.day;
+  if (stuck.length) {
+    findings.push(`${stuck.length} tracked values never changed across ${last.day - first.day} days: ${stuck.slice(0, 12).join(", ")}${stuck.length > 12 ? "…" : ""}`);
+  }
+  const spentStores = Object.entries(last.churchStores)
+    .filter(([key, value]) => value < first.churchStores[key]).length;
+  if (!spentStores) {
+    findings.push("The church stores were never drawn down; charity is either unreachable or unattractive.");
+  }
+} else {
+  report.stateMovement = "no snapshots in this run";
+}
+
+/* 12. Were the individual people actually changed by any of it?
+   Averages across two hundred villagers hide everything. What matters is
+   whether the person who sat down with the priest, and the third parties they
+   named, were measurably different afterwards. */
+const tracked = data.trackedPeople || [];
+if (tracked.length) {
+  const compare = (person) => {
+    const fields = ["stress", "health", "faith", "trustPriest", "memories", "relationships", "wealth", "food"];
+    const moved = fields.filter((field) => (
+      typeof person.start?.[field] === "number"
+      && typeof person.end?.[field] === "number"
+      && person.start[field] !== person.end[field]
+    ));
+    return moved;
+  };
+  const rows = tracked.map((person) => ({
+    name: person.name,
+    why: person.why,
+    changed: compare(person)
+  }));
+  const visitors = rows.filter((row) => row.why === "visited the priest");
+  const thirdParties = rows.filter((row) => row.why !== "visited the priest");
+  const untouchedVisitors = visitors.filter((row) => !row.changed.length);
+  const untouchedThirdParties = thirdParties.filter((row) => !row.changed.length);
+
+  report.people = {
+    tracked: rows.length,
+    visitors: visitors.length,
+    thirdParties: thirdParties.length,
+    visitorsUnchanged: untouchedVisitors.length,
+    thirdPartiesUnchanged: untouchedThirdParties.length,
+    fieldsThatMoved: rows.reduce((totals, row) => {
+      for (const field of row.changed) totals[field] = (totals[field] || 0) + 1;
+      return totals;
+    }, {}),
+    examples: rows.slice(0, 8)
+  };
+
+  if (untouchedVisitors.length) {
+    findings.push(`${untouchedVisitors.length} of ${visitors.length} people who spoke with the priest ended the fortnight completely unchanged: ${untouchedVisitors.slice(0, 5).map((row) => row.name).join(", ")}.`);
+  }
+  if (thirdParties.length && untouchedThirdParties.length === thirdParties.length) {
+    findings.push(`None of the ${thirdParties.length} third parties named in conversation were affected at all; consequences are not reaching people who were talked about.`);
+  }
+}
+
 report.findings = findings;
 
 console.log(JSON.stringify(report, null, 2));
