@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createGame, marketOffer, buyAtMarket, applySermon, fallbackSermonOutcome } from "../js/simulation.js";
-import { serializeState, deserializeState } from "../js/state.js";
+import {
+  createGame,
+  marketOffer,
+  marketIsOpen,
+  buyAtMarket,
+  beginVisit,
+  applySermon,
+  fallbackSermonOutcome
+} from "../js/simulation.js";
+import { serializeState, deserializeState, compactReplayHistory } from "../js/state.js";
 import {
   calculateMarket,
   producerEffectiveness,
@@ -181,4 +189,52 @@ test("what the priest buys stays bought after the sermon ends the day", () => {
   buyAtMarket(state, [{ good: listing.key, quantity: 2 }]);
   const again = marketOffer(state).listings.find((entry) => entry.key === listing.key);
   assert.equal(again.stock, stockBefore - 2, "the stall restocked itself behind the priest's back");
+});
+
+test("the chain never makes a good out of materials that do not exist", () => {
+  for (let index = 0; index < 12; index += 1) {
+    const market = calculateMarket(createGame("chain-books-" + index));
+    for (const [key, good] of Object.entries(market.goods)) {
+      /* Households eat first but keep only three quarters back, so the most the
+         workshops may ever draw is that floor or the true surplus. */
+      const allowed = Math.max(good.produced * 0.25, good.produced - good.need) + 1e-6;
+      assert.ok(good.usedByOtherTrades <= allowed,
+        `parish ${index}: the trades took ${good.usedByOtherTrades.toFixed(1)} of ${key} when only ${allowed.toFixed(1)} was there`);
+    }
+  }
+});
+
+test("a shortfall of one thing does not stop the parish making everything else", () => {
+  for (let index = 0; index < 12; index += 1) {
+    const market = calculateMarket(createGame("chain-cliff-" + index));
+    assert.ok(market.goods.bread.produced > 0,
+      `parish ${index} baked no bread at all, which is a cliff rather than a squeeze`);
+  }
+});
+
+test("a saved parish still loads after a sermon and a market", () => {
+  const state = createGame("market-save");
+  state.calendar.absoluteDay = 6;
+  state.calendar.dayIndex = 6;
+  state.calendar.week = 1;
+  const text = "Carry bread to the house that has none, and give what you can spare.";
+  applySermon(state, "Charity", text, { ...fallbackSermonOutcome(state, "Charity", text), source: "fallback" });
+  compactReplayHistory(state);
+  const offer = marketOffer(state);
+  const listing = offer.listings.find((entry) => entry.stock > 0 && entry.price <= offer.coin);
+  if (listing) buyAtMarket(state, [{ good: listing.key, quantity: 1 }]);
+  assert.doesNotThrow(() => deserializeState(serializeState(state)),
+    "the save no longer matches a replay of its own command log");
+});
+
+test("the stalls close when the priest turns to his first visitor", () => {
+  const state = createGame("market-window");
+  state.calendar.absoluteDay = 6;
+  state.calendar.dayIndex = 6;
+  state.calendar.week = 1;
+  const text = "Carry bread to the house that has none.";
+  applySermon(state, "Charity", text, { ...fallbackSermonOutcome(state, "Charity", text), source: "fallback" });
+  assert.equal(marketIsOpen(state), true, "the stalls should be up after the sermon");
+  beginVisit(state);
+  assert.equal(marketIsOpen(state), false, "the stalls should come down once a visitor is received");
 });

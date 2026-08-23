@@ -829,11 +829,15 @@ async function deliverSermon() {
 
 /* Reports wait until the priest has closed the market, so nothing is skipped
    past while he is still reading who he moved. */
+/* Which sermon's aftermath the priest has already closed. Kept here rather than
+   on the game state because the state must stay identical to a replay of its
+   own command log. */
+let aftermathDismissed = null;
 let pendingPeriodReports = [];
 
 function closeMarketAndMoveOn() {
   setHidden(elements["aftermath-panel"], true);
-  state.lastSermonAftermath = null;
+  aftermathDismissed = state.lastSermonAftermath?.day ?? null;
   const reports = pendingPeriodReports;
   pendingPeriodReports = [];
   if (reports.length) {
@@ -853,8 +857,12 @@ function closeMarketAndMoveOn() {
 let marketPanelOpen = false;
 
 function renderSermonAftermath() {
+  /* Deliberately not stored on the game state. A save is checked against a
+     replay of its own command log, so anything the interface clears outside
+     that log makes the parish unloadable; the panel being open is a fact about
+     the screen, not about the village. */
   const aftermath = state.lastSermonAftermath;
-  if (!aftermath) return false;
+  if (!aftermath || aftermathDismissed === aftermath.day) return false;
 
   elements["aftermath-title"].textContent = `The parish has heard you on ${aftermath.theme.toLowerCase()}`;
   elements["aftermath-summary"].textContent =
@@ -1257,6 +1265,15 @@ async function watchTakeTurn() {
   try {
     const moves = legalMoves(state);
     if (!moves.length) {
+      /* Nothing to do usually means the priest is still standing in front of
+         the market board with the day waiting behind it. Close it and let the
+         week go on rather than spinning here. */
+      if (!elements["aftermath-panel"].hidden) {
+        watchLog("Closes the church for the night.", "move");
+        closeMarketAndMoveOn();
+        setWatchStatus("Ready.");
+        return true;
+      }
       setWatchStatus("There is nothing for the priest to do just now.");
       return false;
     }
@@ -1304,6 +1321,9 @@ async function watchTakeTurn() {
         if (!elements["aftermath-panel"].hidden) renderMarket();
       }
       renderCommon();
+    } else if (!elements["aftermath-panel"].hidden) {
+      /* Anything else chosen while the board is up means he is done shopping. */
+      closeMarketAndMoveOn();
     }
     setWatchStatus("Ready.");
     return true;

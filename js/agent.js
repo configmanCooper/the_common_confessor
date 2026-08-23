@@ -15,7 +15,7 @@
 
 import { EXTERNAL_ROLES, SERMON_THEMES } from "./data.js";
 import { churchResourceRows } from "./church.js";
-import { availableOfficers, marketOffer } from "./simulation.js";
+import { availableOfficers, marketIsOpen, marketOffer } from "./simulation.js";
 
 export const AGENT_MOVE_KINDS = Object.freeze([
   "speak",
@@ -146,10 +146,10 @@ export function legalMoves(state) {
         + " and the trust of those who hear it. Some parishioners give without being asked if they think well of you."
     });
   }
-  /* The stalls go up once the parish has been preached to, and they come down
-     when the priest closes the church for the night. That window, rather than
-     the weekday, is what makes the move legal — a sermon ends the Sunday. */
-  if (state.lastSermonAftermath) {
+  /* The stalls go up once the parish has been preached to, and come down when
+     he turns to the week's first visitor. That window, rather than the weekday,
+     is what makes the move legal — a sermon ends the Sunday. */
+  if (marketIsOpen(state)) {
     const offer = marketOffer(state);
     const affordable = offer.listings.filter((listing) => listing.stock > 0 && listing.price <= offer.coin);
     if (affordable.length) {

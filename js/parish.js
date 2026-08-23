@@ -209,7 +209,7 @@ export function sermonRelevance(state, person, theme, spokenWords, household) {
 
   /* Whatever they came to him about is the thing they are listening for. */
   for (const thread of state.issueThreads || []) {
-    if (thread.status === "closed") continue;
+    if (thread.status === "resolved") continue;
     if (!(thread.subjectIds || []).includes(person.id)) continue;
     const anchors = new Set();
     for (const fact of thread.facts || []) for (const anchor of fact.anchors || []) anchors.add(String(anchor).toLowerCase());
@@ -257,8 +257,11 @@ export function sermonNovelty(state, theme, spokenWords) {
  * account of everyone it moved and why. Mutates the people it moves.
  */
 export function resolveSermonImpact(state, theme, text, attendees, consistency, reactions) {
+  /* Only what the priest actually wrote. The theme is weighed separately and
+     far more lightly inside sermonRelevance; folding its words in here would
+     let the dropdown masquerade as the sermon, and would credit the priest with
+     naming troubles he never mentioned. */
   const spokenWords = tokenise(text);
-  for (const concept of THEME_CONCEPTS[theme] || []) spokenWords.add(concept);
   const novelty = sermonNovelty(state, theme, spokenWords);
   const force = sermonForce(state, text, consistency) * novelty;
   const reactionOf = new Map((reactions || []).map((entry) => [entry.personId, entry.reaction]));
@@ -334,7 +337,7 @@ export function resolveSermonImpact(state, theme, text, attendees, consistency, 
     const eased = [];
     if (direction > 0 && relevance.score > 0.5 && impact > 0.22) {
       for (const thread of state.issueThreads || []) {
-        if (thread.status === "closed" || !(thread.subjectIds || []).includes(person.id)) continue;
+        if (thread.status === "resolved" || !(thread.subjectIds || []).includes(person.id)) continue;
         const relief = Math.min(12, Math.round(impact * 22));
         thread.pressure = clamp((thread.pressure ?? 50) - relief);
         thread.danger = clamp((thread.danger ?? 0) - Math.round(relief * 0.5));

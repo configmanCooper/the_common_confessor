@@ -633,7 +633,9 @@ function processHealthAndAging(state, day, events) {
       const frailty = person.age > 62 ? 1.9 : person.age < 5 ? 2.2 : person.age < 14 ? 1.3 : 1;
       const weakness = Math.max(0, (55 - person.health) / 55);
       const care = household ? household.food / 100 + household.wealth / 150 : 0.2;
-      const nursing = person.flags?.includes("tended_by_church") ? 0.45 : care > 0.7 ? 0.6 : care > 0.4 ? 1 : 1.8;
+      const nursing = (person.flags || []).some((flag) => flag.startsWith("tended_by_church"))
+        ? 0.45
+        : care > 0.7 ? 0.6 : care > 0.4 ? 1 : 1.8;
       illnessRisk = 0.0016 * severity * duration * frailty * nursing * (0.25 + weakness * 1.9);
     }
     if (person.injury && !person.injury.treated) {

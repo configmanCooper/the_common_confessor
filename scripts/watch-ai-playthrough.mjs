@@ -16,13 +16,16 @@ import { fileURLToPath } from "node:url";
 import {
   applySermon,
   beginVisit,
+  buyAtMarket,
   createGame,
   fallbackConversation,
   fallbackDeparturePlan,
   fallbackSermonOutcome,
   finishVisit,
+  petitionAuthority,
   recordExchange,
-  requestVisits
+  requestVisits,
+  summonOfficer
 } from "../js/simulation.js";
 import { compactReplayHistory, deserializeState, serializeState } from "../js/state.js";
 import { ParishAiClient } from "../js/ai.js";

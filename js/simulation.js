@@ -2890,6 +2890,21 @@ export function marketOffer(state) {
 }
 
 /**
+ * Are the stalls still up?
+ *
+ * Derived rather than stored. A flag saying "the priest has finished shopping"
+ * would have to travel in the command log to survive a replay, and it does not
+ * need to: the market opens when the sermon settles the board and closes the
+ * moment the priest turns to the week's first visitor, both of which are
+ * already in the log.
+ */
+export function marketIsOpen(state) {
+  if (!state.market || !state.lastSermonAftermath) return false;
+  if (state.currentVisit) return false;
+  return state.calendar.absoluteDay - state.market.settledDay <= 1;
+}
+
+/**
  * Spend church coin at the Sunday market. Each purchase is checked against the
  * board and against the purse before anything moves, so a request that asks for
  * more than the village has, or more than the church can pay for, is trimmed

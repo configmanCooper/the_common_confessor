@@ -345,7 +345,17 @@ export function calculateMarket(state) {
     }
     const shareOf = {};
     for (const key of PRODUCTION_ORDER) {
-      const spare = Math.max(0, labour[key].possible - goods[key].need);
+      /* What is actually left for the workshops is measured against what was
+         actually made this round, not against what the trade could have made
+         with unlimited materials. Measuring against the latter lets a shortage
+         two links up the chain vanish, and lets bakers bake bread out of flour
+         that was never milled. */
+      /* Households eat first, but not to the last crumb. A village short of
+         firewood burns a little less at home rather than shutting the bakehouse
+         entirely, so the workshops keep a floor of what is made. Without it any
+         subsistence deficit sets everything downstream to exactly zero, and the
+         parish stops baking the moment it is slightly cold. */
+      const spare = Math.max(output[key] * 0.25, output[key] - goods[key].need);
       shareOf[key] = claims[key] > 0 ? Math.min(1, spare / claims[key]) : 1;
     }
     limits = {};
@@ -367,6 +377,32 @@ export function calculateMarket(state) {
       output[key] = output[key] + (target - output[key]) * 0.5;
       limits[key] = worst < 0.98 ? limiting : null;
     }
+  }
+
+  /* The settling above approaches its answer from above, so the last round can
+     still leave a workshop holding a few units more than were left for it.
+     Trim each trade down to what its inputs genuinely covered, so the books
+     balance exactly and nothing is made out of nothing. */
+  for (let pass = 0; pass < 6; pass += 1) {
+    const claims = {};
+    for (const key of PRODUCTION_ORDER) claims[key] = 0;
+    for (const key of PRODUCTION_ORDER) {
+      for (const [inputKey, perUnit] of Object.entries(TRADE_GOODS[key].inputs)) {
+        claims[inputKey] += output[key] * perUnit;
+      }
+    }
+    let trimmed = false;
+    for (const key of PRODUCTION_ORDER) {
+      const spare = Math.max(output[key] * 0.25, output[key] - goods[key].need);
+      if (claims[key] <= spare + 1e-9) continue;
+      const share = claims[key] > 0 ? spare / claims[key] : 1;
+      for (const consumer of PRODUCTION_ORDER) {
+        if (!(key in TRADE_GOODS[consumer].inputs)) continue;
+        output[consumer] *= share;
+        trimmed = true;
+      }
+    }
+    if (!trimmed) break;
   }
 
   const consumed = {};

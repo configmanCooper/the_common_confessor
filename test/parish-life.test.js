@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createGame } from "../js/simulation.js";
+import { createGame, applySermon, fallbackSermonOutcome } from "../js/simulation.js";
 import { advancePopulationDay, inflictInjury } from "../js/population.js";
 import { grantChurchResource } from "../js/church.js";
 import { appendEvent } from "../js/state.js";
@@ -199,4 +199,37 @@ test("every figure on the priest's panel can move in both directions", () => {
   assert.ok(good.material.foodSecurity > bad.material.foodSecurity, "food security did not respond");
   assert.ok(good.material.crime < bad.material.crime, "crime did not respond");
   assert.ok(good.material.infrastructure > bad.material.infrastructure, "infrastructure did not respond");
+});
+
+test("church nursing changes survival on its own", () => {
+  function epidemic(tended) {
+    const state = createGame("nursing-flag");
+    for (const person of makeIll(state, 60)) {
+      if (tended) person.flags = [...(person.flags || []), "tended_by_church_until_day_90"];
+    }
+    /* Deliberately poor households, so nothing but the nursing differs. */
+    for (const household of state.households) {
+      household.food = 6;
+      household.wealth = 3;
+    }
+    return runDays(state, 60).death || 0;
+  }
+  const untended = epidemic(false);
+  const nursed = epidemic(true);
+  assert.ok(nursed < untended * 0.75,
+    `nursing should save lives even in a poor house: ${nursed} nursed against ${untended} untended`);
+});
+
+test("a settled trouble stops drawing sermons towards it", () => {
+  const state = createGame("resolved-threads");
+  state.calendar.absoluteDay = 6;
+  state.calendar.dayIndex = 6;
+  state.calendar.week = 1;
+  for (const thread of state.issueThreads || []) thread.status = "resolved";
+  const before = (state.issueThreads || []).map((thread) => thread.pressure);
+  const text = "There are households going hungry while their neighbours have plenty. Carry bread to the house that has none.";
+  applySermon(state, "Charity", text, { ...fallbackSermonOutcome(state, "Charity", text), source: "fallback" });
+  const eased = (state.lastSermonAftermath?.affected || []).flatMap((entry) => entry.easedThreadIds);
+  assert.equal(eased.length, 0, "a resolved thread should not be eased again");
+  assert.deepEqual((state.issueThreads || []).map((thread) => thread.pressure), before);
 });
