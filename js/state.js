@@ -344,6 +344,8 @@ function upgradeGroundedConversationState(state) {
       command.payload.response.stagnationCount ??= 0;
       command.payload.response.churchGifts ??= (command.payload.response.churchGift ? [command.payload.response.churchGift] : []);
       command.payload.response.visitorDonations ??= [];
+      command.payload.response.officerSummons ??= [];
+      command.payload.response.authorityPetitions ??= [];
     }
   }
   return state;

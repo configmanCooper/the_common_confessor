@@ -35,6 +35,11 @@ import {
 } from "../js/agent.js";
 import { copilotComplete } from "./copilot-provider.mjs";
 import { personaById, personaIds } from "../js/priest_personas.js";
+import { WEEK_DAYS } from "../js/data.js";
+
+function dayLabel(day, week) {
+  return `${WEEK_DAYS[day % 7]}, week ${week}`;
+}
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -190,7 +195,7 @@ function writeTranscript(state) {
   for (const entry of log) {
     if (entry.kind === "sermon") {
       lines.push(
-        `--- WEEK ${entry.week}, DAY ${entry.day} — SUNDAY SERMON on ${entry.theme} ---`,
+        `--- ${dayLabel(entry.day, entry.week).toUpperCase()} — THE SERMON, on ${entry.theme} ---`,
         "",
         entry.text,
         "",
@@ -200,7 +205,7 @@ function writeTranscript(state) {
       continue;
     }
     lines.push(
-      `--- DAY ${entry.day} (week ${entry.week}) — ${entry.visitor}, ${entry.occupation}, aged ${entry.age} ---`,
+      `--- ${dayLabel(entry.day, entry.week).toUpperCase()} — ${entry.visitor}, ${entry.occupation}, aged ${entry.age} ---`,
       `    ${entry.issue}, in the ${entry.location}`,
       ""
     );
@@ -329,7 +334,7 @@ async function main() {
           reason: decision.ok ? decision.reason : `fallback: ${decision.error}`
         });
         recent.push(`Preached on ${theme}`);
-        console.log(`[day ${dayBefore}] SERMON on ${theme}: ${String(text).slice(0, 90)}...`);
+        console.log(`[${dayLabel(dayBefore, state.calendar.week)}] SERMON on ${theme}: ${String(text).slice(0, 90)}...`);
       } else {
         applySermon(state, "Duty", "Hold to what is right.", {
           ...fallbackSermonOutcome(state, "Duty", "Hold to what is right."),
@@ -349,7 +354,7 @@ async function main() {
     for (const subjectId of state.issueThreads.find((thread) => thread.id === visit.issue.threadId)?.subjectIds || []) {
       trackPerson(state, subjectId, "involved in the matter discussed");
     }
-    console.log(`[day ${dayBefore}] ${visitor?.name} (${visitor?.occupation}) — ${visit.issue.kind} in the ${visit.location}`);
+    console.log(`[${dayLabel(dayBefore, state.calendar.week)}] ${visitor?.name} (${visitor?.occupation}) — ${visit.issue.kind} in the ${visit.location}`);
     const visitLog = {
       kind: "visit",
       day: dayBefore,
@@ -377,6 +382,29 @@ async function main() {
       if (decision.move.kind === "next_hour") {
         visitLog.endedBecause = decision.reason;
         break;
+      }
+      if (decision.move.kind === "summon_officer") {
+        const result = summonOfficer(state, {
+          officerId: decision.move.officerId,
+          subjectId: decision.move.subjectId,
+          purpose: decision.move.purpose,
+          reason: decision.reason
+        });
+        visitLog.exchanges.push({ summonedOfficer: result ? result.officer.name : null, purpose: decision.move.purpose, reason: decision.reason });
+        console.log(`   * sent ${result ? result.officer.name : "no one"} to ${decision.move.purpose} ${result?.subject?.name || ""}`);
+        recent.push(`Sent the watch to ${decision.move.purpose}`);
+        continue;
+      }
+      if (decision.move.kind === "petition_authority") {
+        const result = petitionAuthority(state, {
+          role: decision.move.role,
+          subjectId: state.currentVisit?.personId || null,
+          matter: decision.text
+        });
+        visitLog.exchanges.push({ petitioned: decision.move.role, matter: decision.text, reason: decision.reason });
+        console.log(`   * sent word to the ${result?.title || decision.move.role}: ${String(decision.text).slice(0, 70)}`);
+        recent.push(`Sent word to the ${decision.move.role}`);
+        continue;
       }
       if (decision.move.kind === "request_visit") {
         requestVisits(state, [decision.move.personId], decision.reason);

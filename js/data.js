@@ -329,7 +329,9 @@ export const EXTERNAL_ROLES = Object.freeze({
     names: ["Steward Oswyn Page", "Steward Robert Crowe", "Steward Alice Vane"],
     opening: "Father, concerns from the village have begun to interfere with the manor's work. I have come to hear the accusation and the evidence separately.",
     location: "office",
-    sprite: 28
+    sprite: 28,
+    authority: "He runs the manor's land, labour and rents day to day, and answers to the lord. Boundaries, tenancies, wages, work owed and the use of the common all fall to him.",
+    reachableFor: ["land", "tenancy", "rent", "wages", "labour", "the common", "manor property"]
   },
   magistrate: {
     title: "County Magistrate",
@@ -343,7 +345,9 @@ export const EXTERNAL_ROLES = Object.freeze({
     names: ["Lord Edmund Alder", "Lady Beatrice Thorn", "Lord Simon Wren"],
     opening: "Father, your influence now touches matters of land, labor, and order. I have come because this dispute can no longer be governed at a distance.",
     location: "nave",
-    sprite: 35
+    sprite: 35,
+    authority: "He holds this village and four others from his castle a half-day's ride east, and keeps armed men there. He can overrule the steward, forgive or enforce a debt, grant or take a tenancy, pardon, banish, or send men to keep order. He is not lightly troubled, and a priest who calls on him for a small thing is not asked twice.",
+    reachableFor: ["violence the watch cannot hold", "a tenancy or eviction", "a debt beyond the village", "a dispute between villages", "protection needing armed men"]
   },
   royal_commissioner: {
     title: "Royal Commissioner",

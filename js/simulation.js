@@ -2476,6 +2476,36 @@ export function recordExchange(state, playerText, response, { record = true } = 
     });
   }
   recordNeighborParishDecision(state, person, visit, cleanText);
+  /* Sending for the watch, or beyond the village to the manor, happens as part
+     of the exchange so that it travels in the command log and a save replays
+     exactly. Both are validated by the engine before anything moves. */
+  for (const summons of (Array.isArray(response.officerSummons) ? response.officerSummons : []).slice(0, 2)) {
+    const result = summonOfficer(state, {
+      officerId: summons.officerId,
+      subjectId: summons.subjectId,
+      purpose: summons.purpose,
+      reason: summons.reason
+    });
+    if (result) {
+      (visit.mechanicalEventIds ||= []).push(result.eventId);
+      (response.officerSummonsApplied ||= []).push({
+        officerName: result.officer.name,
+        subjectName: result.subject.name,
+        purpose: result.purpose
+      });
+    }
+  }
+  for (const petition of (Array.isArray(response.authorityPetitions) ? response.authorityPetitions : []).slice(0, 2)) {
+    const result = petitionAuthority(state, {
+      role: petition.role,
+      subjectId: person.id,
+      matter: petition.matter
+    });
+    if (result?.eventId) {
+      (visit.mechanicalEventIds ||= []).push(result.eventId);
+      (response.authorityPetitionsApplied ||= []).push({ role: result.role, title: result.title });
+    }
+  }
   if (preview.disclosed) {
     const disclosedVisibility = {
       scope: visit.location === "confessional" ? "private_confession" : "private_visit",
@@ -2926,6 +2956,338 @@ export function advanceNarrativeDirector(state, parentEventId) {
   state.pacing.consecutiveHighIntensity += 1;
 }
 
+/* What the parish and the wider church have actually seen this priest do.
+ *
+ * Recognition has to be earned by weight of real acts, not by a counter that
+ * ticks up on its own, and the more prestigious the figure the more must have
+ * happened before they trouble themselves. An archdeacon will ride out for a
+ * parish that is visibly working; a bishop wants a great deal more; and the
+ * same ladder runs downward, so heresy or cruelty brings the same men for the
+ * opposite reason.
+ */
+function measurePriestRenown(state) {
+  const aid = state.events.filter((event) => event.type === "church_aid_given");
+  const householdsHelped = new Set(aid.map((event) => event.targetId));
+  const protections = state.events.filter((event) => (
+    event.type === "officer_summoned" && event.facts?.purpose !== "investigate"
+  ));
+  const donations = state.events.filter((event) => event.type === "church_donation_received");
+  const resolved = state.issueThreads.filter((thread) => thread.status === "resolved");
+  const relief = state.events.filter((event) => event.type === "neighbor_relief_delivered");
+  const notables = state.residents.filter((person) => (
+    person.active && person.alive
+    && ["reeve", "bailiff", "watchman", "clerk"].includes(person.occupation)
+    && person.trustPriest >= 70
+  ));
+  const merit = householdsHelped.size * 6
+    + Math.min(aid.length, 40) * 2
+    + protections.length * 5
+    + donations.length * 4
+    + resolved.length * 7
+    + relief.length * 15
+    + notables.length * 8
+    + state.sermons.length * 2
+    + Math.max(0, state.priest.moralAuthority - 50)
+    + Math.max(0, state.priest.localTrust - 50);
+  return {
+    merit,
+    householdsHelped: householdsHelped.size,
+    protections: protections.length,
+    resolved: resolved.length,
+    relief: relief.length,
+    notables: notables.length,
+    disgrace: state.outsideAttention.church + state.outsideAttention.rome + state.priest.scandal
+  };
+}
+
+/* Whether the manor has come to rely on this priest. Both the steward and the
+   lord must have been drawn in and left content before either would think of
+   asking him to carry something outside the village. */
+function manorDependence(state) {
+  const petitions = state.events.filter((event) => event.type === "authority_petitioned");
+  return {
+    steward: petitions.filter((event) => event.facts?.role === "steward").length,
+    lord: petitions.filter((event) => event.facts?.role === "lord").length,
+    favour: state.priest.bishopFavor
+  };
+}
+
+/* Who in the village has the ear of someone outside it.
+ *
+ * Derived from standing rather than stored, so it needs no save change: the
+ * reeve and the clerks deal with the steward constantly, the sexton with the
+ * archdeacon, and the wealthiest household in the parish is the one the lord
+ * actually knows by name. These people carry word. A priest who wins or loses
+ * one of them is heard about far sooner than one who does not. */
+export function patronConnections(state) {
+  const living = state.residents.filter((person) => person.active && person.alive);
+  const rows = [];
+  for (const person of living) {
+    if (["reeve", "bailiff", "clerk"].includes(person.occupation)) {
+      rows.push({ personId: person.id, name: person.name, role: "steward" });
+    }
+    if (["sexton", "sacristan"].includes(person.occupation)) {
+      rows.push({ personId: person.id, name: person.name, role: "archdeacon" });
+    }
+  }
+  const richest = [...living]
+    .map((person) => ({
+      person,
+      wealth: state.households.find((house) => house.id === person.householdId)?.wealth || 0
+    }))
+    .sort((left, right) => right.wealth - left.wealth || left.person.id.localeCompare(right.person.id))[0];
+  if (richest?.person) {
+    rows.push({ personId: richest.person.id, name: richest.person.name, role: "lord" });
+  }
+  return rows;
+}
+
+/* Word carried outside the village by someone who is listened to there. */
+function carryWordToPatron(state, parentEventId) {
+  state.authorityStages.patronWord ||= {};
+  const spoken = state.authorityStages.patronWord;
+  for (const link of patronConnections(state)) {
+    if (spoken[link.personId] != null) continue;
+    const person = state.residents.find((entry) => entry.id === link.personId);
+    if (!person) continue;
+    const warm = person.trustPriest >= 82;
+    const cold = person.trustPriest <= 10;
+    if (!warm && !cold) continue;
+    spoken[link.personId] = state.calendar.absoluteDay;
+    const title = EXTERNAL_ROLES[link.role]?.title || link.role;
+    scheduleExternalVisit(
+      state,
+      link.role,
+      warm
+        ? `${person.name} has spoken warmly of the priest to the ${title}, who wishes to see the parish for himself.`
+        : `${person.name} has complained of the priest to the ${title}, who has come to judge the matter.`,
+      warm ? 2 : 2,
+      person.id,
+      parentEventId
+    );
+    addChronicle(
+      state,
+      warm ? "A good word carried outside the village" : "A complaint carried outside the village",
+      warm
+        ? `${person.name}, who deals often with the ${title}, has spoken well of Father Benedict where it counts.`
+        : `${person.name}, who has the ear of the ${title}, has carried a complaint against Father Benedict out of the parish.`,
+      warm ? "change" : "danger",
+      {
+        type: warm ? "patron_word_favourable" : "patron_word_hostile",
+        parentId: parentEventId,
+        actorId: person.id,
+        facts: { role: link.role, trust: person.trustPriest }
+      }
+    );
+    return { role: link.role, personId: person.id, warm };
+  }
+  return null;
+}
+
+export function advancePriestStanding(state, parentEventId) {
+  state.authorityStages.recognition ||= {};
+  const stages = state.authorityStages.recognition;
+  const renown = measurePriestRenown(state);
+  const manor = manorDependence(state);
+  state.priest.renown = renown.merit;
+
+  /* Someone with standing outside the village may carry word either way, and
+     that reaches the manor or the diocese long before ordinary report would.
+     It does not replace the slower ladder below; it runs alongside it. */
+  const carried = carryWordToPatron(state, parentEventId);
+
+  /* A parish under a cloud is not commended, whatever else it has done. */
+  if (renown.disgrace >= 45) {
+    return advancePriestJudgement(state, parentEventId, renown)
+      || (carried ? { kind: "patron_word", ...carried } : null);
+  }
+
+  const commend = (role, threshold, key, reason) => {
+    /* The stage records the day it happened, and day zero is falsy: this must
+       be an explicit test or nothing is ever commended on the first day. */
+    if (stages[key] != null || renown.merit < threshold) return null;
+    stages[key] = state.calendar.absoluteDay;
+    scheduleExternalVisit(state, role, reason, role === "bishop" ? 5 : 3, null, parentEventId);
+    addChronicle(
+      state,
+      "Word travels beyond the parish",
+      reason,
+      "change",
+      { type: "priest_commended", parentId: parentEventId, facts: { role, merit: renown.merit } }
+    );
+    return role;
+  };
+
+  /* The archdeacon comes first, and only once the parish has plainly been
+     worked: several households relieved and matters actually settled. */
+  if (renown.householdsHelped >= 4 && renown.resolved >= 2) {
+    const called = commend(
+      "archdeacon",
+      70,
+      "archdeaconCommendation",
+      `Report has reached the archdeacon that ${state.town.name} is well kept: ${renown.householdsHelped} households relieved from the church stores and ${renown.resolved} quarrels settled without the law.`
+    );
+    if (called) return { kind: "commendation", role: called, renown };
+  }
+
+  /* The bishop wants far more, and wants the manor to say it too. */
+  if (stages.archdeaconCommendation != null
+    && renown.householdsHelped >= 10
+    && renown.resolved >= 5
+    && (manor.steward + manor.lord) >= 1) {
+    const called = commend(
+      "bishop",
+      190,
+      "bishopCommendation",
+      `The bishop has heard this parish named with approval: ${renown.householdsHelped} households relieved, ${renown.resolved} matters settled, and the manor itself content with its priest.`
+    );
+    if (called) return { kind: "commendation", role: called, renown };
+  }
+
+  /* Being asked to carry the work elsewhere, or to rise. Neither happens until
+     the parish is beyond question and the manor has come to lean on him. */
+  if (stages.bishopCommendation != null && stages.calledOnward == null
+    && renown.merit >= 260 && renown.relief >= 1 && manor.lord >= 1) {
+    stages.calledOnward = state.calendar.absoluteDay;
+    scheduleExternalVisit(
+      state,
+      "bishop",
+      `The bishop comes to ask whether this priest will take charge of a neighbouring parish that has none, or be raised within the diocese.`,
+      6,
+      null,
+      parentEventId
+    );
+    addChronicle(
+      state,
+      "A larger charge is spoken of",
+      `${state.town.name} is spoken of as a parish that could spare its priest, and the diocese has begun to wonder what else he might be given.`,
+      "change",
+      { type: "priest_advancement_offered", parentId: parentEventId, facts: { merit: renown.merit } }
+    );
+    return { kind: "advancement", role: "bishop", renown };
+  }
+  return advancePriestJudgement(state, parentEventId, renown)
+    || (carried ? { kind: "patron_word", ...carried } : null);
+}
+
+/* The other end of the same ladder. Disgrace brings the same men out, and if a
+   priest is bad enough for long enough the diocese takes the parish from him.
+   Nothing here is quick: each step needs more against him than the last, which
+   is what keeps the dramatic endings rare without ever making them impossible. */
+function advancePriestJudgement(state, parentEventId, renown) {
+  state.authorityStages.judgement ||= {};
+  const stages = state.authorityStages.judgement;
+  const wronged = state.residents.filter((person) => (
+    person.active && person.alive && person.trustPriest <= 12
+  ));
+  const complaints = state.priestReports.filter((report) => report.status !== "private_complaint");
+  const weight = state.priest.scandal
+    + state.outsideAttention.church
+    + state.outsideAttention.rome
+    + wronged.length * 3
+    + complaints.length * 12;
+
+  if (stages.summoned == null && weight >= 90 && complaints.length >= 1) {
+    stages.summoned = state.calendar.absoluteDay;
+    scheduleExternalVisit(
+      state,
+      "archdeacon",
+      `The archdeacon has come to put the complaints against this priest to his face.`,
+      3,
+      null,
+      parentEventId
+    );
+    addChronicle(
+      state,
+      "The archdeacon asks questions",
+      `Enough has been said against the priest of ${state.town.name} that the archdeacon has come to hear it himself.`,
+      "danger",
+      { type: "priest_summoned", parentId: parentEventId, facts: { weight } }
+    );
+    return { kind: "judgement", role: "archdeacon", weight };
+  }
+
+  if (stages.summoned != null && stages.tribunal == null && weight >= 160 && complaints.length >= 2) {
+    stages.tribunal = state.calendar.absoluteDay;
+    scheduleExternalVisit(
+      state,
+      "bishop",
+      `The bishop himself has come, and it is understood that the parish may be taken from its priest.`,
+      4,
+      null,
+      parentEventId
+    );
+    addChronicle(
+      state,
+      "The bishop comes in judgement",
+      `The complaints from ${state.town.name} have reached the bishop, who does not travel for small matters.`,
+      "danger",
+      { type: "priest_tribunal", parentId: parentEventId, facts: { weight } }
+    );
+    return { kind: "judgement", role: "bishop", weight };
+  }
+
+  /* Deprivation. The parish is taken away, and the game with it. */
+  if (stages.tribunal != null && stages.deprived == null
+    && weight >= 240 && complaints.length >= 3 && state.priest.scandal >= 80) {
+    stages.deprived = state.calendar.absoluteDay;
+    state.priest.deprived = true;
+    appendEvent(state, {
+      type: "priest_deprived",
+      parentId: parentEventId,
+      actorId: "bishop",
+      targetId: "priest",
+      facts: { weight, complaints: complaints.length, scandal: state.priest.scandal }
+    });
+    addChronicle(
+      state,
+      "The parish is taken away",
+      `The bishop has deprived Father Benedict of ${state.town.name}. Another priest will be sent, and he must go.`,
+      "danger",
+      { type: "priest_deprived", parentId: parentEventId, facts: { weight } }
+    );
+    return { kind: "deprived", role: "bishop", weight };
+  }
+
+  /* A villager driven far enough past fear may come in the night. This needs a
+     person who has genuinely been ruined or terrified by him, not merely one
+     who disagrees. */
+  if (stages.attempt == null && state.priest.alive) {
+    const desperate = state.residents.find((person) => (
+      person.active && person.alive && person.age >= 18
+      && person.trustPriest <= 5 && person.stress >= 85
+      && state.relationships.some((entry) => (
+        entry.actorId === person.id && entry.targetId === "priest" && (entry.affection ?? 50) <= 5
+      ))
+    ));
+    if (desperate && state.priest.scandal >= 55) {
+      stages.attempt = state.calendar.absoluteDay;
+      const survived = state.priest.health > 35;
+      state.priest.health = clamp(state.priest.health - (survived ? 25 : 60));
+      if (state.priest.health <= 0) state.priest.alive = false;
+      appendEvent(state, {
+        type: "priest_attacked_in_the_night",
+        parentId: parentEventId,
+        actorId: desperate.id,
+        targetId: "priest",
+        facts: { survived: state.priest.alive }
+      });
+      addChronicle(
+        state,
+        "Someone came in the night",
+        state.priest.alive
+          ? `${desperate.name} was driven far enough to come for the priest in the dark. He lived, but the parish will not forget it.`
+          : `${desperate.name} came for the priest in the dark, and Father Benedict did not see the morning.`,
+        "danger",
+        { type: "priest_attacked_in_the_night", parentId: parentEventId, facts: {} }
+      );
+      scheduleExternalVisit(state, "sheriff", `Violence was done to the priest in the night.`, 1, desperate.id, parentEventId);
+      return { kind: "attempt", actorId: desperate.id, survived: state.priest.alive };
+    }
+  }
+  return null;
+}
+
 function resolvePopulationDay(state) {
   const tick = appendEvent(state, {
     type: "population_day",
@@ -2943,6 +3305,7 @@ function resolvePopulationDay(state) {
   }
   advanceIssueThreads(state, tick.id);
   executeDueCommitments(state, tick.id);
+  advancePriestStanding(state, tick.id);
   advanceNarrativeDirector(state, tick.id);
 }
 
@@ -3628,6 +3991,149 @@ function acceptedProposalRootSteps(state, visit, person) {
       detail: actionType === "improvise" ? proposal.rawText.slice(0, 120) : ""
     };
   });
+}
+
+/* Law officers a parish priest can actually send for. The village has a watch,
+   a bailiff and a reeve; it has no constable, though a priest may well call one
+   that by habit. Ranked by who would really come out to a disturbance. */
+const OFFICER_OCCUPATIONS = Object.freeze(["watchman", "bailiff", "reeve"]);
+
+export function availableOfficers(state) {
+  return state.residents
+    .filter((resident) => (
+      resident.active && resident.alive && resident.age >= 18
+      && OFFICER_OCCUPATIONS.includes(resident.occupation)
+    ))
+    .sort((left, right) => (
+      OFFICER_OCCUPATIONS.indexOf(left.occupation) - OFFICER_OCCUPATIONS.indexOf(right.occupation)
+      || left.id.localeCompare(right.id)
+    ));
+}
+
+/* Send the watch to someone. This is a real act with real weight: an officer
+   who comes out deters a gathering crowd, and being seen to call the law costs
+   the priest something with anyone who thinks it heavy-handed. */
+export function summonOfficer(state, {
+  officerId = null,
+  subjectId,
+  purpose = "protect",
+  reason = "",
+  sourceEventId = null
+} = {}) {
+  const officers = availableOfficers(state);
+  if (!officers.length) return null;
+  const officer = officers.find((entry) => entry.id === officerId) || officers[0];
+  const subject = state.residents.find((entry) => entry.id === subjectId);
+  if (!subject || subject.id === officer.id) return null;
+  if (!["protect", "investigate", "keep_the_peace"].includes(purpose)) return null;
+
+  const event = appendEvent(state, {
+    type: "officer_summoned",
+    parentId: sourceEventId || state.currentVisit?.originEventId || null,
+    actorId: "priest",
+    targetId: officer.id,
+    facts: {
+      subjectId: subject.id,
+      subjectName: subject.name,
+      officerName: officer.name,
+      officerOccupation: officer.occupation,
+      purpose,
+      reason: String(reason || "").slice(0, 240)
+    }
+  });
+
+  const commitment = {
+    id: `commitment-${String(state.nextCommitmentSequence++).padStart(6, "0")}`,
+    type: "officer_duty",
+    actorId: officer.id,
+    targetId: subject.id,
+    dueDay: state.calendar.absoluteDay + 1,
+    status: "open",
+    sourceEventId: event.id,
+    payload: { purpose, reason: String(reason || "").slice(0, 240) }
+  };
+  state.commitments.push(commitment);
+
+  if (purpose === "protect" || purpose === "keep_the_peace") {
+    subject.stress = clamp(subject.stress - 10);
+    const thread = state.issueThreads.find((entry) => (
+      entry.status === "open" && (entry.subjectIds || []).includes(subject.id)
+    ));
+    if (thread) thread.danger = clamp(thread.danger - 20);
+    state.town.metrics.safety = clamp(state.town.metrics.safety + 2);
+  }
+  if (purpose === "investigate") {
+    const thread = state.issueThreads.find((entry) => (
+      entry.status === "open" && (entry.subjectIds || []).includes(subject.id)
+    ));
+    if (thread) thread.pressure = clamp(thread.pressure - 10);
+  }
+  officer.stress = clamp(officer.stress + 4);
+  addStructuredMemory(state, officer, {
+    summary: `Father Benedict sent me to ${purpose === "investigate" ? "look into a matter concerning" : "keep the peace around"} ${subject.name}.`,
+    sourceEventId: event.id,
+    emotion: "resolved",
+    type: "interaction"
+  });
+  addStructuredMemory(state, subject, {
+    summary: `${officer.name} came at the priest's asking${purpose === "investigate" ? " to ask questions about me" : " to see that no harm came to me"}.`,
+    sourceEventId: event.id,
+    emotion: purpose === "investigate" ? "anxious" : "grateful",
+    type: "interaction"
+  });
+  return { officer, subject, purpose, eventId: event.id, commitmentId: commitment.id };
+}
+
+/* Sending word beyond the village. The steward runs the manor's land and
+   labour; the lord holds this village and four others from his castle half a
+   day east, and is not lightly troubled. A priest may send to either, but the
+   lord answers slowly and remembers who wastes his time. */
+export function petitionAuthority(state, {
+  role = "steward",
+  subjectId = null,
+  matter = "",
+  sourceEventId = null
+} = {}) {
+  if (!["steward", "lord"].includes(role)) return null;
+  const definition = EXTERNAL_ROLES[role];
+  if (!definition) return null;
+  if (state.eventQueue.some((event) => event.type === "external_visit" && event.role === role)) {
+    return { alreadySent: true, role, title: definition.title };
+  }
+  const travelDays = role === "lord" ? 3 : 1;
+  const event = appendEvent(state, {
+    type: "authority_petitioned",
+    parentId: sourceEventId || state.currentVisit?.originEventId || null,
+    actorId: "priest",
+    targetId: subjectId,
+    facts: { role, title: definition.title, matter: String(matter || "").slice(0, 240), travelDays }
+  });
+  state.eventQueue.push({
+    id: `queued-${String(state.nextQueueSequence++).padStart(6, "0")}`,
+    type: "external_visit",
+    role,
+    dueDay: state.calendar.absoluteDay + travelDays,
+    sourceEventId: event.id,
+    sourcePersonId: subjectId,
+    actorId: null,
+    payload: { role, matter: String(matter || "").slice(0, 240) },
+    reason: String(matter || "").slice(0, 240)
+  });
+  state.commitments.push({
+    id: `commitment-${String(state.nextCommitmentSequence++).padStart(6, "0")}`,
+    type: "authority_petition",
+    actorId: "priest",
+    targetId: subjectId || "priest",
+    dueDay: state.calendar.absoluteDay + travelDays,
+    status: "open",
+    sourceEventId: event.id,
+    payload: { role, matter: String(matter || "").slice(0, 240) }
+  });
+  /* Calling on the manor is never neutral. The steward's involvement steadies
+     a dispute; troubling the lord raises the stakes for everyone. */
+  if (role === "steward") state.priest.moralAuthority = clamp(state.priest.moralAuthority + 1);
+  else state.outsideAttention.crown = clamp(state.outsideAttention.crown + 8);
+  return { role, title: definition.title, travelDays, eventId: event.id };
 }
 
 export function fallbackDeparturePlan(state) {

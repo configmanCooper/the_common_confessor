@@ -13,8 +13,9 @@
  * different game and its playthrough would prove nothing.
  */
 
-import { SERMON_THEMES } from "./data.js";
+import { EXTERNAL_ROLES, SERMON_THEMES } from "./data.js";
 import { churchResourceRows } from "./church.js";
+import { availableOfficers } from "./simulation.js";
 
 export const AGENT_MOVE_KINDS = Object.freeze([
   "speak",
@@ -153,7 +154,57 @@ export function legalMoves(state) {
         needsText: false,
         personId: resident.id,
         label: `Ask ${resident.name} (${resident.occupation}) to come and see you`,
-        detail: "They may accept or refuse. Asking costs nothing but the hour it fills."
+        detail: "They come to the church within a day or two, if they are willing. This is how you reach anyone: you do not leave the church yourself."
+      });
+    }
+  }
+
+  /* Sending for the law, and beyond it to the manor. These are real acts with
+     real weight, not turns of phrase: the village has a watch, a bailiff and a
+     reeve, and behind them a steward and a lord. It has no constable. */
+  if (visit) {
+    const officers = availableOfficers(state);
+    const subjects = [
+      state.residents.find((entry) => entry.id === visit.personId),
+      state.residents.find((entry) => entry.id === visit.issue.relatedPersonId)
+    ].filter((entry) => entry && officers.every((officer) => officer.id !== entry.id));
+    for (const officer of officers.slice(0, 2)) {
+      for (const subject of subjects) {
+        moves.push({
+          kind: "summon_officer",
+          needsText: false,
+          officerId: officer.id,
+          subjectId: subject.id,
+          purpose: "protect",
+          label: `Send ${officer.name} the ${officer.occupation} to keep the peace around ${subject.name}`,
+          detail: "The watch coming out deters a gathering crowd and calms the household, but it is a public act and not everyone will thank you for it."
+        });
+        moves.push({
+          kind: "summon_officer",
+          needsText: false,
+          officerId: officer.id,
+          subjectId: subject.id,
+          purpose: "investigate",
+          label: `Send ${officer.name} the ${officer.occupation} to look into the matter concerning ${subject.name}`,
+          detail: "An officer asking questions can settle what is true, but being investigated frightens people and can harden a quarrel."
+        });
+      }
+    }
+    for (const role of ["steward", "lord"]) {
+      const definition = EXTERNAL_ROLES[role];
+      if (!definition) continue;
+      const alreadySent = state.eventQueue.some((event) => (
+        event.type === "external_visit" && event.role === role
+      ));
+      if (alreadySent) continue;
+      moves.push({
+        kind: "petition_authority",
+        needsText: true,
+        role,
+        label: `Send word to the ${definition.title}`,
+        detail: `${definition.authority || ""} ${role === "lord"
+          ? "He is three days in answering and will not thank you for a small matter."
+          : "He will come within a day."} Write what you are asking him to settle.`.trim()
       });
     }
   }
@@ -226,6 +277,8 @@ export function buildAgentPrompt(state, moves, { steer = "", recent = [], person
   }
   lines.push(
     "You see exactly what a human player sees on screen, and nothing more. People keep things from you until they trust you.",
+    "",
+    "WHAT YOU CANNOT DO: you never leave the church. You cannot call on anyone, walk to a cottage, go to the mill, or accompany someone anywhere. Everything you do, you do from this building. If someone needs to be spoken to, send for them with the move that asks them to come, or send an officer who can go where you cannot. Do not promise to go somewhere yourself.",
     "",
     "BOARD:",
     JSON.stringify(board, null, 1),
