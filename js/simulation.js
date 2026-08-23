@@ -2412,7 +2412,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
       .filter(Boolean)
     : [applyChurchAid(state, person, cleanText)].filter(Boolean);
   for (const churchAid of churchAids) {
-    appendEvent(state, {
+    const aidEvent = appendEvent(state, {
       type: "church_aid_given",
       parentId: visit.originEventId,
       actorId: "priest",
@@ -2422,6 +2422,16 @@ export function recordExchange(state, playerText, response, { record = true } = 
         amount: churchAid.amount
       }
     });
+    /* Charity has to leave a trace. Compaction keeps only events something
+       still points at, so an unreferenced gift was being deleted from the
+       parish's own history the moment the visit ended. */
+    (visit.mechanicalEventIds ||= []).push(aidEvent.id);
+    addStructuredMemory(state, person, {
+      summary: `Father Benedict gave my household ${churchAid.amount} ${churchAid.unit} of ${churchAid.label.toLowerCase()}.`,
+      sourceEventId: aidEvent.id,
+      emotion: "grateful",
+      type: "interaction"
+    });
     response.churchAidApplied = {
       resource: churchAid.resource,
       amount: churchAid.amount,
@@ -2430,6 +2440,32 @@ export function recordExchange(state, playerText, response, { record = true } = 
       remaining: churchAid.remaining
     };
     (response.churchAidsApplied ||= []).push(response.churchAidApplied);
+  }
+  /* A villager may also give to the church, out of their own household. */
+  const donations = Array.isArray(response.visitorDonations) ? response.visitorDonations : [];
+  for (const donation of donations.slice(0, 4)) {
+    const applied = applyChurchDonation(state, person, donation.resource, donation.amount);
+    if (!applied) continue;
+    const donationEvent = appendEvent(state, {
+      type: "church_donation_received",
+      parentId: visit.originEventId,
+      actorId: person.id,
+      targetId: "priest",
+      facts: { resource: applied.resource, amount: applied.amount }
+    });
+    (visit.mechanicalEventIds ||= []).push(donationEvent.id);
+    addStructuredMemory(state, person, {
+      summary: `I gave the church ${applied.amount} ${applied.unit} of ${applied.label.toLowerCase()}.`,
+      sourceEventId: donationEvent.id,
+      emotion: "resolved",
+      type: "interaction"
+    });
+    (response.churchDonationsApplied ||= []).push({
+      resource: applied.resource,
+      amount: applied.amount,
+      label: applied.label,
+      unit: applied.unit
+    });
   }
   recordNeighborParishDecision(state, person, visit, cleanText);
   if (preview.disclosed) {
@@ -2501,6 +2537,10 @@ export function recordExchange(state, playerText, response, { record = true } = 
         contradictionId: preview.contradictionId,
         groundedFallback: Boolean(response.groundedFallback),
         churchGifts: requestedGifts.map((gift) => ({
+          resource: String(gift.resource),
+          amount: Math.max(0, Math.floor(Number(gift.amount) || 0))
+        })),
+        visitorDonations: donations.map((gift) => ({
           resource: String(gift.resource),
           amount: Math.max(0, Math.floor(Number(gift.amount) || 0))
         })),

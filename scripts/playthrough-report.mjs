@@ -80,7 +80,9 @@ function pct(part, whole) {
 function analyse(data) {
   const visits = data.log.filter((entry) => entry.kind === "visit");
   const sermons = data.log.filter((entry) => entry.kind === "sermon");
-  const exchanges = visits.flatMap((visit) => (visit.exchanges || []).filter((entry) => entry.visitor));
+  const exchanges = visits.flatMap((visit) => (visit.exchanges || [])
+    .filter((entry) => entry.visitor)
+    .map((entry) => ({ ...entry, to: visit.visitor })));
   const priestLines = exchanges.map((entry) => entry.priest);
   const first = data.snapshots?.[0];
   const last = data.snapshots?.[data.snapshots.length - 1];
@@ -89,7 +91,10 @@ function analyse(data) {
   const questions = priestLines.filter((line) => line.includes("?")).length;
   const commands = priestLines.filter((line) => /^(?:go|tell|bring|send|take|do not|say|keep|speak|make|come)\b/i.test(line.trim())).length;
   const comfort = priestLines.filter((line) => /\b(?:god|mercy|pray|forgive|grace|blessing|peace|comfort)\b/i.test(line)).length;
-  const gifts = exchanges.filter((entry) => entry.churchGift);
+  const gifts = exchanges.flatMap((entry) => (
+    (entry.churchGifts?.length ? entry.churchGifts : [entry.churchGift].filter(Boolean))
+      .map((gift) => ({ ...gift, to: entry.to }))
+  ));
 
   const storeDelta = {};
   if (first && last) {
@@ -175,16 +180,17 @@ function buildDocument(data) {
       + "Either the need never presented itself in a form he recognised, or charity was not his instinct."
     ));
   } else {
-    const total = a.gifts.reduce((sum, entry) => sum + entry.churchGift.amount, 0);
+    const total = a.gifts.reduce((sum, gift) => sum + gift.amount, 0);
     children.push(body(
-      `He gave ${a.gifts.length} times, ${total} units in all, to ${new Set(a.gifts.map((entry) => entry.churchGift.resource)).size} different kinds of need.`
+      `He gave ${a.gifts.length} times, ${total} units in all, across ${new Set(a.gifts.map((gift) => gift.resource)).size} different kinds of need.`
     ));
     children.push(table(
       ["Given to", "What", "How much"],
-      a.gifts.slice(0, 14).map((entry) => {
-        const visit = a.visits.find((candidate) => (candidate.exchanges || []).includes(entry));
-        return [visit?.visitor || "—", entry.churchGift.label || entry.churchGift.resource, String(entry.churchGift.amount)];
-      })
+      a.gifts.slice(0, 16).map((gift) => [
+        gift.to || "—",
+        gift.label || gift.resource,
+        String(gift.amount)
+      ])
     ));
   }
   if (Object.keys(a.storeDelta).length) {

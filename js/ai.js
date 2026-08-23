@@ -1576,6 +1576,17 @@ const churchGiftProperty = {
   }
 };
 
+/* Whether the priest's own words contain an offer of anything at all.
+   This is deliberately broad — it is not trying to recognise a phrasing, only
+   to establish that something was offered before the stores are opened. A
+   model listing the parish's whole stock back as a gift is the failure this
+   prevents. */
+function mentionsGiving(text) {
+  const speech = String(text || "").toLowerCase();
+  return /\b(?:give|gives|giving|gave|take|takes|have|here|send|sends|sending|bring|brings|offer|offers|spare|spares|share|shares|provide|provides|lend|lends|fetch|carry|deliver|supply|supplies|grant|distribute|allot|set aside|draw on|draw from|out of)\b/.test(speech)
+    || /\b(?:church|parish|stores?|storehouse|almonry)\b.{0,40}\b(?:will|shall|can|may|must)\b/.test(speech);
+}
+
 const naturalConversationSchema = {
   type: "object",
   additionalProperties: false,
@@ -1585,6 +1596,7 @@ const naturalConversationSchema = {
     reply: { type: "string", maxLength: 600 },
     npcIntent: { type: "string", maxLength: 160 },
     priestGivesFromChurch: churchGiftProperty,
+    visitorGivesToChurch: churchGiftProperty,
     proposedActions: {
       type: "array",
       maxItems: 3,
@@ -2045,8 +2057,8 @@ export class ParishAiClient extends EventTarget {
         : "",
       `What the church has in store, if the priest offers you any of it: ${churchResourceRows(state.churchResources)
         .filter((row) => row.amount > 0)
-        .map((row) => `${row.amount} ${row.unit} of ${row.label.toLowerCase()} [${row.key}]`)
-        .join(", ") || "nothing at present"}.`,
+        .map((row) => `${row.label.toLowerCase()} [${row.key}], ${row.amount} ${row.unit} left`)
+        .join("; ") || "nothing at present"}.`,
       `THE PRIEST JUST SAID: "${boundedString(playerText, 600)}"`,
       correction || "",
       "",
@@ -2054,7 +2066,9 @@ export class ParishAiClient extends EventTarget {
       "understoodPlayerAs: plainly, what the priest just meant. Write this first.",
       "reply: what you say aloud.",
       "npcIntent: what you are trying to do by saying it.",
-      "priestGivesFromChurch: a list of everything the priest is handing you from the church stores right now, for example [{\"resource\":\"coin\",\"amount\":4},{\"resource\":\"bread\",\"amount\":2}]. Include every item he names in this breath. Leave it empty if he is giving nothing, is only promising something later, or is asking you to give something.",
+      "priestGivesFromChurch: everything the priest is handing you from the church stores in the words above, for example [{\"resource\":\"bread\",\"amount\":2}]. Only fill this in if he actually offered something just now. Never copy the amounts the church holds — those are what is left in store, not what he gave. Leave it empty if he offered nothing, only promised something later, or asked you to give.",
+      "If he is giving you something, say so in your reply as a person would: thank him, or say what it will mean for your household, or refuse it if you would.",
+      "visitorGivesToChurch: anything you are offering to the church out of your own household right now, in the same form. Leave it empty unless you are genuinely offering, and never offer more than your household could truly spare.",
       turnAnalysis.proposals.length
         ? `decisions: for each of these, say accepted, rejected, deferred or unknown: ${JSON.stringify(turnAnalysis.proposals.map((proposal) => ({ proposalId: proposal.proposalId, text: proposal.rawText })))}`
         : "proposedActions: anything you say you will actually do, as action plus target. Leave empty if none."
@@ -2182,7 +2196,20 @@ export class ParishAiClient extends EventTarget {
     const remaining = Object.fromEntries(
       churchResourceRows(state.churchResources).map((row) => [row.key, row.amount])
     );
-    for (const requested of requestedGifts.slice(0, 4)) {
+    /* The stores are listed in the prompt so the visitor cannot accept what the
+       parish does not hold. A model will sometimes read that list straight back
+       as a gift — handing over the whole stock of firewood during a
+       conversation about letters. Nothing leaves the stores unless the priest
+       actually offered something in the words he just spoke. */
+    const priestOffered = mentionsGiving(playerText);
+    if (requestedGifts.length && !priestOffered) {
+      transformations.push({
+        type: "gift_rejected",
+        detail: "the priest offered nothing in this turn",
+        code: "naturalConversation:noOfferMade"
+      });
+    }
+    for (const requested of (priestOffered ? requestedGifts : []).slice(0, 4)) {
       const row = churchResourceRows(state.churchResources)
         .find((entry) => entry.key === requested?.resource);
       const amount = Math.max(0, Math.min(100, Math.floor(Number(requested?.amount) || 0)));
@@ -2223,6 +2250,36 @@ export class ParishAiClient extends EventTarget {
       }
       churchGifts.push({ resource: row.key, amount });
       remaining[row.key] = available - amount;
+    }
+
+    /* A villager may also give to the church out of their own household. The
+       engine decides what they can truly spare, not the model. */
+    const visitorDonations = [];
+    const offeredDonations = Array.isArray(raw.visitorGivesToChurch) ? raw.visitorGivesToChurch : [];
+    for (const offer of offeredDonations.slice(0, 4)) {
+      const row = churchResourceRows(state.churchResources).find((entry) => entry.key === offer?.resource);
+      const amount = Math.max(0, Math.min(100, Math.floor(Number(offer?.amount) || 0)));
+      if (!row || amount <= 0) {
+        transformations.push({
+          type: "donation_rejected",
+          detail: `cannot donate "${offer?.resource}"`,
+          code: "naturalConversation:donation"
+        });
+        continue;
+      }
+      const capacity = row.key === "coin"
+        ? Math.floor(state.households.find((entry) => entry.id === person.householdId)?.wealth || 0)
+        : churchDonationCapacity(state, person, row.key);
+      if (capacity < amount) {
+        transformations.push({
+          type: "donation_reduced",
+          detail: `the household can spare only ${Math.max(0, capacity)} ${row.unit}`,
+          code: "naturalConversation:donation"
+        });
+        if (capacity > 0) visitorDonations.push({ resource: row.key, amount: capacity });
+        continue;
+      }
+      visitorDonations.push({ resource: row.key, amount });
     }
 
     const claims = proposedActions.map((action, index) => ({
@@ -2289,6 +2346,7 @@ export class ParishAiClient extends EventTarget {
       proposedActions,
       churchGifts,
       churchGift: churchGifts[0] || null,
+      visitorDonations,
       understoodPlayerAs: understood,
       segments: [{
         text: reply,

@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   beginVisit,
+  fallbackDeparturePlan,
+  finishVisit,
   createGame,
   materializeResident,
   recordExchange
 } from "../js/simulation.js";
-import { deserializeState, serializeState } from "../js/state.js";
+import { compactReplayHistory, deserializeState, serializeState } from "../js/state.js";
 import { naturalClient } from "./semantic-test-client.js";
 
 /* Giving from the church stores must work from ordinary speech.
@@ -191,3 +193,90 @@ test("one impossible item does not prevent the possible ones", async () => {
   assert.equal(state.churchResources.bread, before.bread - 3);
   assert.equal(state.churchResources.medicine, 0);
 });
+
+test("nothing leaves the stores when the priest offered nothing", async () => {
+  const { state, person } = scene("gift-no-offer");
+  const before = { ...state.churchResources };
+  const client = naturalClient({
+    understoodPlayerAs: "The priest asks about the letters.",
+    reply: "They were letters from a merchant, Father.",
+    npcIntent: "Answer the question.",
+    proposedActions: [],
+    priestGivesFromChurch: [
+      { resource: "firewood", amount: before.firewood },
+      { resource: "beans", amount: before.beans }
+    ]
+  });
+  const line = "Whose names did you read in those letters?";
+  const response = await client.conversation(state, person, line);
+  assert.equal(response.churchGifts.length, 0);
+  assert.ok(response.promptTrace.transformations.some((entry) => (
+    entry.code === "naturalConversation:noOfferMade"
+  )));
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.firewood, before.firewood);
+  assert.equal(state.churchResources.beans, before.beans);
+});
+
+test("a gift the priest really offered is recorded and survives compaction", async () => {
+  const { state, person } = scene("gift-survives-compaction");
+  const before = state.churchResources.medicine;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest sends herbs for the child.",
+    reply: "Bless you, Father. I will take them to her tonight.",
+    npcIntent: "Accept the herbs.",
+    proposedActions: [],
+    priestGivesFromChurch: [{ resource: "medicine", amount: 2 }]
+  });
+  const line = "I shall send medicinal herbs from the church stores for the child.";
+  const response = await client.conversation(state, person, line);
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.medicine, before - 2);
+  finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
+  compactReplayHistory(state);
+  assert.equal(state.events.filter((event) => event.type === "church_aid_given").length, 1);
+  assert.ok(person.memories.some((memory) => /gave my household/i.test(memory.summary)));
+});
+
+test("a villager can give to the church out of their own household", async () => {
+  const { state, person } = scene("donation-natural-0");
+  const household = state.households.find((entry) => entry.id === person.householdId);
+  const beforeChurch = state.churchResources.coin;
+  const beforeHousehold = household.wealth;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest says the poor box is empty.",
+    reply: "Then take two pennies for it, Father. We can spare that much.",
+    npcIntent: "Give what little I can.",
+    proposedActions: [],
+    visitorGivesToChurch: [{ resource: "coin", amount: 2 }]
+  });
+  const line = "The parish poor box is empty.";
+  const response = await client.conversation(state, person, line);
+  assert.equal(response.visitorDonations.length, 1);
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.coin, beforeChurch + 2);
+  assert.equal(household.wealth, beforeHousehold - 2);
+  assert.equal(state.events.filter((event) => event.type === "church_donation_received").length, 1);
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+});
+
+test("a villager cannot donate more than their household holds", async () => {
+  const { state, person } = scene("donation-beyond-means");
+  const household = state.households.find((entry) => entry.id === person.householdId);
+  household.wealth = 1;
+  const beforeChurch = state.churchResources.coin;
+  const client = naturalClient({
+    understoodPlayerAs: "u",
+    reply: "I would give all I have, Father.",
+    npcIntent: "n",
+    proposedActions: [],
+    visitorGivesToChurch: [{ resource: "coin", amount: 90 }]
+  });
+  const response = await client.conversation(state, person, "Give what you can to the poor box.");
+  assert.ok(response.visitorDonations.every((gift) => gift.amount <= 1));
+  assert.ok(response.promptTrace.transformations.some((entry) => entry.type === "donation_reduced"));
+  recordExchange(state, "Give what you can to the poor box.", response);
+  assert.ok(state.churchResources.coin <= beforeChurch + 1);
+});
+
+

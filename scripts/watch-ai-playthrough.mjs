@@ -337,7 +337,7 @@ async function main() {
         });
       }
       compactReplayHistory(state);
-      snapshot(state, `after sermon on ${theme}`);
+      snapshot(state, `after the Sunday sermon`);
       flush(state);
       continue;
     }
@@ -402,6 +402,7 @@ async function main() {
         source: response.promptTrace?.responseSource || response.source || "unknown",
         transformations: (response.promptTrace?.transformations || []).map((entry) => entry.type),
         churchGift: response.churchAidApplied || null,
+        churchGifts: response.churchAidsApplied || [],
         understoodAs: response.promptTrace?.understoodPlayerAs || ""
       };
       visitLog.exchanges.push(exchange);

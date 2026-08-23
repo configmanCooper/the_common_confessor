@@ -343,6 +343,7 @@ function upgradeGroundedConversationState(state) {
       command.payload.response.groundedFallback ??= false;
       command.payload.response.stagnationCount ??= 0;
       command.payload.response.churchGifts ??= (command.payload.response.churchGift ? [command.payload.response.churchGift] : []);
+      command.payload.response.visitorDonations ??= [];
     }
   }
   return state;

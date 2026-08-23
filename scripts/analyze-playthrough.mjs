@@ -146,7 +146,7 @@ for (const visit of visits) locations[visit.location] = (locations[visit.locatio
 report.locations = locations;
 
 /* 7. Did the priest's generosity actually reach anyone? */
-const gifts = exchanges.filter((entry) => entry.churchGift);
+const gifts = exchanges.flatMap((entry) => (entry.churchGifts?.length ? entry.churchGifts : [entry.churchGift].filter(Boolean)));
 report.giftsGiven = gifts.length;
 report.giftedResources = gifts.reduce((totals, entry) => {
   totals[entry.churchGift.resource] = (totals[entry.churchGift.resource] || 0) + entry.churchGift.amount;
