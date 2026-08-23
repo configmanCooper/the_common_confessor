@@ -66,6 +66,27 @@ Useful options:
 
 The start script reports free VRAM and picks an offload level to match. Full GPU offload is worth roughly **36 tok/s versus 8.6 tok/s** partially offloaded, so if it warns that memory is tight, closing Chrome, Edge, or another local-AI project is the single most effective fix.
 
+## Watch a model play
+
+A debugging tool. **Watch AI** in the top bar hands the parish to a Copilot model and lets you watch it work as the priest.
+
+The rule that governs the rest of the game holds most strictly here: **the model never touches game state.** The engine enumerates the moves that are legal at that moment — each carrying the same explanation the interface shows you — and the model replies with the *index* of one plus a sentence on why. The interface then performs it exactly as your click would, so a watched run stays replayable and the model can never reach a move you do not have.
+
+It also sees only what you see. An undisclosed confession, a scenario fact you have not learned, another villager's private memory, and the truth behind a rumour are all withheld; the parity tests in `test/agent.test.js` enforce that in both directions. A model that could see the secret would be playing a different game, and its playthrough would prove nothing.
+
+**Step one move** at a time or **Let it play**. The *Try this* box steers it — *"be as generous as the stores allow"*, *"refuse every request and see what the village does"* — and you can take over at any point.
+
+For a long unattended run there is a headless version:
+
+```powershell
+node scripts/watch-ai-playthrough.mjs --days 14 --model gpt-5.6-sol
+node scripts/analyze-playthrough.mjs        # reads the newest run
+```
+
+The run writes a full save plus a turn-by-turn log to `exports/`. The analyzer reads that log and reports the faults that only appear over weeks: lines the framework wrote instead of the model, scenario prose reaching the screen verbatim, sentences repeated across different visitors, situations the parish over-produces, and visits that spend every turn without anything being decided.
+
+This is how the Unicode-space bug (`"it feltwrong"`) and the stitched-clause leak (`"I cannot promise yet to We must seek..."`) were found.
+
 ## AI providers
 
 Local Gemma remains the default and offline-safe provider. The top bar can also select **GitHub Copilot** when the official Copilot SDK can authenticate the signed-in user. Copilot prompts count against that account's usage allowance.
