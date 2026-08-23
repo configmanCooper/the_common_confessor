@@ -4173,6 +4173,17 @@ export function summonOfficer(state, {
   const subject = state.residents.find((entry) => entry.id === subjectId);
   if (!subject || subject.id === officer.id) return null;
   if (!["protect", "investigate", "keep_the_peace"].includes(purpose)) return null;
+  /* Sending the same man on the same errand twice does not double the watch.
+     He is already going, so a repeated request is simply the priest saying it
+     again, and it must not stack up events, commitments and obligations. */
+  const alreadyGoing = (state.commitments || []).some((commitment) => (
+    commitment.type === "officer_duty"
+      && commitment.status === "open"
+      && commitment.actorId === officer.id
+      && commitment.targetId === subject.id
+      && commitment.payload?.purpose === purpose
+  ));
+  if (alreadyGoing) return null;
 
   const event = appendEvent(state, {
     type: "officer_summoned",

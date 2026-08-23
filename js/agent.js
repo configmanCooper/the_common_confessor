@@ -211,26 +211,38 @@ export function legalMoves(state) {
       state.residents.find((entry) => entry.id === visit.personId),
       state.residents.find((entry) => entry.id === visit.issue.relatedPersonId)
     ].filter((entry) => entry && officers.every((officer) => officer.id !== entry.id));
+    /* An officer already on his way is not a choice the priest still has. */
+    const alreadySent = (officer, subject, purpose) => (state.commitments || []).some((commitment) => (
+      commitment.type === "officer_duty"
+        && commitment.status === "open"
+        && commitment.actorId === officer.id
+        && commitment.targetId === subject.id
+        && commitment.payload?.purpose === purpose
+    ));
     for (const officer of officers.slice(0, 2)) {
       for (const subject of subjects) {
-        moves.push({
-          kind: "summon_officer",
-          needsText: false,
-          officerId: officer.id,
-          subjectId: subject.id,
-          purpose: "protect",
-          label: `Send ${officer.name} the ${officer.occupation} to keep the peace around ${subject.name}`,
-          detail: "The watch coming out deters a gathering crowd and calms the household, but it is a public act and not everyone will thank you for it."
-        });
-        moves.push({
-          kind: "summon_officer",
-          needsText: false,
-          officerId: officer.id,
-          subjectId: subject.id,
-          purpose: "investigate",
-          label: `Send ${officer.name} the ${officer.occupation} to look into the matter concerning ${subject.name}`,
-          detail: "An officer asking questions can settle what is true, but being investigated frightens people and can harden a quarrel."
-        });
+        if (!alreadySent(officer, subject, "protect")) {
+          moves.push({
+            kind: "summon_officer",
+            needsText: false,
+            officerId: officer.id,
+            subjectId: subject.id,
+            purpose: "protect",
+            label: `Send ${officer.name} the ${officer.occupation} to keep the peace around ${subject.name}`,
+            detail: "The watch coming out deters a gathering crowd and calms the household, but it is a public act and not everyone will thank you for it."
+          });
+        }
+        if (!alreadySent(officer, subject, "investigate")) {
+          moves.push({
+            kind: "summon_officer",
+            needsText: false,
+            officerId: officer.id,
+            subjectId: subject.id,
+            purpose: "investigate",
+            label: `Send ${officer.name} the ${officer.occupation} to look into the matter concerning ${subject.name}`,
+            detail: "An officer asking questions can settle what is true, but being investigated frightens people and can harden a quarrel."
+          });
+        }
       }
     }
     for (const role of ["steward", "lord"]) {

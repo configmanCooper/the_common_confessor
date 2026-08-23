@@ -3,11 +3,13 @@ import test from "node:test";
 import {
   advancePriestStanding,
   availableOfficers,
+  beginVisit,
   createGame,
   patronConnections,
   petitionAuthority,
   summonOfficer
 } from "../js/simulation.js";
+import { legalMoves } from "../js/agent.js";
 import { appendEvent } from "../js/state.js";
 
 /* The village has a watch, a bailiff and a reeve, and behind them a steward
@@ -177,4 +179,47 @@ test("villagers with standing outside the village carry word either way", () => 
   assert.equal(outcome.warm, true);
   assert.ok(state.eventQueue.some((event) => event.role === link.role));
   assert.ok(state.chronicle.some((entry) => /good word carried/i.test(entry.title)));
+});
+
+test("sending the same officer on the same errand twice does not double the watch", () => {
+  const state = createGame("summons-dedup");
+  state.calendar.absoluteDay = 1;
+  beginVisit(state);
+  const visit = state.currentVisit;
+  const officers = availableOfficers(state);
+  const subject = state.residents.find((person) => person.id === visit.personId);
+  const officer = officers.find((entry) => entry.id !== subject.id);
+  assert.ok(officer, "the parish should have an officer to send");
+
+  const first = summonOfficer(state, { officerId: officer.id, subjectId: subject.id, purpose: "protect", reason: "keep the peace" });
+  assert.ok(first, "the first summons should go out");
+  const repeat = summonOfficer(state, { officerId: officer.id, subjectId: subject.id, purpose: "protect", reason: "saying it again" });
+  assert.equal(repeat, null, "he is already going; saying it again must not stack");
+
+  const different = summonOfficer(state, { officerId: officer.id, subjectId: subject.id, purpose: "investigate", reason: "a separate errand" });
+  assert.ok(different, "a genuinely different errand should still be possible");
+
+  const duties = state.commitments.filter((entry) => entry.type === "officer_duty" && entry.status === "open");
+  assert.equal(duties.length, 2, "one errand each, not one per time it was asked for");
+});
+
+test("an errand already under way is not offered to the priest again", () => {
+  const state = createGame("summons-moves");
+  state.calendar.absoluteDay = 1;
+  beginVisit(state);
+  const visit = state.currentVisit;
+  const subject = state.residents.find((person) => person.id === visit.personId);
+  const officer = availableOfficers(state).find((entry) => entry.id !== subject.id);
+  assert.ok(officer);
+
+  const before = legalMoves(state).filter((move) => (
+    move.kind === "summon_officer" && move.officerId === officer.id && move.subjectId === subject.id
+  ));
+  assert.ok(before.length > 0, "the move should be available to begin with");
+
+  summonOfficer(state, { officerId: officer.id, subjectId: subject.id, purpose: "protect", reason: "keep the peace" });
+  const after = legalMoves(state).filter((move) => (
+    move.kind === "summon_officer" && move.officerId === officer.id && move.subjectId === subject.id
+  ));
+  assert.ok(!after.some((move) => move.purpose === "protect"), "the errand under way should no longer be offered");
 });
