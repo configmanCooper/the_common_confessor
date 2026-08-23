@@ -390,7 +390,9 @@ async function main() {
       const priestText = decision.text;
       let response;
       try {
-        response = await voice.conversation(state, visitorFor(state, state.currentVisit), priestText);
+        response = await voice.conversation(state, visitorFor(state, state.currentVisit), priestText, {
+          stagedGifts: decision.gives || []
+        });
       } catch (error) {
         response = { ...fallbackConversation(state, priestText), source: "fallback", voiceError: error.message };
       }

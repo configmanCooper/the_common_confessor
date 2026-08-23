@@ -106,12 +106,17 @@ export function legalMoves(state) {
 
   if (visit && !visit.reactionState?.endedEarly && visit.turnsUsed < visit.maxTurns) {
     const person = state.residents.find((entry) => entry.id === visit.personId);
+    const stores = churchResourceRows(state.churchResources).filter((row) => row.amount > 0);
     moves.push({
       kind: "speak",
       needsText: true,
+      allowsGifts: true,
+      stores: stores.map((row) => ({ key: row.key, label: row.label, unit: row.unit, left: row.amount })),
       label: `Say something to ${person?.firstName || "the visitor"}`,
       detail: `You may say anything. ${Math.max(0, visit.maxTurns - visit.turnsUsed)} of ${visit.maxTurns} remain this hour. `
-        + "You can also hand over church stores by simply offering them in your own words."
+        + (stores.length
+          ? `You may also hand over church stores with these words by adding "gives": ${stores.map((row) => `${row.key} (${row.left} ${row.unit} left)`).join(", ")}. Handing something over is the same act as saying you will, so do not count it twice.`
+          : "The church stores are empty.")
     });
   }
   if (visit) {
@@ -185,7 +190,22 @@ export function validateAgentChoice(moves, choice) {
       }
       return { ok: true, move, text: text.slice(0, 1200), theme, reason };
     }
-    return { ok: true, move, text: text.slice(0, 600), reason };
+    let gives = [];
+    if (move.allowsGifts && Array.isArray(choice.gives)) {
+      const byKey = new Map(move.stores.map((row) => [row.key, row]));
+      for (const gift of choice.gives.slice(0, 4)) {
+        const row = byKey.get(gift?.resource);
+        const amount = Math.floor(Number(gift?.amount) || 0);
+        if (!row) {
+          return { ok: false, error: `The church keeps no "${gift?.resource}". Choose from: ${[...byKey.keys()].join(", ")}.` };
+        }
+        if (amount <= 0 || amount > row.left) {
+          return { ok: false, error: `The church has ${row.left} ${row.unit} of ${row.label.toLowerCase()}; ${amount} cannot be given.` };
+        }
+        gives.push({ resource: row.key, amount });
+      }
+    }
+    return { ok: true, move, text: text.slice(0, 600), gives, reason };
   }
   return { ok: true, move, reason };
 }
@@ -222,8 +242,9 @@ export function buildAgentPrompt(state, moves, { steer = "", recent = [], person
   }
   lines.push(
     "Choose one move and reply with JSON only:",
-    '{"move": <index>, "text": "<what you say, if the move needs words>", "theme": "<sermon theme, only for a sermon>", "reason": "<one sentence on why>"}',
+    '{"move": <index>, "text": "<what you say, if the move needs words>", "theme": "<sermon theme, only for a sermon>", "gives": [{"resource":"bread","amount":2}], "reason": "<one sentence on why>"}',
     "",
+    "Use \"gives\" only when you are handing something over from the church stores as you speak, and say so in your words as well. It is one act, not two.",
     "Speak as a real parish priest would to that person: plainly, in your own words, responding to what they actually just said.",
     "Do not narrate, do not use asterisks, and do not write stage directions."
   );

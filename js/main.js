@@ -65,6 +65,10 @@ let runtimeDebugLog = (() => {
   }
 })();
 
+/* Church resources the priest has handed over through the interface, waiting
+   to travel with the next thing he says. */
+const stagedGifts = new Map();
+
 let conversationDebugLog = (() => {
   try {
     const stored = JSON.parse(localStorage.getItem(`${DEBUG_LOG_KEY}-conversations`) || "[]");
@@ -443,7 +447,30 @@ function updateMetrics() {
     const term = document.createElement("dt");
     const amount = document.createElement("dd");
     term.textContent = resource.label;
+    const staged = stagedGifts.get(resource.key) || 0;
     amount.textContent = `${resource.amount} ${resource.unit}`;
+    /* Charity can be handed over explicitly as well as spoken. What is staged
+       here travels with the next thing the priest says, so the visitor sees it
+       arrive and can react to it. */
+    if (state.currentVisit && !state.currentVisit.reactionState?.endedEarly) {
+      const give = document.createElement("button");
+      give.type = "button";
+      give.className = "give-button";
+      give.textContent = staged ? `giving ${staged}` : "give";
+      give.title = `Hand over one more ${resource.unit.replace(/s$/, "")} with your next words. Click again to add, right-click to clear.`;
+      give.disabled = resource.amount <= staged;
+      give.addEventListener("click", () => {
+        const next = Math.min(resource.amount, staged + 1);
+        if (next > 0) stagedGifts.set(resource.key, next);
+        updateMetrics();
+      });
+      give.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        stagedGifts.delete(resource.key);
+        updateMetrics();
+      });
+      amount.append(" ", give);
+    }
     return [term, amount];
   }));
   elements["population-count"].textContent = populationCount(state);
@@ -462,6 +489,7 @@ function renderCommon() {
 }
 
 function renderVisit() {
+  if (!state.currentVisit) stagedGifts.clear();
   const visit = state.currentVisit;
   if (!visit) return;
   const person = materializeResident(state, visit.personId, true);
@@ -658,7 +686,12 @@ async function submitCounsel(event) {
   try {
     const usedAi = aiReady && state.settings.aiEnabled;
     response = usedAi
-      ? { ...(await ai.conversation(requestState, person, text)), source: "ai" }
+      ? {
+        ...(await ai.conversation(requestState, person, text, {
+          stagedGifts: [...stagedGifts].map(([resource, amount]) => ({ resource, amount }))
+        })),
+        source: "ai"
+      }
       : { ...fallbackConversation(requestState, text), source: "fallback" };
   } catch (error) {
     if (generation !== stateGeneration || state !== requestState) return;
@@ -668,6 +701,7 @@ async function submitCounsel(event) {
   }
   if (generation !== stateGeneration || state !== requestState) return;
   conversationInFlight = false;
+  stagedGifts.clear();
   recordConversationTelemetry(text, response);
   const currentToken = state.currentVisit?.visitId || "";
   if (generation !== stateGeneration || currentToken !== visitToken) return;
@@ -1108,6 +1142,7 @@ async function watchTakeTurn() {
     watchLog(`${decision.move.label} — ${decision.reason}`, "move");
 
     if (decision.move.kind === "speak") {
+      for (const gift of decision.gives || []) stagedGifts.set(gift.resource, gift.amount);
       elements["counsel-input"].value = decision.text;
       await submitCounsel(new Event("submit"));
     } else if (decision.move.kind === "next_hour") {

@@ -324,3 +324,99 @@ test("raising an earlier offer gives only the difference", async () => {
   assert.equal(state.churchResources.bread, before - 4);
   assert.doesNotThrow(() => deserializeState(serializeState(state)));
 });
+
+test("ordinary speech containing a giving word opens nothing", async () => {
+  const ordinary = [
+    "I will go to her myself and see she is protected.",
+    "Bring him to me tomorrow and we shall speak.",
+    "Take care that you do not repeat this talk.",
+    "You have my word this stays between us.",
+    "Tell me who else shared your meals these three days."
+  ];
+  for (const [index, line] of ordinary.entries()) {
+    const { state, person } = scene(`gift-ordinary-${index}`);
+    const before = { ...state.churchResources };
+    const client = naturalClient({
+      understoodPlayerAs: "u", reply: "Yes, Father.", npcIntent: "n", proposedActions: [],
+      priestGivesFromChurch: [{ resource: "bread", amount: 1 }]
+    });
+    const response = await client.conversation(state, person, line);
+    recordExchange(state, line, response);
+    assert.equal(state.churchResources.bread, before.bread, `"${line}" opened the stores`);
+  }
+});
+
+test("a real offer still opens the stores however it is phrased", async () => {
+  const offers = [
+    "Take two loaves from the church stores.",
+    "I shall send medicinal herbs for the child.",
+    "Here are four silver pennies.",
+    "The parish can spare a sack of grain."
+  ];
+  for (const [index, line] of offers.entries()) {
+    const { state, person } = scene(`gift-real-offer-${index}`);
+    const before = { ...state.churchResources };
+    const client = naturalClient({
+      understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n", proposedActions: [],
+      priestGivesFromChurch: [{ resource: "bread", amount: 1 }]
+    });
+    const response = await client.conversation(state, person, line);
+    recordExchange(state, line, response);
+    assert.equal(state.churchResources.bread, before.bread - 1, `"${line}" gave nothing`);
+  }
+});
+
+test("the priest can hand something over without saying so", async () => {
+  const { state, person } = scene("staged-only");
+  const before = state.churchResources.bread;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest hands me bread without a word about it.",
+    reply: "Bless you, Father. I did not like to ask.",
+    npcIntent: "Accept what is put into my hands.",
+    proposedActions: [],
+    priestGivesFromChurch: []
+  });
+  const line = "Go home and rest now.";
+  const response = await client.conversation(state, person, line, {
+    stagedGifts: [{ resource: "bread", amount: 2 }]
+  });
+  assert.equal(response.churchGifts.length, 1);
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.bread, before - 2);
+});
+
+test("handing something over and also saying so gives it once", async () => {
+  const { state, person } = scene("staged-plus-speech");
+  const before = state.churchResources.bread;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest gives me two loaves.",
+    reply: "Thank you, Father.",
+    npcIntent: "Accept.",
+    proposedActions: [],
+    priestGivesFromChurch: [{ resource: "bread", amount: 2 }]
+  });
+  const line = "Take two loaves from the church stores.";
+  const response = await client.conversation(state, person, line, {
+    stagedGifts: [{ resource: "bread", amount: 2 }]
+  });
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.bread, before - 2, "the same loaves were given twice");
+});
+
+test("what is handed over is described to the visitor so they can react", async () => {
+  const { state, person } = scene("staged-described");
+  let prompt = "";
+  const client = naturalClient((entry, raw) => {
+    prompt = raw;
+    return {
+      understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n",
+      proposedActions: [], priestGivesFromChurch: []
+    };
+  });
+  await client.conversation(state, person, "Go home and rest.", {
+    stagedGifts: [{ resource: "firewood", amount: 1 }]
+  });
+  assert.match(prompt, /HANDING YOU/);
+  assert.match(prompt, /firewood/i);
+  assert.match(prompt, /React to being handed it/);
+});

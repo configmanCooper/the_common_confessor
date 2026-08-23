@@ -184,3 +184,37 @@ test("the prompt shows the transcript, the stores, and the moves by index", () =
   assert.match(prompt, /said hello/);
   assert.ok(prompt.includes(person.firstName));
 });
+
+test("the agent may hand over stores with its words, within what the church holds", () => {
+  const { state } = scene("agent-explicit-gifts");
+  const moves = legalMoves(state);
+  const speak = moves.find((move) => move.kind === "speak");
+  assert.equal(speak.allowsGifts, true);
+  assert.ok(speak.stores.length > 0);
+  assert.match(speak.detail, /do not count it twice/);
+
+  const good = validateAgentChoice(moves, {
+    move: speak.index,
+    text: "Take two loaves.",
+    gives: [{ resource: "bread", amount: 2 }],
+    reason: "the household is hungry"
+  });
+  assert.equal(good.ok, true);
+  assert.deepEqual(good.gives, [{ resource: "bread", amount: 2 }]);
+
+  const overdrawn = validateAgentChoice(moves, {
+    move: speak.index,
+    text: "Take a thousand loaves.",
+    gives: [{ resource: "bread", amount: 999 }],
+    reason: "r"
+  });
+  assert.equal(overdrawn.ok, false);
+
+  const invented = validateAgentChoice(moves, {
+    move: speak.index,
+    text: "Take some gold.",
+    gives: [{ resource: "gold", amount: 1 }],
+    reason: "r"
+  });
+  assert.equal(invented.ok, false);
+});

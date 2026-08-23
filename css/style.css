@@ -41,3 +41,13 @@
 .watch-ai-refused {
   border-left-color: #a2442f;
 }
+
+.give-button {
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  opacity: 0.75;
+}
+.give-button:hover:not(:disabled) { opacity: 1; }
+.give-button:disabled { opacity: 0.3; cursor: default; }

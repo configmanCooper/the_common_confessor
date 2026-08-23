@@ -15,6 +15,7 @@ import { analyzePlayerTurn } from "./dialogue_clauses.js";
 import {
   churchDonationCapacity,
   churchResourceRows,
+  mentionsChurchResource,
   parseChurchTransferIntent
 } from "./church.js";
 import { completeGeneratedText } from "./text.js";
@@ -1583,8 +1584,11 @@ const churchGiftProperty = {
    prevents. */
 function mentionsGiving(text) {
   const speech = String(text || "").toLowerCase();
-  return /\b(?:give|gives|giving|gave|take|takes|have|here|send|sends|sending|bring|brings|offer|offers|spare|spares|share|shares|provide|provides|lend|lends|fetch|carry|deliver|supply|supplies|grant|distribute|allot|set aside|draw on|draw from|out of)\b/.test(speech)
-    || /\b(?:church|parish|stores?|storehouse|almonry)\b.{0,40}\b(?:will|shall|can|may|must)\b/.test(speech);
+  const givingVerb = /\b(?:give|gives|giving|gave|given|take|takes|have|has|keep|keeps|accept|receive|send|sends|sending|bring|brings|brought|offer|offers|spare|spares|share|shares|provide|provides|lend|lends|fetch|deliver|supply|supplies|grant|grants|distribute|allot|set aside|draw on|draw from|here)\b/.test(speech);
+  /* A giving word on its own means nothing: "take care", "have faith" and
+     "bring him to me" are ordinary speech. Something the church actually
+     keeps must be named as well before the stores are opened. */
+  return givingVerb && mentionsChurchResource(speech);
 }
 
 const naturalConversationSchema = {
@@ -1995,6 +1999,7 @@ export class ParishAiClient extends EventTarget {
     knowledgeLines,
     reactionPreview,
     turnAnalysis,
+    stagedGifts = [],
     correction
   }) {
     const guarded = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed;
@@ -2060,6 +2065,12 @@ export class ParishAiClient extends EventTarget {
         .map((row) => `${row.label.toLowerCase()} [${row.key}], ${row.amount} ${row.unit} left`)
         .join("; ") || "nothing at present"}.`,
       `THE PRIEST JUST SAID: "${boundedString(playerText, 600)}"`,
+      stagedGifts.length
+        ? `AS HE SPEAKS HE IS HANDING YOU: ${stagedGifts.map((gift) => {
+          const row = churchResourceRows(state.churchResources).find((entry) => entry.key === gift.resource);
+          return `${gift.amount} ${row?.unit || ""} of ${row?.label.toLowerCase() || gift.resource}`.replace(/\s+/g, " ");
+        }).join(", ")}. React to being handed it, whether with thanks, embarrassment, or refusal.`
+        : "",
       correction || "",
       "",
       "Reply in JSON.",
@@ -2084,7 +2095,8 @@ export class ParishAiClient extends EventTarget {
     knowledgeLines,
     requiredFacts,
     issueId,
-    currentQuestionTurnId
+    currentQuestionTurnId,
+    stagedGifts = []
   }) {
     const transformations = [];
     const useDecisions = turnAnalysis.proposals.length > 0;
@@ -2093,6 +2105,7 @@ export class ParishAiClient extends EventTarget {
       knowledgeLines,
       reactionPreview,
       turnAnalysis,
+      stagedGifts,
       correction
     });
 
@@ -2190,9 +2203,22 @@ export class ParishAiClient extends EventTarget {
     // engine decides whether the church can actually spare it. A priest who
     // offers grain, bread and firewood in one breath is giving three things.
     const churchGifts = [];
-    const requestedGifts = Array.isArray(raw.priestGivesFromChurch)
+    const reportedGifts = Array.isArray(raw.priestGivesFromChurch)
       ? raw.priestGivesFromChurch
       : (raw.priestGivesFromChurch ? [raw.priestGivesFromChurch] : []);
+    /* Gifts can arrive two ways: the priest says he is giving something, or he
+       hands it over explicitly through the interface. They are merged by
+       taking the larger of the two rather than adding them together, so
+       pressing "give two loaves" and then also saying "take two loaves" hands
+       over two loaves and not four. */
+    const mergedGifts = new Map();
+    for (const gift of [...reportedGifts, ...stagedGifts]) {
+      const key = gift?.resource;
+      if (!key) continue;
+      const amount = Math.max(0, Math.min(100, Math.floor(Number(gift.amount) || 0)));
+      mergedGifts.set(key, Math.max(mergedGifts.get(key) || 0, amount));
+    }
+    const requestedGifts = [...mergedGifts].map(([resource, amount]) => ({ resource, amount }));
     const remaining = Object.fromEntries(
       churchResourceRows(state.churchResources).map((row) => [row.key, row.amount])
     );
@@ -2201,7 +2227,7 @@ export class ParishAiClient extends EventTarget {
        as a gift — handing over the whole stock of firewood during a
        conversation about letters. Nothing leaves the stores unless the priest
        actually offered something in the words he just spoke. */
-    const priestOffered = mentionsGiving(playerText);
+    const priestOffered = mentionsGiving(playerText) || stagedGifts.length > 0;
     if (requestedGifts.length && !priestOffered) {
       transformations.push({
         type: "gift_rejected",
@@ -2403,7 +2429,7 @@ export class ParishAiClient extends EventTarget {
     return result;
   }
 
-  async conversation(state, person, playerText) {
+  async conversation(state, person, playerText, { stagedGifts = [] } = {}) {
     const visit = state.currentVisit;
     ensureConversationContinuity(visit);
     const reactionPreview = previewConversationReaction(state, person, visit, playerText);
@@ -2504,7 +2530,8 @@ export class ParishAiClient extends EventTarget {
       knowledgeLines: knowledgeLines.slice(0, 4),
       requiredFacts,
       issueId,
-      currentQuestionTurnId
+      currentQuestionTurnId,
+      stagedGifts
     });
   }
 

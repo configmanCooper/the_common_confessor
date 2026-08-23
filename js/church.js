@@ -164,3 +164,16 @@ export function churchDonationCapacity(state, person, resource) {
     ? Math.floor(household.wealth)
     : Math.floor(household.food / Math.max(1, definition.householdValue));
 }
+
+/* Does this sentence actually name something the church keeps? Used to tell a
+   real offer from ordinary speech: "take" and "have" are far too common on
+   their own to mean that the stores are being opened. */
+export function mentionsChurchResource(text) {
+  const speech = String(text || "").toLowerCase();
+  for (const aliases of Object.values(RESOURCE_ALIASES)) {
+    for (const alias of aliases) {
+      if (speech.includes(alias)) return true;
+    }
+  }
+  return /\b(?:alms|provisions?|supplies|stores?|storehouse|poor box|food)\b/.test(speech);
+}
