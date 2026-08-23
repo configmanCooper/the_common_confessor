@@ -15,13 +15,14 @@
 
 import { EXTERNAL_ROLES, SERMON_THEMES } from "./data.js";
 import { churchResourceRows } from "./church.js";
-import { availableOfficers } from "./simulation.js";
+import { availableOfficers, marketOffer } from "./simulation.js";
 
 export const AGENT_MOVE_KINDS = Object.freeze([
   "speak",
   "next_hour",
   "deliver_sermon",
-  "request_visit"
+  "request_visit",
+  "buy_at_market"
 ]);
 
 function visibleScenarioFacts(visit) {
@@ -145,6 +146,34 @@ export function legalMoves(state) {
         + " and the trust of those who hear it. Some parishioners give without being asked if they think well of you."
     });
   }
+  /* The stalls go up once the parish has been preached to, and they come down
+     when the priest closes the church for the night. That window, rather than
+     the weekday, is what makes the move legal — a sermon ends the Sunday. */
+  if (state.lastSermonAftermath) {
+    const offer = marketOffer(state);
+    const affordable = offer.listings.filter((listing) => listing.stock > 0 && listing.price <= offer.coin);
+    if (affordable.length) {
+      moves.push({
+        kind: "buy_at_market",
+        needsText: false,
+        needsPurchases: true,
+        goods: affordable.map((listing) => ({
+          key: listing.key,
+          label: listing.label,
+          unit: listing.unit,
+          price: listing.price,
+          stock: listing.stock,
+          note: listing.description
+        })),
+        coin: offer.coin,
+        label: "Buy at the Sunday market",
+        detail: `The church has ${offer.coin} ${offer.coin === 1 ? "penny" : "pennies"}. `
+          + `${offer.season}, weather ${offer.weather}. Give "purchases" as a list of {"good","quantity"}. `
+          + `On sale: ${affordable.map((listing) => `${listing.key} — ${listing.stock} ${listing.unit} at ${listing.price}d each (${listing.description})`).join(" | ")}. `
+          + "Buy only what the parish will actually need, and remember that coin spent here cannot be given away later."
+      });
+    }
+  }
   const requestable = state.residents
     .filter((resident) => resident.active && resident.alive && resident.age >= 16)
     .filter((resident) => !state.visitRequests.some((request) => (
@@ -228,6 +257,31 @@ export function validateAgentChoice(moves, choice) {
   }
   const move = moves[index];
   const reason = String(choice.reason || "").slice(0, 400);
+  if (move.needsPurchases) {
+    const requested = Array.isArray(choice.purchases) ? choice.purchases : [];
+    if (!requested.length) {
+      return { ok: false, error: `Move ${index} ("${move.label}") needs a "purchases" list of {"good","quantity"}.` };
+    }
+    const byKey = new Map(move.goods.map((good) => [good.key, good]));
+    const purchases = [];
+    let running = 0;
+    for (const entry of requested.slice(0, 8)) {
+      const good = byKey.get(entry?.good ?? entry?.resource);
+      const quantity = Math.floor(Number(entry?.quantity ?? entry?.amount) || 0);
+      if (!good) {
+        return { ok: false, error: `Nothing called "${entry?.good ?? entry?.resource}" is for sale. Choose from: ${[...byKey.keys()].join(", ")}.` };
+      }
+      if (quantity <= 0 || quantity > good.stock) {
+        return { ok: false, error: `There are ${good.stock} ${good.unit} of ${good.label.toLowerCase()} to be had; ${quantity} cannot be bought.` };
+      }
+      running += quantity * good.price;
+      if (running > move.coin) {
+        return { ok: false, error: `That comes to ${running}d and the church has only ${move.coin}d.` };
+      }
+      purchases.push({ good: good.key, quantity });
+    }
+    return { ok: true, move, purchases, reason };
+  }
   if (move.needsText) {
     const text = String(choice.text || "").trim();
     if (!text) return { ok: false, error: `Move ${index} ("${move.label}") requires something to say.` };
@@ -299,8 +353,9 @@ export function buildAgentPrompt(state, moves, { steer = "", recent = [], person
   }
   lines.push(
     "Choose one move and reply with JSON only:",
-    '{"move": <index>, "text": "<what you say, if the move needs words>", "theme": "<sermon theme, only for a sermon>", "gives": [{"resource":"bread","amount":2}], "reason": "<one sentence on why>"}',
+    '{"move": <index>, "text": "<what you say, if the move needs words>", "theme": "<sermon theme, only for a sermon>", "gives": [{"resource":"bread","amount":2}], "purchases": [{"good":"grain","quantity":10}], "reason": "<one sentence on why>"}',
     "",
+    "Use \"purchases\" only for the market move, and only for goods listed there.",
     "Use \"gives\" only when you are handing something over from the church stores as you speak, and say so in your words as well. It is one act, not two.",
     "Give only what answers the need actually in front of you, and say in your reason why that thing helps this person now. Medicine is for the sick, food for the hungry, firewood for the cold or the ill, coin for debt or restitution. Handing a man firewood because he is unhappy is not charity, it is waste, and the stores are finite.",
     "Speak as a real parish priest would to that person: plainly, in your own words, responding to what they actually just said.",

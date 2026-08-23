@@ -333,6 +333,9 @@ export function givingWillingness(state, person, household, appeal) {
   willingness += (state.priest.localTrust - 50) / 420;
   willingness += (state.priest.moralAuthority - 50) / 420;
   willingness -= state.priest.scandal / 180;
+  /* A parish that has seen the church open its stores gives back more readily
+     than one that has watched it hoard. Mercy shown becomes mercy returned. */
+  willingness += ((state.town?.metrics?.mercy ?? 50) - 50) / 260;
   // What they can bear. Hunger closes a hand faster than anything else.
   if ((household?.food ?? 60) < 40) willingness -= 0.4;
   if ((household?.wealth ?? 0) < 22) willingness -= 0.35;

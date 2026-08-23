@@ -290,6 +290,10 @@ export function calculateMarket(state) {
   const season = state.material?.season || "Spring";
   const weather = state.material?.weather || "mild";
   const prosperity = state.town?.metrics?.prosperity ?? 50;
+  /* A sound mill, a bridge that carries a cart and roads a man can walk in
+     February are the difference between labour and produce. Let them fall in
+     and the same week's work yields less of everything. */
+  const works = 0.82 + clamp(state.material?.infrastructure ?? 50, 0, 100) / 100 * 0.32;
 
   const goods = {};
   const labour = {};
@@ -299,8 +303,8 @@ export function calculateMarket(state) {
     const seasonFactor = SEASON_YIELD[key]?.[season] ?? 1;
     const weatherFactor = WEATHER_YIELD[weather]?.[key] ?? 1;
     labour[key] = {
-      possible: capacity * seasonFactor * weatherFactor,
-      potential: fullCapacity * seasonFactor * weatherFactor
+      possible: capacity * seasonFactor * weatherFactor * works,
+      potential: fullCapacity * seasonFactor * weatherFactor * works
     };
     goods[key] = {
       key,

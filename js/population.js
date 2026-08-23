@@ -811,6 +811,9 @@ function processViolence(state, day, events) {
     if (traits.includes("gentle") || traits.includes("pious") || traits.includes("devout")) pressure -= 0.45;
     /* A parish that holds together, and a priest they believe, restrain people. */
     pressure -= (state.town.metrics.harmony - 50) / 130;
+    /* A parish that expects mercy is slower to take matters into its own hands. */
+    pressure -= (state.town.metrics.mercy - 50) / 160;
+    pressure += Math.max(0, 45 - state.material.foodSecurity) / 90;
     pressure -= Math.max(0, actor.faith - 55) / 110;
     pressure -= Math.max(0, actor.trustPriest - 60) / 120;
     pressure -= (state.town.metrics.safety - 50) / 150;
@@ -1051,6 +1054,123 @@ function processMigration(state, day, events) {
   }
 }
 
+/* ==========================================================================
+   Settling the parish
+   --------------------------------------------------------------------------
+   Every figure on the priest's panel has to be two things at once: something
+   the week can move, and something that moves the week. A number that only
+   goes up is scenery; a number nothing reads is a lie.
+
+   This is where the day's events are turned back into the parish's condition,
+   so that charity shows up as mercy, violence shows up as fear, a good harvest
+   shows up as prosperity, and each of those then goes on to change what
+   happens next. What reads what:
+
+     harmony        restrains violence, slows rumour, keeps people from leaving
+     faith          restrains violence, raises attendance and giving
+     prosperity     sets what the village can pay at market, and who leaves
+     health         sets how ill people get and how quickly they mend
+     safety         restrains violence and holds down crime
+     mercy          decides how freely the parish gives, and how it treats its own
+     food security  drives hunger, illness, crime and what is left to sell
+     infrastructure sets how much the mill, roads and bridges let the parish make
+     crime          eats prosperity and safety
+   ========================================================================== */
+function settleParishConsequences(state, day, events) {
+  const metrics = state.town.metrics;
+  const counts = {};
+  for (const event of events) counts[event.type] = (counts[event.type] || 0) + 1;
+  /* What the priest himself did does not arrive through the population day —
+     charity, collections and market trade are written when he acts, into the
+     parish's own record. They have to be read from there or the church's
+     generosity would never show up in the parish's condition at all. */
+  for (let index = state.events.length - 1; index >= 0; index -= 1) {
+    const event = state.events[index];
+    if ((event.day ?? 0) < day - 1) break;
+    if (event.type === "church_aid_given" || event.type === "sunday_offering" || event.type === "market_purchase") {
+      counts[event.type] = (counts[event.type] || 0) + 1;
+    }
+  }
+
+  /* Blood in the parish is felt as fear and as division, and it is felt for
+     longer than the day it happened. */
+  const violence = (counts.assault || 0) + (counts.killing || 0) * 4;
+  if (violence) {
+    metrics.safety = clamp(metrics.safety - violence * 0.8);
+    metrics.harmony = clamp(metrics.harmony - violence * 0.6);
+    metrics.mercy = clamp(metrics.mercy - violence * 0.4);
+  }
+
+  /* Charity is the parish learning what it is for. Where the church gives, the
+     village gives; where it turns people away, the village hardens. */
+  const charity = counts.church_aid_given || 0;
+  if (charity) {
+    metrics.mercy = clamp(metrics.mercy + charity * 0.9);
+    metrics.harmony = clamp(metrics.harmony + charity * 0.3);
+  }
+  if (counts.sunday_offering) metrics.faith = clamp(metrics.faith + 0.6);
+  if (counts.market_purchase) metrics.prosperity = clamp(metrics.prosperity + 0.4);
+
+  /* Suffering nobody answers costs the parish its faith and its softness. */
+  const suffering = (counts.death || 0) * 1.4 + (counts.injury || 0) * 0.5 + (counts.illness_began || 0) * 0.3;
+  if (suffering) {
+    metrics.faith = clamp(metrics.faith - suffering * 0.35);
+    metrics.health = clamp(metrics.health - suffering * 0.5);
+  }
+  if (counts.illness_recovered || counts.injury_healed) {
+    metrics.health = clamp(metrics.health + ((counts.illness_recovered || 0) + (counts.injury_healed || 0)) * 0.4);
+    metrics.mercy = clamp(metrics.mercy + 0.2);
+  }
+
+  /* Mercy is not sentiment, and it is not a running total either. It is the
+     parish's present belief about whether it will be caught when it falls, so
+     it is drawn towards what the parish can presently see: a church that gives,
+     a priest they trust, neighbours who are fed, nobody being beaten. It moves
+     slowly, because a reputation for hardness takes weeks to earn and weeks to
+     lose. */
+  const living = state.residents.filter((person) => person.alive && person.active);
+  const hungry = living.filter((person) => {
+    const household = householdFor(state, person);
+    return household && household.food < 30;
+  }).length;
+  const hungryShare = living.length ? hungry / living.length : 0;
+  const mercyTarget = clamp(
+    38
+      + (metrics.faith - 50) * 0.35
+      + (state.priest.moralAuthority - 50) * 0.25
+      + charity * 4.5
+      - hungryShare * 28
+      - violence * 5
+      - state.priest.scandal * 0.2
+  );
+  metrics.mercy = clamp(metrics.mercy + (mercyTarget - metrics.mercy) * 0.05);
+
+  /* The building trades keep the mill turning, the bridge up and the roofs on.
+     Storms undo it, and nobody has time for it in a hungry year. */
+  const builders = living.filter((person) => (
+    ["carpenter", "mason", "thatcher", "cooper", "laborer"].includes(person.occupation)
+      && person.age >= 14 && person.age <= 70 && !person.illness && !person.injury
+  )).length;
+  state.material.infrastructure = clamp(
+    state.material.infrastructure
+      + builders * 0.02 * (1 - hungryShare)
+      - (state.material.weather === "storm" ? 0.55 : 0.12)
+      - Math.max(0, 45 - metrics.prosperity) * 0.004
+      + (state.material.modifiers.infrastructure || 0)
+  );
+
+  /* Roads and a sound mill are what let a village turn its labour into goods,
+     and standing water and broken roofs are what make it sick. */
+  metrics.prosperity = clamp(metrics.prosperity + (state.material.infrastructure - 50) * 0.004);
+  state.material.diseasePressure = clamp(
+    state.material.diseasePressure + (50 - state.material.infrastructure) * 0.006
+  );
+
+  /* A parish at peace with itself keeps more of its people. */
+  metrics.harmony = clamp(metrics.harmony + (metrics.faith - 50) * 0.002 - (state.material.crime - 40) * 0.004);
+  metrics.faith = clamp(metrics.faith - state.priest.scandal * 0.004);
+}
+
 export function advancePopulationDay(state) {
   upgradePopulationState(state);
   state.material.modifiers ||= {
@@ -1111,12 +1231,10 @@ export function advancePopulationDay(state) {
   const maintenance = averageWealth * 0.0008 + state.residents.filter((person) => (
     person.active && person.alive && ["carpenter", "mason", "thatcher", "laborer"].includes(person.occupation)
   )).length * 0.0008;
-  state.material.infrastructure = clamp(
-    state.material.infrastructure
-      + maintenance
-      - (state.material.weather === "storm" ? 0.5 : 0.08)
-      + state.material.modifiers.infrastructure
-  );
+  /* Infrastructure is settled once, in settleParishConsequences, where the
+     builders' actual condition is known. Applying it here too decayed it twice
+     and no parish could keep its roads up. */
+  void maintenance;
   if (state.material.crime > 65 && weatherRng.next() < 0.02) {
     const possibleVictims = state.residents.filter((person) => person.active && person.alive);
     if (possibleVictims.length) {
@@ -1146,5 +1264,6 @@ export function advancePopulationDay(state) {
     const value = state.material.modifiers[key];
     state.material.modifiers[key] = Math.abs(value) <= 1 ? 0 : value - Math.sign(value);
   }
+  settleParishConsequences(state, day, events);
   return events;
 }

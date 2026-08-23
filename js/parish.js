@@ -199,7 +199,11 @@ export function sermonRelevance(state, person, theme, spokenWords, household) {
     const spoken = circumstance.words.filter((word) => spokenWords.has(word)).length;
     const thematic = circumstance.words.filter((word) => concepts.includes(word)).length;
     if (!spoken && !thematic) continue;
-    score += Math.min(0.42, spoken * 0.14 + thematic * 0.07);
+    /* The theme counts for something, but only a little. What decides whether a
+       sermon was about this person is what the priest actually said, not which
+       word he picked from a list beforehand — otherwise the writing would be
+       decoration and the dropdown would be the game. */
+    score += Math.min(0.12, thematic * 0.035) + Math.min(0.4, spoken * 0.14);
     if (spoken) reasons.push(circumstance.describe(person));
   }
 
@@ -220,6 +224,34 @@ export function sermonRelevance(state, person, theme, spokenWords, household) {
   return { score: Math.min(1.35, score), reasons };
 }
 
+/* How much of this the parish has heard already.
+
+   A congregation that has been given the same sermon eight Sundays running is
+   not moved on the eighth as it was on the first. This is what stops a priest
+   from finding one good sermon and preaching it until the whole village is a
+   saint, and it quietly rewards a man who pays attention to what his parish
+   actually needs this week rather than what worked last week. */
+export function sermonNovelty(state, theme, spokenWords) {
+  /* The sermon being preached has already been written into the record by the
+     time this runs, so it must be left out or every sermon would count as a
+     word-perfect repeat of itself. */
+  const today = state.calendar?.absoluteDay ?? 0;
+  const recent = (state.sermons || []).filter((sermon) => sermon.day < today).slice(-6);
+  if (!recent.length) return 1;
+  let staleness = 0;
+  for (const [index, sermon] of recent.entries()) {
+    /* The most recent sermons are the ones still in their ears. */
+    const recency = (index + 1) / recent.length;
+    const previous = tokenise(sermon.text);
+    if (!previous.size) continue;
+    let shared = 0;
+    for (const word of previous) if (spokenWords.has(word)) shared += 1;
+    const overlap = shared / previous.size;
+    staleness += recency * (overlap * 0.8 + (sermon.theme === theme ? 0.2 : 0));
+  }
+  return clamp(1 - staleness * 0.42, 0.18, 1);
+}
+
 /**
  * Work the sermon through the congregation, person by person, and return an
  * account of everyone it moved and why. Mutates the people it moves.
@@ -227,7 +259,8 @@ export function sermonRelevance(state, person, theme, spokenWords, household) {
 export function resolveSermonImpact(state, theme, text, attendees, consistency, reactions) {
   const spokenWords = tokenise(text);
   for (const concept of THEME_CONCEPTS[theme] || []) spokenWords.add(concept);
-  const force = sermonForce(state, text, consistency);
+  const novelty = sermonNovelty(state, theme, spokenWords);
+  const force = sermonForce(state, text, consistency) * novelty;
   const reactionOf = new Map((reactions || []).map((entry) => [entry.personId, entry.reaction]));
   const affected = [];
 
@@ -274,11 +307,19 @@ export function resolveSermonImpact(state, theme, text, attendees, consistency, 
       stress: person.stress
     };
 
-    person.faith = clamp(person.faith + direction * scale * 0.6);
-    person.trustPriest = clamp(person.trustPriest + direction * scale * 0.5);
-    person.morale = clamp(person.morale + direction * scale * 0.45);
-    person.stress = clamp(person.stress - direction * scale * 0.4);
-    person.attendanceChance = clamp(person.attendanceChance + direction * scale * 0.35);
+    /* Diminishing returns, both ways. There is far less to be gained from
+       preaching to someone whose faith is already near total than to someone
+       who has almost none left, and a man who already distrusts you cannot be
+       made to distrust you much further. Without this, a competent priest
+       preaching weekly saturates the whole parish inside a month and nothing
+       he does afterwards means anything. */
+    const headroom = (value) => 0.12 + 0.88 * (direction > 0 ? (100 - value) / 100 : value / 100);
+
+    person.faith = clamp(person.faith + direction * scale * 0.6 * headroom(person.faith));
+    person.trustPriest = clamp(person.trustPriest + direction * scale * 0.5 * headroom(person.trustPriest));
+    person.morale = clamp(person.morale + direction * scale * 0.45 * headroom(person.morale));
+    person.stress = clamp(person.stress - direction * scale * 0.4 * headroom(100 - person.stress));
+    person.attendanceChance = clamp(person.attendanceChance + direction * scale * 0.35 * headroom(person.attendanceChance));
 
     const deltas = {
       faith: Math.round(person.faith - before.faith),
@@ -325,7 +366,7 @@ export function resolveSermonImpact(state, theme, text, attendees, consistency, 
   }
 
   affected.sort((a, b) => b.impact - a.impact);
-  return { force: Math.round(force * 100) / 100, affected };
+  return { force: Math.round(force * 100) / 100, novelty: Math.round(novelty * 100) / 100, affected };
 }
 
 export function resolveCongregationReactions(state, theme, text, attendees, outcome) {

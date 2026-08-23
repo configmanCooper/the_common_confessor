@@ -335,6 +335,35 @@ async function main() {
         });
         recent.push(`Preached on ${theme}`);
         console.log(`[${dayLabel(dayBefore, state.calendar.week)}] SERMON on ${theme}: ${String(text).slice(0, 90)}...`);
+        /* What his own words did, so the next thing he says is informed by it. */
+        const aftermath = state.lastSermonAftermath;
+        if (aftermath) {
+          const moved = aftermath.affected.filter((entry) => entry.direction === "moved").length;
+          log.push({ kind: "sermon_aftermath", day: dayBefore, week: state.calendar.week, aftermath });
+          recent.push(
+            `${aftermath.offering.givers.length} households gave ${aftermath.offering.coin}d; `
+            + `${moved} were moved by the sermon and ${aftermath.affected.length - moved} hardened`
+          );
+          console.log(`    offering: ${aftermath.offering.coin}d from ${aftermath.offering.givers.length} households; `
+            + `${aftermath.affected.length} of ${aftermath.attendance} affected (${moved} moved)`);
+        }
+        /* The stalls are up. Let him spend the collection if he wants to. */
+        const marketMoves = legalMoves(state);
+        const marketMove = marketMoves.find((move) => move.kind === "buy_at_market");
+        if (marketMove) {
+          const marketDecision = await chooseMove(state, [marketMove, ...marketMoves.filter((m) => m !== marketMove)], recent);
+          if (marketDecision.ok && marketDecision.move.kind === "buy_at_market") {
+            const result = buyAtMarket(state, marketDecision.purchases);
+            if (result.spent) {
+              const bought = result.bought.map((item) => `${item.amount} ${item.unit} of ${item.label.toLowerCase()}`).join(", ");
+              log.push({ kind: "market", day: dayBefore, week: state.calendar.week, bought: result.bought, spent: result.spent, reason: marketDecision.reason });
+              recent.push(`Bought ${bought} for ${result.spent}d`);
+              console.log(`    MARKET: ${bought} for ${result.spent}d — ${marketDecision.reason}`);
+            }
+          }
+        }
+        /* The stalls come down for the week. */
+        state.lastSermonAftermath = null;
       } else {
         applySermon(state, "Duty", "Hold to what is right.", {
           ...fallbackSermonOutcome(state, "Duty", "Hold to what is right."),

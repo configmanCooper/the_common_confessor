@@ -5,6 +5,8 @@ import { ChurchRenderer } from "./renderer.js";
 import {
   applySermon,
   applyVisitOpening,
+  buyAtMarket,
+  marketOffer,
   beginVisit,
   calendarLabel,
   createGame,
@@ -435,7 +437,10 @@ function updateMetrics() {
     ...state.town.metrics,
     food: state.material.foodSecurity,
     infrastructure: state.material.infrastructure,
-    crime: 100 - state.material.crime
+    /* Shown the way every other row reads: more is better. This is how much
+       order the parish keeps, not how much crime it suffers, because a bar
+       labelled "crime" that fills up when the village is safest is a lie. */
+    order: 100 - state.material.crime
   }));
   elements["priest-metrics"].replaceChildren(...metricRows({
     trust: state.priest.localTrust,
@@ -811,11 +816,146 @@ async function deliverSermon() {
   showToast(`${count} villagers heard the sermon. Monday begins.`);
   renderCommon();
   const newReports = requestState.periodReports.filter((report) => !priorReportIds.has(report.id));
+  /* Before the day is allowed to turn, the priest sees what his own words did
+     and has his one chance in the week to spend the collection. */
+  pendingPeriodReports = newReports;
+  if (renderSermonAftermath()) return;
   if (newReports.length) {
     showPeriodReports(newReports, true);
     return;
   }
   proceedToCurrentPeriod();
+}
+
+/* Reports wait until the priest has closed the market, so nothing is skipped
+   past while he is still reading who he moved. */
+let pendingPeriodReports = [];
+
+function closeMarketAndMoveOn() {
+  setHidden(elements["aftermath-panel"], true);
+  state.lastSermonAftermath = null;
+  const reports = pendingPeriodReports;
+  pendingPeriodReports = [];
+  if (reports.length) {
+    showPeriodReports(reports, true);
+    return;
+  }
+  proceedToCurrentPeriod();
+}
+
+/* ---------------------------------------------------------- the aftermath ---
+   A sermon is the one act in this game that touches everybody at once, so it
+   is also the one act whose consequences the priest cannot otherwise see. This
+   lays them out plainly: what was put in the box and by whom, who the sermon
+   actually reached and why it reached them, and what the village has to sell
+   after a week of making things. */
+
+let marketPanelOpen = false;
+
+function renderSermonAftermath() {
+  const aftermath = state.lastSermonAftermath;
+  if (!aftermath) return false;
+
+  elements["aftermath-title"].textContent = `The parish has heard you on ${aftermath.theme.toLowerCase()}`;
+  elements["aftermath-summary"].textContent =
+    `${aftermath.attendance} came into the church. ${aftermath.affected.length} of them went home changed by it.`
+    + (aftermath.novelty != null && aftermath.novelty < 0.7
+      ? " They have heard much of this from you before, and it landed the lighter for it."
+      : "");
+
+  const offering = aftermath.offering;
+  const gathered = [
+    offering.coin > 0 ? `${offering.coin} ${offering.coin === 1 ? "penny" : "pennies"}` : "",
+    offering.grain > 0 ? `${offering.grain} ${offering.grain === 1 ? "sack" : "sacks"} of grain` : ""
+  ].filter(Boolean).join(" and ");
+  elements["offering-summary"].textContent = offering.givers.length
+    ? `${offering.givers.length} ${offering.givers.length === 1 ? "household" : "households"} gave ${gathered}${
+      aftermath.appeal.asked ? ` after you asked ${aftermath.appeal.manner === "threatening" ? "by way of fear" : "plainly"}` : " without being asked"}.`
+    : aftermath.appeal.asked
+      ? "You asked, and nobody gave. They have nothing to spare, or no reason to give it to you."
+      : "Nothing was left in the box, and you did not ask.";
+
+  elements["offering-list"].replaceChildren(...offering.givers
+    .slice()
+    .sort((a, b) => (b.coin + b.grain) - (a.coin + a.grain))
+    .slice(0, 40)
+    .map((giver) => {
+      const item = document.createElement("li");
+      const parts = [
+        giver.coin > 0 ? `${giver.coin} ${giver.coin === 1 ? "penny" : "pennies"}` : "",
+        giver.grain > 0 ? `${giver.grain} ${giver.grain === 1 ? "sack" : "sacks"} of grain` : ""
+      ].filter(Boolean).join(" and ");
+      item.innerHTML = `<b>${giver.name}</b> — ${parts}`;
+      return item;
+    }));
+
+  const moved = aftermath.affected.filter((entry) => entry.direction === "moved");
+  const hardened = aftermath.affected.filter((entry) => entry.direction === "hardened");
+  const known = aftermath.affected.filter((entry) => entry.knownToPriest).length;
+  elements["affected-summary"].textContent = aftermath.affected.length
+    ? `${moved.length} were moved and ${hardened.length} hardened against you. ${known} of them had sat with you here.`
+    : "Your words passed over them. Nobody in that room had their own trouble touched by it.";
+
+  elements["affected-list"].replaceChildren(...aftermath.affected.slice(0, 30).map((entry) => {
+    const item = document.createElement("li");
+    item.className = entry.direction === "moved" ? "moved" : "hardened";
+    const deltas = [
+      entry.deltas.faith ? `faith ${entry.deltas.faith > 0 ? "+" : ""}${entry.deltas.faith}` : "",
+      entry.deltas.trust ? `trust in you ${entry.deltas.trust > 0 ? "+" : ""}${entry.deltas.trust}` : "",
+      entry.deltas.morale ? `heart ${entry.deltas.morale > 0 ? "+" : ""}${entry.deltas.morale}` : "",
+      entry.deltas.stress ? `worry ${entry.deltas.stress > 0 ? "+" : ""}${entry.deltas.stress}` : ""
+    ].filter(Boolean).join(", ");
+    const why = entry.reasons.length ? entry.reasons.join("; ") : "the theme itself reached them";
+    const seen = entry.knownToPriest ? " <em>(has spoken with you)</em>" : "";
+    const eased = entry.easedThreadIds.length ? " <em>The weight of it has eased.</em>" : "";
+    item.innerHTML = `<b>${entry.name}</b>, ${entry.occupation}${seen} — ${why}. <span class="deltas">${deltas}</span>${eased}`;
+    return item;
+  }));
+
+  renderMarket();
+  setHidden(elements["aftermath-panel"], false);
+  return true;
+}
+
+function renderMarket() {
+  const offer = marketOffer(state);
+  elements["market-summary"].textContent =
+    `${offer.season}, and the weather ${offer.weather}. The stalls sell what the village had left over this week.`;
+  elements["market-purse"].textContent = `The church has ${offer.coin} ${offer.coin === 1 ? "penny" : "pennies"}.`;
+
+  elements["market-list"].replaceChildren(...offer.listings.map((listing) => {
+    const item = document.createElement("li");
+    const title = document.createElement("div");
+    title.innerHTML = `<b>${listing.label}</b> — ${listing.description}`;
+    item.append(title);
+    if (listing.stock > 0 && offer.coin >= listing.price) {
+      const buttons = document.createElement("div");
+      buttons.className = "market-buttons";
+      for (const amount of [1, 5, 10]) {
+        if (amount > listing.stock) continue;
+        if (amount * listing.price > offer.coin) continue;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "give-button";
+        button.textContent = `buy ${amount} (${amount * listing.price}d)`;
+        button.addEventListener("click", () => {
+          const result = buyAtMarket(state, [{ good: listing.key, quantity: amount }]);
+          if (!result.spent) {
+            showToast("There is not enough of it, or not enough in the purse.");
+            return;
+          }
+          const bought = result.bought[0];
+          showToast(`${bought.amount} ${bought.unit} of ${bought.label.toLowerCase()} for ${result.spent}d.`);
+          saveGame(true, true);
+          renderMarket();
+          renderCommon();
+        });
+        buttons.append(button);
+      }
+      if (buttons.childElementCount) item.append(buttons);
+    }
+    return item;
+  }));
 }
 
 function renderRegister(filter = "") {
@@ -1042,8 +1182,10 @@ function startGame(nextState, isNew) {
   }
 }
 
-elements["new-game"].addEventListener("click", () => {
-  if (!initializationComplete || startActionInFlight) return;
+elements["leave-market"].addEventListener("click", () => {
+  closeMarketAndMoveOn();
+});
+elements["new-game"].addEventListener("click", () => {  if (!initializationComplete || startActionInFlight) return;
   const seed = elements["seed-input"].value.trim() || `${Date.now()}`;
   startGame(createGame(seed), true);
 });
@@ -1154,6 +1296,14 @@ async function watchTakeTurn() {
       elements["sermon-theme"].value = decision.theme;
       elements["sermon-text"].value = decision.text;
       await deliverSermon();
+    } else if (decision.move.kind === "buy_at_market") {
+      const result = buyAtMarket(state, decision.purchases);
+      if (result.spent) {
+        showToast(`Bought ${result.bought.map((item) => `${item.amount} ${item.unit} of ${item.label.toLowerCase()}`).join(", ")} for ${result.spent}d.`);
+        saveGame(true, true);
+        if (!elements["aftermath-panel"].hidden) renderMarket();
+      }
+      renderCommon();
     }
     setWatchStatus("Ready.");
     return true;

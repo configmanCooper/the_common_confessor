@@ -2866,11 +2866,14 @@ export function executeDueCommitments(state, parentEventId) {
    coin and fills shelves.
    ========================================================================= */
 
-/** The market as it stands this week, recalculated if the week has turned. */
+/** The market as it stands. Settled at the Sunday sermon and not before. */
 export function marketBoard(state, { refresh = false } = {}) {
-  const day = state.calendar.absoluteDay;
-  if (refresh || !state.market || state.market.settledDay !== day) {
-    state.market = { ...calculateMarket(state), settledDay: day, purchases: [] };
+  /* The board is deliberately *not* re-settled just because the day rolled
+     over. A sermon ends the Sunday, so the priest does his shopping on what is
+     already an old date, and anything bought has to stay bought. Only the
+     sermon settles a new week's market. */
+  if (refresh || !state.market) {
+    state.market = { ...calculateMarket(state), settledDay: state.calendar.absoluteDay, purchases: [] };
   }
   return state.market;
 }
@@ -6055,6 +6058,7 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
     attendance: attendees.length,
     consistency: congregation.consistency,
     force: impact.force,
+    novelty: impact.novelty,
     appeal: { asked: appeal.asked, manner: appeal.manner },
     offering: {
       coin: offering.coin,
