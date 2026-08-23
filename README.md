@@ -99,6 +99,18 @@ This is how the Unicode-space bug (`"it feltwrong"`) and the stitched-clause lea
 
 Local Gemma remains the default and offline-safe provider. The top bar can also select **GitHub Copilot** when the official Copilot SDK can authenticate the signed-in user. Copilot prompts count against that account's usage allowance.
 
+### Playing without a graphics card
+
+A local model wants a graphics card, which most people do not have. **Settings → Google Gemini (free tier)** removes that requirement: paste an API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and the parish speaks through `gemini-2.5-flash` instead. Nothing else about the game changes — the model still only supplies dialogue and proposals, and the deterministic rules still own every consequence.
+
+The key is yours and is treated as such:
+
+- it is kept in your browser's local storage and nowhere else;
+- it is never written into a save, an export, or a debug log, and there is a test that fails if it ever is;
+- it is sent only to Google, and only when Gemini is the selected provider.
+
+**Test this key** in the settings panel checks it against Google before you rely on it. If the key is missing, rejected, or rate limited, the parish falls back to its deterministic rules rather than stopping.
+
 The Copilot integration runs only in the Node server:
 
 - no GitHub token is sent to the browser;

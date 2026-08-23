@@ -1428,7 +1428,7 @@ export function validateState(state) {
   requireObject(state.settings, "Settings");
   requireObject(state.statistics, "Statistics");
   if (typeof state.settings.aiEnabled !== "boolean") throw new Error("AI setting is invalid");
-  if (!["gemma", "copilot"].includes(state.settings.aiProvider)
+  if (!["gemma", "gemini", "copilot"].includes(state.settings.aiProvider)
     || typeof state.settings.copilotModel !== "string") {
     throw new Error("AI provider setting is invalid");
   }

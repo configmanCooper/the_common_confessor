@@ -38,9 +38,11 @@
       <span id="ai-status" data-state="checking">Gemma: checking...</span>
       <select id="ai-provider" aria-label="AI provider">
         <option value="gemma">Local Gemma</option>
+        <option value="gemini">Google Gemini (free tier)</option>
         <option value="copilot">GitHub Copilot</option>
       </select>
       <select id="ai-model" aria-label="Copilot model" hidden></select>
+      <button id="open-settings">Settings</button>
       <button id="save-game">Save</button>
       <button id="export-game">Export</button>
       <button id="export-debug-log">Export Debug Log</button>
@@ -107,6 +109,45 @@
     <div class="sermon-actions">
       <span id="sermon-word-count">0 / 100 words</span>
       <button id="deliver-sermon" class="primary">Deliver sermon</button>
+    </div>
+  </section>
+
+  <section id="settings-panel" class="settings-panel parchment game-ui" hidden>
+    <p class="eyebrow">Settings</p>
+    <h2>Who speaks for the village</h2>
+    <p class="small">
+      The parish needs a language model to give its people voices. It can use a model running on your own
+      machine, or Google's Gemini on its free tier, which needs no graphics card — only an API key.
+    </p>
+
+    <label for="settings-provider">Voice of the parish</label>
+    <select id="settings-provider">
+      <option value="gemma">A model on this machine (needs a graphics card)</option>
+      <option value="gemini">Google Gemini, free tier (needs only an API key)</option>
+      <option value="copilot">GitHub Copilot (uses your Copilot allowance)</option>
+    </select>
+
+    <div id="gemini-settings">
+      <label for="gemini-key">Your Gemini API key</label>
+      <input id="gemini-key" type="password" autocomplete="off" spellcheck="false"
+        placeholder="Paste your key here">
+      <p class="small">
+        Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer noopener">aistudio.google.com/apikey</a>.
+        The parish will speak through <code>gemini-2.5-flash</code>.
+      </p>
+      <p class="small">
+        Your key is kept in this browser only. It is never written into a save file, an export, or a debug log,
+        and it is never sent anywhere except to Google.
+      </p>
+      <div class="sermon-actions">
+        <span id="gemini-key-status"></span>
+        <button id="test-gemini-key" type="button">Test this key</button>
+        <button id="forget-gemini-key" type="button">Forget it</button>
+      </div>
+    </div>
+
+    <div class="sermon-actions">
+      <button id="close-settings" class="primary">Done</button>
     </div>
   </section>
 

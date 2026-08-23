@@ -350,34 +350,72 @@ async function loadSavedGame() {
 
 async function refreshAiStatus() {
   elements["ai-status"].dataset.state = "checking";
-  elements["ai-status"].textContent = "Gemma: checking...";
+  elements["ai-status"].textContent = `${providerLabel()}: checking...`;
   try {
     await ai.health();
     aiReady = true;
     elements["ai-status"].dataset.state = "ready";
-    elements["ai-status"].textContent = state?.settings.aiProvider === "copilot"
-      ? "Copilot: ready"
-      : "Gemma: ready";
-  } catch {
+    elements["ai-status"].textContent = `${providerLabel()}: ready`;
+  } catch (error) {
     aiReady = false;
     elements["ai-status"].dataset.state = "unavailable";
-    elements["ai-status"].textContent = state?.settings.aiProvider === "copilot"
-      ? "Copilot: unavailable"
-      : "Gemma: parish rules";
+    elements["ai-status"].textContent = state?.settings.aiProvider === "gemini" && !geminiApiKey()
+      ? "Gemini: no key yet"
+      : `${providerLabel()}: parish rules`;
+    if (state?.settings.aiProvider === "gemini" && geminiApiKey()) {
+      setGeminiKeyStatus(`That key did not work: ${error.message}`);
+    }
   }
+}
+
+function providerLabel() {
+  const provider = state?.settings?.aiProvider || "gemma";
+  return provider === "copilot" ? "Copilot" : provider === "gemini" ? "Gemini" : "Gemma";
+}
+
+/* ------------------------------------------------------------ the key ----
+   The player's own Gemini key. It is kept in this browser and deliberately
+   never put on the game state: saves are exported, imported, replayed, and
+   attached to debug logs, and a secret has no business travelling with any of
+   that. */
+const GEMINI_KEY_STORAGE = "common-confessor:gemini-key";
+
+function geminiApiKey() {
+  try {
+    return localStorage.getItem(GEMINI_KEY_STORAGE) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storeGeminiApiKey(key) {
+  try {
+    if (key) localStorage.setItem(GEMINI_KEY_STORAGE, key);
+    else localStorage.removeItem(GEMINI_KEY_STORAGE);
+  } catch (error) {
+    showToast(`This browser will not keep the key: ${error.message}`);
+  }
+}
+
+function setGeminiKeyStatus(text) {
+  if (elements["gemini-key-status"]) elements["gemini-key-status"].textContent = text;
 }
 
 function configureAiProvider() {
   const provider = state?.settings?.aiProvider || "gemma";
   const model = provider === "copilot" ? state?.settings?.copilotModel || "auto" : "local-gemma";
   ai = new ParishAiClient({
+    provider: provider === "gemini" ? "gemini" : "local",
+    apiKey: provider === "gemini" ? geminiApiKey() : "",
     endpoint: provider === "copilot" ? "/copilot-ai" : "/local-ai",
     model,
     splitSemantic: provider === "gemma",
-    timeoutMs: provider === "copilot" ? 120000 : 60000
+    timeoutMs: provider === "copilot" ? 120000 : provider === "gemini" ? 90000 : 60000
   });
   elements["ai-provider"].value = provider;
+  elements["settings-provider"].value = provider;
   setHidden(elements["ai-model"], provider !== "copilot");
+  setHidden(elements["gemini-settings"], provider !== "gemini");
   if (provider === "copilot") elements["ai-model"].value = model;
 }
 
@@ -1193,6 +1231,65 @@ function startGame(nextState, isNew) {
 elements["leave-market"].addEventListener("click", () => {
   closeMarketAndMoveOn();
 });
+function openSettings() {
+  elements["gemini-key"].value = geminiApiKey();
+  elements["settings-provider"].value = state?.settings?.aiProvider || "gemma";
+  setHidden(elements["gemini-settings"], elements["settings-provider"].value !== "gemini");
+  setGeminiKeyStatus(geminiApiKey() ? "A key is saved in this browser." : "No key saved yet.");
+  setHidden(elements["settings-panel"], false);
+}
+
+elements["open-settings"].addEventListener("click", openSettings);
+
+elements["close-settings"].addEventListener("click", () => {
+  setHidden(elements["settings-panel"], true);
+});
+
+elements["settings-provider"].addEventListener("change", async () => {
+  if (!state) return;
+  state.settings.aiProvider = elements["settings-provider"].value;
+  configureAiProvider();
+  await refreshAiStatus();
+  saveGame(true, true);
+});
+
+elements["gemini-key"].addEventListener("change", async () => {
+  const key = elements["gemini-key"].value.trim();
+  storeGeminiApiKey(key);
+  setGeminiKeyStatus(key ? "Key saved in this browser." : "No key saved yet.");
+  configureAiProvider();
+  await refreshAiStatus();
+});
+
+elements["test-gemini-key"].addEventListener("click", async () => {
+  const key = elements["gemini-key"].value.trim();
+  if (!key) {
+    setGeminiKeyStatus("Paste a key first.");
+    return;
+  }
+  storeGeminiApiKey(key);
+  setGeminiKeyStatus("Asking Google...");
+  configureAiProvider();
+  try {
+    await ai.health();
+    aiReady = true;
+    setGeminiKeyStatus("That key works. The parish can speak.");
+    elements["ai-status"].dataset.state = "ready";
+    elements["ai-status"].textContent = "Gemini: ready";
+  } catch (error) {
+    aiReady = false;
+    setGeminiKeyStatus(error.message);
+  }
+});
+
+elements["forget-gemini-key"].addEventListener("click", async () => {
+  storeGeminiApiKey("");
+  elements["gemini-key"].value = "";
+  setGeminiKeyStatus("Key forgotten.");
+  configureAiProvider();
+  await refreshAiStatus();
+});
+
 elements["new-game"].addEventListener("click", () => {  if (!initializationComplete || startActionInFlight) return;
   const seed = elements["seed-input"].value.trim() || `${Date.now()}`;
   startGame(createGame(seed), true);
@@ -1517,7 +1614,12 @@ elements["ai-provider"].addEventListener("change", async () => {
   saveGame(true, true);
   showToast(state.settings.aiProvider === "copilot"
     ? "GitHub Copilot selected. Prompts count toward the signed-in account's usage allowance."
-    : "Local Gemma selected.");
+    : state.settings.aiProvider === "gemini"
+      ? geminiApiKey()
+        ? "Google Gemini selected."
+        : "Google Gemini selected. Open Settings and paste your API key."
+      : "Local Gemma selected.");
+  if (state.settings.aiProvider === "gemini" && !geminiApiKey()) openSettings();
 });
 elements["ai-model"].addEventListener("change", async () => {
   if (!state) return;

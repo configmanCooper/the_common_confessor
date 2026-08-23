@@ -174,13 +174,23 @@ export function legalMoves(state) {
       });
     }
   }
+  const requestedToday = state.visitRequests.filter((request) => (
+    request.requestedDay === state.calendar.absoluteDay
+  ));
   const requestable = state.residents
     .filter((resident) => resident.active && resident.alive && resident.age >= 16)
     .filter((resident) => !state.visitRequests.some((request) => (
       request.personId === resident.id && request.status === "pending"
     )))
+    .filter((resident) => !requestedToday.some((request) => request.personId === resident.id))
     .slice(0, 40);
-  if (state.calendar.absoluteDay >= 1 && requestable.length) {
+  /* Four a day is the whole of what a priest can send for, and Sunday belongs
+     to the parish. Offering the move once either bound is reached hands the
+     model a choice the simulation will refuse. */
+  if (state.calendar.absoluteDay >= 1
+    && state.calendar.dayIndex !== 6
+    && requestedToday.length < 4
+    && requestable.length) {
     for (const resident of requestable.slice(0, 12)) {
       moves.push({
         kind: "request_visit",

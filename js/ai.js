@@ -1860,10 +1860,71 @@ export function validateSermonResponse(value, attendeeIds) {
   };
 }
 
+/* --------------------------------------------------------------- Gemini ----
+   The whole game runs against a local model, which asks for a graphics card
+   most people do not have. Google's free tier is the way round that: the player
+   pastes their own key and the parish speaks through gemini-2.5-flash instead.
+
+   The key belongs to the player, so it lives in their browser and nowhere else.
+   It is deliberately never written into the game state, because saves are
+   exported, shared as debug logs, and replayed. */
+export const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_ROOT = "https://generativelanguage.googleapis.com/v1beta";
+
+/* Gemini accepts a cut-down OpenAPI schema rather than full JSON Schema, and
+   rejects the whole request if it meets a keyword it does not know. The schemas
+   in this file are written for the local model, so they are translated here
+   rather than being weakened for everybody. */
+function toGeminiSchema(schema) {
+  if (!schema || typeof schema !== "object") return schema;
+  if (Array.isArray(schema)) return schema.map(toGeminiSchema);
+  const allowed = ["type", "description", "enum", "format", "nullable", "items", "properties", "required"];
+  const converted = {};
+  for (const key of allowed) {
+    if (!(key in schema)) continue;
+    if (key === "properties") {
+      converted.properties = Object.fromEntries(
+        Object.entries(schema.properties).map(([name, value]) => [name, toGeminiSchema(value)])
+      );
+    } else if (key === "items") {
+      converted.items = toGeminiSchema(schema.items);
+    } else {
+      converted[key] = schema[key];
+    }
+  }
+  /* A union with null is spelled as a nullable type here. */
+  if (Array.isArray(converted.type)) {
+    converted.nullable = converted.type.includes("null");
+    converted.type = converted.type.find((entry) => entry !== "null") || "string";
+  }
+  return converted;
+}
+
+function geminiContent(payload) {
+  const candidate = payload?.candidates?.[0];
+  const text = (candidate?.content?.parts || [])
+    .map((part) => part?.text)
+    .filter((part) => typeof part === "string")
+    .join("");
+  if (!text) {
+    const reason = candidate?.finishReason || payload?.promptFeedback?.blockReason;
+    throw new Error(reason ? `Gemini returned no usable content (${reason})` : "Gemini returned no usable content");
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const salvaged = salvageJsonFields(text);
+    if (salvaged) return salvaged;
+    throw error;
+  }
+}
+
 export class ParishAiClient extends EventTarget {
   constructor({
     endpoint = "/local-ai",
     model = "local-gemma",
+    provider = "local",
+    apiKey = "",
     splitSemantic = false,
     timeoutMs = 60000,
     fetchImpl = (...args) => globalThis.fetch(...args)
@@ -1871,6 +1932,8 @@ export class ParishAiClient extends EventTarget {
     super();
     this.endpoint = endpoint.replace(/\/+$/, "");
     this.model = model;
+    this.provider = provider;
+    this.apiKey = apiKey;
     this.splitSemantic = splitSemantic;
     this.timeoutMs = timeoutMs;
     this.fetchImpl = fetchImpl;
@@ -1878,6 +1941,18 @@ export class ParishAiClient extends EventTarget {
   }
 
   async health() {
+    if (this.provider === "gemini") {
+      if (!this.apiKey) throw new Error("No Gemini API key has been entered");
+      const response = await this.fetchImpl(
+        `${GEMINI_ROOT}/models/${GEMINI_MODEL}?key=${encodeURIComponent(this.apiKey)}`,
+        { headers: { Accept: "application/json" } }
+      );
+      if (response.status === 400 || response.status === 403) {
+        throw new Error("Gemini rejected that API key");
+      }
+      if (!response.ok) throw new Error(`Gemini health check returned HTTP ${response.status}`);
+      return { status: "ok", model: GEMINI_MODEL };
+    }
     const response = await this.fetchImpl(`${this.endpoint}/health`, { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error(`AI health check returned HTTP ${response.status}`);
     const payload = await response.json();
@@ -1951,14 +2026,18 @@ export class ParishAiClient extends EventTarget {
     this.dispatchEvent(new CustomEvent("status", { detail: "thinking" }));
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const system = options.system
+      || "Return only valid JSON matching the supplied schema. Never add markdown or discuss being an AI.";
     try {
+      if (this.provider === "gemini") {
+        return await this.completeWithGemini(prompt, schema, system, maxTokens, controller);
+      }
       const body = JSON.stringify({
         model: this.model,
         messages: [
           {
             role: "system",
-            content: options.system
-              || "Return only valid JSON matching the supplied schema. Never add markdown or discuss being an AI."
+            content: system
           },
           { role: "user", content: prompt }
         ],
@@ -2004,6 +2083,56 @@ export class ParishAiClient extends EventTarget {
       clearTimeout(timeout);
       this.inFlight = false;
     }
+  }
+
+  async completeWithGemini(prompt, schema, system, maxTokens, controller) {
+    if (!this.apiKey) throw new Error("No Gemini API key has been entered");
+    const body = JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.82,
+        topP: 0.94,
+        /* The reply is JSON of a known shape, so give it room for the answer
+           and none for deliberation: 2.5-flash otherwise spends much of the
+           budget thinking and can stop before it has written anything. */
+        maxOutputTokens: Math.max(256, maxTokens),
+        responseMimeType: "application/json",
+        responseSchema: toGeminiSchema(schema),
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    });
+    let lastParseError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await this.fetchImpl(
+        `${GEMINI_ROOT}/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          signal: controller.signal,
+          body
+        }
+      );
+      if (!response.ok) {
+        const detail = await response.text();
+        if (response.status === 429) {
+          throw new Error("Gemini's free tier is rate limited just now; the parish rules will answer instead");
+        }
+        if (response.status === 400 || response.status === 403) {
+          throw new Error(`Gemini rejected the request: ${detail.slice(0, 160)}`);
+        }
+        throw new Error(`Gemini returned HTTP ${response.status}: ${detail.slice(0, 160)}`);
+      }
+      try {
+        const parsed = geminiContent(await response.json());
+        this.dispatchEvent(new CustomEvent("status", { detail: "ready" }));
+        return parsed;
+      } catch (error) {
+        lastParseError = error;
+        if (attempt > 0) throw error;
+      }
+    }
+    throw lastParseError;
   }
 
   buildNaturalPrompt(state, person, visit, playerText, {
