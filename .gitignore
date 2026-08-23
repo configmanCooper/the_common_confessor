@@ -1,3 +1,4 @@
 node_modules/
 test/browser-smoke.png
 *.log
+exports/
