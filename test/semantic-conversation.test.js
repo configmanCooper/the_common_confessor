@@ -312,5 +312,11 @@ test("the model is never asked to satisfy claim, obligation, or response-plan sc
   });
   await client.conversation(state, person, "I am listening.");
   const fields = Object.keys(schema.properties).sort();
-  assert.deepEqual(fields, ["npcIntent", "proposedActions", "reply", "understoodPlayerAs"]);
+  assert.deepEqual(
+    fields,
+    ["npcIntent", "priestGivesFromChurch", "proposedActions", "reply", "understoodPlayerAs"]
+  );
+  for (const heavyField of ["claims", "responsePlan", "answeredObligations", "interpretation", "newQuestions"]) {
+    assert.equal(fields.includes(heavyField), false, `the model was asked for ${heavyField}`);
+  }
 });

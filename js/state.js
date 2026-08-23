@@ -342,6 +342,7 @@ function upgradeGroundedConversationState(state) {
     if (command.type === "conversation_exchange") {
       command.payload.response.groundedFallback ??= false;
       command.payload.response.stagnationCount ??= 0;
+      command.payload.response.churchGift ??= null;
     }
   }
   return state;
@@ -2054,6 +2055,14 @@ export function validateState(state) {
       }
       requireObject(command.payload.response, "Conversation command response");
       validateConversation(command.payload.response);
+      if (command.payload.response.churchGift != null) {
+        const gift = command.payload.response.churchGift;
+        requireObject(gift, "Conversation command church gift");
+        if (typeof gift.resource !== "string" || !gift.resource
+          || !Number.isInteger(gift.amount) || gift.amount < 0 || gift.amount > 100) {
+          throw new Error("Conversation command church gift is invalid");
+        }
+      }
       if (command.payload.response.conversationObligation != null) {
         validateConversationObligation(
           command.payload.response.conversationObligation,

@@ -24,6 +24,7 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - Compositional actions support bounded combinations of work, property, resources, family, law, migration, violence, faith, building work, and improvised social acts.
 - Departure consequences support up to three parallel visitor commitments or causal response steps, including real route scouting, evacuation preparation, and limited lawful defense readiness.
 - Church food, coin, medicine, and fuel stores can be given or replenished through donations.
+- Offering church stores works from ordinary speech: "take these four silver pennies" transfers coin, is capped at what the parish actually holds, and reports what remains.
 - Rare stewards, magistrates, lords, bishops, sheriffs, royal officers, papal legates, kings, and popes arise through difficult causal escalation.
 - Exported saves include action normalization, accepted-prefix, rejection-gate, and fallback diagnostics.
 - Completed appointments retain bounded transcripts and audits, while the most recent visit retains bounded exact prompt traces for debugging.

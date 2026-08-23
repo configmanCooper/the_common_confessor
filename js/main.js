@@ -677,6 +677,13 @@ async function submitCounsel(event) {
     return;
   }
   renderCommon();
+  if (response.churchAidApplied) {
+    const aid = response.churchAidApplied;
+    const label = String(aid.label || "").toLowerCase();
+    const unit = String(aid.unit || "").toLowerCase();
+    const given = label.includes(unit) ? `${aid.amount} ${label}` : `${aid.amount} ${unit} of ${label}`;
+    showToast(`You gave ${given} from the church stores. ${aid.remaining} ${unit} remain.`, 6000);
+  }
   if (state.currentVisit.location !== previousLocation) {
     renderer.moveVisit(state.currentVisit.location);
     showToast(`You continue the conversation in ${SESSION_LOCATIONS[state.currentVisit.location].name}.`);

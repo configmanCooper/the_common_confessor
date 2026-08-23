@@ -98,25 +98,40 @@ export function parseChurchDonationDetail(detail, fallbackAmount = 1) {
 export function applyChurchAid(state, person, text) {
   const intent = parseChurchTransferIntent(text);
   if (!intent || intent.direction !== "outgoing") return null;
+  return grantChurchResource(state, person, intent.resource, intent.amount);
+}
+
+/** Move a validated amount of a church resource to a person's household.
+    Callers may reach this either from a parsed phrase or from a semantically
+    interpreted gift; the transfer rules are identical and live only here. */
+export function grantChurchResource(state, person, resource, requestedAmount) {
+  const definition = CHURCH_RESOURCE_DEFINITIONS[resource];
+  if (!definition) return null;
   const resources = upgradeChurchResources(state);
-  const definition = CHURCH_RESOURCE_DEFINITIONS[intent.resource];
-  if (resources[intent.resource] < intent.amount) return null;
-  const amount = intent.amount;
+  const amount = Math.floor(Number(requestedAmount) || 0);
+  if (amount <= 0 || resources[resource] < amount) return null;
   const household = state.households.find((entry) => entry.id === person.householdId);
   if (!household) return null;
-  resources[intent.resource] -= amount;
-  if (intent.resource === "coin") {
+  resources[resource] -= amount;
+  if (resource === "coin") {
     household.wealth = clamp(household.wealth + amount);
-  } else if (intent.resource === "medicine") {
+  } else if (resource === "medicine") {
     person.health = clamp(person.health + amount * 5);
     person.stress = clamp(person.stress - amount * 2);
-  } else if (intent.resource === "firewood") {
+  } else if (resource === "firewood") {
     person.health = clamp(person.health + amount);
     person.stress = clamp(person.stress - amount * 2);
   } else {
     household.food = clamp(household.food + amount * definition.householdValue);
   }
-  return { ...intent, amount, label: definition.label, unit: definition.unit };
+  return {
+    direction: "outgoing",
+    resource,
+    amount,
+    label: definition.label,
+    unit: definition.unit,
+    remaining: resources[resource]
+  };
 }
 
 export function applyChurchDonation(state, person, resource, requestedAmount) {

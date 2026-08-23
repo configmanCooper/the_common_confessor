@@ -64,6 +64,7 @@ import {
   applyChurchAid,
   applyChurchDonation,
   churchDonationCapacity,
+  grantChurchResource,
   parseChurchDonationDetail,
   parseChurchTransferIntent
 } from "./church.js";
@@ -2402,7 +2403,9 @@ export function recordExchange(state, playerText, response, { record = true } = 
       visit.originEventId
     );
   }
-  const churchAid = applyChurchAid(state, person, cleanText);
+  const churchAid = response.churchGift
+    ? grantChurchResource(state, person, response.churchGift.resource, response.churchGift.amount)
+    : applyChurchAid(state, person, cleanText);
   if (churchAid) {
     appendEvent(state, {
       type: "church_aid_given",
@@ -2414,6 +2417,13 @@ export function recordExchange(state, playerText, response, { record = true } = 
         amount: churchAid.amount
       }
     });
+    response.churchAidApplied = {
+      resource: churchAid.resource,
+      amount: churchAid.amount,
+      label: churchAid.label,
+      unit: churchAid.unit,
+      remaining: churchAid.remaining
+    };
   }
   recordNeighborParishDecision(state, person, visit, cleanText);
   if (preview.disclosed) {
@@ -2484,6 +2494,12 @@ export function recordExchange(state, playerText, response, { record = true } = 
         disclosure: preview.disclosure,
         contradictionId: preview.contradictionId,
         groundedFallback: Boolean(response.groundedFallback),
+        churchGift: response.churchGift
+          ? {
+            resource: String(response.churchGift.resource),
+            amount: Math.max(0, Math.floor(Number(response.churchGift.amount) || 0))
+          }
+          : null,
         structuredFallback: Boolean(response.structuredFallback),
         stagnationCount: Math.max(0, Number(response.stagnationCount) || 0),
         interpretation: response.interpretation

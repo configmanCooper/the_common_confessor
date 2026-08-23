@@ -1527,6 +1527,19 @@ const legacyConversationSchema = {
   }
 };
 
+const churchGiftProperty = {
+  type: ["object", "null"],
+  additionalProperties: false,
+  required: ["resource", "amount"],
+  properties: {
+    resource: {
+      type: "string",
+      enum: ["coin", "grain", "bread", "beans", "onions", "saltedFish", "cheese", "firewood", "medicine"]
+    },
+    amount: { type: "integer", minimum: 1, maximum: 100 }
+  }
+};
+
 const naturalConversationSchema = {
   type: "object",
   additionalProperties: false,
@@ -1535,6 +1548,7 @@ const naturalConversationSchema = {
     understoodPlayerAs: { type: "string", maxLength: 220 },
     reply: { type: "string", maxLength: 600 },
     npcIntent: { type: "string", maxLength: 160 },
+    priestGivesFromChurch: churchGiftProperty,
     proposedActions: {
       type: "array",
       maxItems: 3,
@@ -1991,6 +2005,10 @@ export class ParishAiClient extends EventTarget {
       lastOwnLine
         ? `You ALREADY said: "${firstSentence(lastOwnLine, 160)}" — say something different from that, and answer what was actually just asked.`
         : "",
+      `What the church has in store, if the priest offers you any of it: ${churchResourceRows(state.churchResources)
+        .filter((row) => row.amount > 0)
+        .map((row) => `${row.amount} ${row.unit} of ${row.label.toLowerCase()} [${row.key}]`)
+        .join(", ") || "nothing at present"}.`,
       `THE PRIEST JUST SAID: "${boundedString(playerText, 600)}"`,
       correction || "",
       "",
@@ -1998,6 +2016,7 @@ export class ParishAiClient extends EventTarget {
       "understoodPlayerAs: plainly, what the priest just meant. Write this first.",
       "reply: what you say aloud.",
       "npcIntent: what you are trying to do by saying it.",
+      "priestGivesFromChurch: if the priest is handing you something from the church's stores right now, give its resource key and amount, for example {\"resource\":\"coin\",\"amount\":4}. Use null if he is not giving you anything, is only promising something later, or is asking you to give something.",
       turnAnalysis.proposals.length
         ? `decisions: for each of these, say accepted, rejected, deferred or unknown: ${JSON.stringify(turnAnalysis.proposals.map((proposal) => ({ proposalId: proposal.proposalId, text: proposal.rawText })))}`
         : "proposedActions: anything you say you will actually do, as action plus target. Leave empty if none."
@@ -2115,6 +2134,38 @@ export class ParishAiClient extends EventTarget {
       proposedActions.push({ action: boundedString(action.action, 80), targetId: resolved.id, targetName: resolved.name });
     }
 
+    // The model may notice that the priest handed something over, but the
+    // engine decides whether the church can actually spare it.
+    let churchGift = null;
+    if (raw.priestGivesFromChurch && typeof raw.priestGivesFromChurch === "object") {
+      const requested = raw.priestGivesFromChurch;
+      const row = churchResourceRows(state.churchResources)
+        .find((entry) => entry.key === requested.resource);
+      const amount = Math.max(0, Math.min(100, Math.floor(Number(requested.amount) || 0)));
+      if (!row) {
+        transformations.push({
+          type: "gift_rejected",
+          detail: `unknown church resource "${requested.resource}"`,
+          code: "naturalConversation:churchGift"
+        });
+      } else if (amount <= 0) {
+        transformations.push({
+          type: "gift_rejected",
+          detail: "the amount given was not a positive number",
+          code: "naturalConversation:churchGift"
+        });
+      } else if (row.amount < amount) {
+        transformations.push({
+          type: "gift_reduced",
+          detail: `the church holds only ${row.amount} ${row.unit} of ${row.label.toLowerCase()}`,
+          code: "naturalConversation:churchGift"
+        });
+        if (row.amount > 0) churchGift = { resource: row.key, amount: row.amount, shortfall: amount - row.amount };
+      } else {
+        churchGift = { resource: row.key, amount };
+      }
+    }
+
     const claims = proposedActions.map((action, index) => ({
       claimId: `intent-${String(index + 1).padStart(2, "0")}`,
       sentenceIndex: 0,
@@ -2177,6 +2228,7 @@ export class ParishAiClient extends EventTarget {
       stagnationCount: 0,
       conversationObligation: obligation,
       proposedActions,
+      churchGift,
       understoodPlayerAs: understood,
       segments: [{
         text: reply,
