@@ -215,7 +215,7 @@ function keywordsForRequirement(text) {
     .slice(0, 5);
 }
 
-function quantityPhrase(amount, unit) {
+export function quantityPhrase(amount, unit) {
   const singular = {
     pennies: "penny",
     sacks: "sack",
@@ -2348,7 +2348,13 @@ export class ParishAiClient extends EventTarget {
     for (const fact of requiredFacts) {
       knowledgeLines.push(spokenScenarioFact(fact.text, state, person));
     }
-    if (socialRequirement?.fallbackReply && knowledgeLines.length < 4) {
+    // A compound turn's fallback sentence is stitched together from the raw
+    // wording of each clause ("I cannot promise yet to We must seek..."), so it
+    // is not usable prose and must never be offered to the model as something
+    // it knows. The clauses themselves are already listed for decision.
+    if (socialRequirement?.fallbackReply
+      && socialRequirement.type !== "compound_turn"
+      && knowledgeLines.length < 4) {
       knowledgeLines.push(naturalizeDialogueNames(state, person, socialRequirement.fallbackReply));
     }
 

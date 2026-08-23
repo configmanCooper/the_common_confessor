@@ -1,0 +1,43 @@
+
+/* Watch AI panel — a debugging tool, styled to sit quietly beside the game. */
+.watch-ai-panel {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  width: min(30rem, 34vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0.85rem 1rem;
+  z-index: 6;
+}
+.watch-ai-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.watch-ai-steer {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+.watch-ai-steer input {
+  width: 100%;
+  margin-top: 0.25rem;
+}
+.watch-ai-log {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  font-size: 0.85rem;
+}
+.watch-ai-entry {
+  padding: 0.35rem 0.5rem;
+  border-left: 3px solid rgba(90, 70, 40, 0.45);
+  margin-bottom: 0.35rem;
+  background: rgba(255, 250, 235, 0.55);
+}
+.watch-ai-refused {
+  border-left-color: #a2442f;
+}

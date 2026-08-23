@@ -1,4 +1,4 @@
-import { ParishAiClient } from "./ai.js";
+import { ParishAiClient, quantityPhrase } from "./ai.js";
 import { churchResourceRows } from "./church.js";
 import { SERMON_THEMES, SESSION_LOCATIONS, WEEK_DAYS } from "./data.js";
 import { ChurchRenderer } from "./renderer.js";
@@ -26,6 +26,12 @@ import {
 } from "./simulation.js";
 import { compactReplayHistory, deserializeState, serializeState } from "./state.js";
 import { queueAutosave, readAutosaves } from "./storage.js";
+import {
+  buildAgentPrompt,
+  legalMoves,
+  parseAgentReply,
+  validateAgentChoice
+} from "./agent.js";
 
 const SAVE_KEY = "the-common-confessor-save-v2";
 const LEGACY_SAVE_KEY = "the-common-confessor-save-v1";
@@ -681,8 +687,13 @@ async function submitCounsel(event) {
     const aid = response.churchAidApplied;
     const label = String(aid.label || "").toLowerCase();
     const unit = String(aid.unit || "").toLowerCase();
-    const given = label.includes(unit) ? `${aid.amount} ${label}` : `${aid.amount} ${unit} of ${label}`;
-    showToast(`You gave ${given} from the church stores. ${aid.remaining} ${unit} remain.`, 6000);
+    const given = label.includes(unit)
+      ? quantityPhrase(aid.amount, label)
+      : `${quantityPhrase(aid.amount, unit)} of ${label}`;
+    showToast(
+      `You gave ${given} from the church stores. ${quantityPhrase(aid.remaining, unit)} remain.`,
+      6000
+    );
   }
   if (state.currentVisit.location !== previousLocation) {
     renderer.moveVisit(state.currentVisit.location);
@@ -1022,6 +1033,146 @@ elements["begin-monday"].addEventListener("click", () => {
 });
 elements["counsel-form"].addEventListener("submit", submitCounsel);
 elements["next-hour"].addEventListener("click", endHour);
+
+/* ---------------------------------------------------------- watch AI ----
+   A debugging tool: hand the parish to a Copilot model and watch it work.
+   The rule that holds everywhere else holds here most strictly — the model
+   never touches game state. The engine enumerates the moves that are legal
+   right now, the model returns the index of one, and the interface performs
+   it exactly as a click would, so a watched run stays replayable and the
+   model can never reach a move a player does not have. */
+let watchRunning = false;
+let watchBusy = false;
+const watchHistory = [];
+
+function watchLog(text, kind = "move") {
+  const item = document.createElement("li");
+  item.className = `watch-ai-entry watch-ai-${kind}`;
+  item.textContent = text;
+  elements["watch-ai-log"].prepend(item);
+  while (elements["watch-ai-log"].children.length > 40) {
+    elements["watch-ai-log"].lastChild.remove();
+  }
+}
+
+function setWatchStatus(text) {
+  elements["watch-ai-status"].textContent = text;
+}
+
+async function askWatchAgent(prompt) {
+  const response = await fetch("/copilot-ai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: elements["watch-ai-model"].value || "auto",
+      messages: [{ role: "user", content: prompt }],
+      timeout_ms: 180000
+    })
+  });
+  if (!response.ok) throw new Error(`the watching model is unavailable (HTTP ${response.status})`);
+  const payload = await response.json();
+  return payload?.choices?.[0]?.message?.content || "";
+}
+
+async function watchTakeTurn() {
+  if (watchBusy || !state) return false;
+  if (conversationInFlight || departureInFlight || startActionInFlight) return false;
+  watchBusy = true;
+  try {
+    const moves = legalMoves(state);
+    if (!moves.length) {
+      setWatchStatus("There is nothing for the priest to do just now.");
+      return false;
+    }
+    setWatchStatus("The model is deciding...");
+    let prompt = buildAgentPrompt(state, moves, {
+      steer: elements["watch-ai-steer"].value.trim(),
+      recent: watchHistory
+    });
+    let decision = null;
+    for (let attempt = 0; attempt < 2 && !decision; attempt += 1) {
+      const raw = await askWatchAgent(prompt);
+      const validated = validateAgentChoice(moves, parseAgentReply(raw));
+      if (validated.ok) decision = validated;
+      else {
+        watchLog(`Refused: ${validated.error}`, "refused");
+        prompt = `${prompt}\n\nYour previous reply was refused: ${validated.error}\nReply again with JSON only, choosing a legal index.`;
+      }
+    }
+    if (!decision) {
+      setWatchStatus("The model did not choose a legal move.");
+      return false;
+    }
+    watchHistory.push(`${decision.move.kind}: ${(decision.text || decision.move.label).slice(0, 70)}`);
+    while (watchHistory.length > 8) watchHistory.shift();
+    watchLog(`${decision.move.label} — ${decision.reason}`, "move");
+
+    if (decision.move.kind === "speak") {
+      elements["counsel-input"].value = decision.text;
+      await submitCounsel(new Event("submit"));
+    } else if (decision.move.kind === "next_hour") {
+      await endHour();
+    } else if (decision.move.kind === "request_visit") {
+      requestVisits(state, [decision.move.personId], decision.reason);
+      renderCommon();
+    } else if (decision.move.kind === "deliver_sermon") {
+      elements["sermon-theme"].value = decision.theme;
+      elements["sermon-text"].value = decision.text;
+      await deliverSermon();
+    }
+    setWatchStatus("Ready.");
+    return true;
+  } catch (error) {
+    logRuntimeError("watch_ai", error);
+    setWatchStatus(`Stopped: ${error.message}`);
+    watchRunning = false;
+    return false;
+  } finally {
+    watchBusy = false;
+    elements["watch-ai-stop"].hidden = !watchRunning;
+    elements["watch-ai-run"].hidden = watchRunning;
+  }
+}
+
+async function watchLoop() {
+  while (watchRunning) {
+    const moved = await watchTakeTurn();
+    if (!moved) break;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  watchRunning = false;
+  elements["watch-ai-stop"].hidden = true;
+  elements["watch-ai-run"].hidden = false;
+}
+
+elements["toggle-watch-ai"].addEventListener("click", () => {
+  const panel = elements["watch-ai-panel"];
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden && !elements["watch-ai-model"].options.length) {
+    const options = copilotModels.length
+      ? copilotModels
+      : [{ id: "auto", name: "Automatic" }];
+    elements["watch-ai-model"].replaceChildren(...options.map((model) => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.name || model.id;
+      return option;
+    }));
+  }
+});
+elements["watch-ai-step"].addEventListener("click", () => { watchTakeTurn(); });
+elements["watch-ai-run"].addEventListener("click", () => {
+  if (watchRunning) return;
+  watchRunning = true;
+  elements["watch-ai-run"].hidden = true;
+  elements["watch-ai-stop"].hidden = false;
+  watchLoop();
+});
+elements["watch-ai-stop"].addEventListener("click", () => {
+  watchRunning = false;
+  setWatchStatus("Paused. You can take over at any time.");
+});
+
 elements["save-game"].addEventListener("click", () => saveGame());
 elements["export-game"].addEventListener("click", () => {
   try {

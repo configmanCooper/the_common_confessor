@@ -49,6 +49,7 @@
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
       <button id="open-reports">Reports</button>
+      <button id="toggle-watch-ai">Watch AI</button>
       <button id="pause-game">Pause</button>
       <button id="undo-turn">Undo Turn</button>
     </div>
@@ -107,6 +108,22 @@
       <span id="sermon-word-count">0 / 100 words</span>
       <button id="deliver-sermon" class="primary">Deliver sermon</button>
     </div>
+  </section>
+
+  <section id="watch-ai-panel" class="watch-ai-panel parchment game-ui" hidden>
+    <p class="eyebrow">Watch AI play</p>
+    <div class="watch-ai-controls">
+      <label>Priest <select id="watch-ai-model"></select></label>
+      <button id="watch-ai-step" type="button">Step one move</button>
+      <button id="watch-ai-run" class="primary" type="button">Let it play</button>
+      <button id="watch-ai-stop" type="button" hidden>Pause</button>
+    </div>
+    <label class="watch-ai-steer">Try this
+      <input id="watch-ai-steer" type="text" maxlength="200"
+        placeholder="e.g. be as generous as the stores allow, and see what happens">
+    </label>
+    <p id="watch-ai-status" class="small">The model plays the priest through the same moves you have. It sees only what you see.</p>
+    <ol id="watch-ai-log" class="watch-ai-log" aria-live="polite"></ol>
   </section>
 
   <div id="busy-overlay" class="busy-overlay" hidden>
