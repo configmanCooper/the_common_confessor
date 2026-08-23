@@ -2411,6 +2411,14 @@ export function recordExchange(state, playerText, response, { record = true } = 
       .map((gift) => grantChurchResource(state, person, gift.resource, gift.amount))
       .filter(Boolean)
     : [applyChurchAid(state, person, cleanText)].filter(Boolean);
+  /* Remember what has actually been handed over during this visit, so a priest
+     confirming aid he has already promised does not empty the stores twice. */
+  if (churchAids.length) {
+    visit.giftLedger ||= {};
+    for (const churchAid of churchAids) {
+      visit.giftLedger[churchAid.resource] = (visit.giftLedger[churchAid.resource] || 0) + churchAid.amount;
+    }
+  }
   for (const churchAid of churchAids) {
     const aidEvent = appendEvent(state, {
       type: "church_aid_given",

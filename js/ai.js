@@ -2066,7 +2066,7 @@ export class ParishAiClient extends EventTarget {
       "understoodPlayerAs: plainly, what the priest just meant. Write this first.",
       "reply: what you say aloud.",
       "npcIntent: what you are trying to do by saying it.",
-      "priestGivesFromChurch: everything the priest is handing you from the church stores in the words above, for example [{\"resource\":\"bread\",\"amount\":2}]. Only fill this in if he actually offered something just now. Never copy the amounts the church holds — those are what is left in store, not what he gave. Leave it empty if he offered nothing, only promised something later, or asked you to give.",
+      "priestGivesFromChurch: EVERY item the priest names in the words above, each as its own entry, for example [{\"resource\":\"bread\",\"amount\":2},{\"resource\":\"grain\",\"amount\":1},{\"resource\":\"beans\",\"amount\":1}]. If he says \"two loaves, a sack of grain and a bundle of firewood\", list all three. Only fill this in if he actually offered something just now, and never copy the amounts the church holds — those are what is left in store, not what he gave. Leave it empty if he offered nothing, only promised something later, or asked you to give.",
       "If he is giving you something, say so in your reply as a person would: thank him, or say what it will mean for your household, or refuse it if you would.",
       "visitorGivesToChurch: anything you are offering to the church out of your own household right now, in the same form. Leave it empty unless you are genuinely offering, and never offer more than your household could truly spare.",
       turnAnalysis.proposals.length
@@ -2209,6 +2209,15 @@ export class ParishAiClient extends EventTarget {
         code: "naturalConversation:noOfferMade"
       });
     }
+    /* A priest confirming aid he has already promised is not giving it twice.
+       Without this, "take two loaves" followed by "I shall have the two loaves
+       brought to your house" emptied the bread twice over. Only the amount by
+       which a restated offer exceeds what has already been handed over in this
+       visit actually leaves the stores. */
+    /* A working copy: the engine updates the visit's own ledger when the gift
+       is actually granted. Mutating it here as well would count every gift
+       twice and desynchronise a replay. */
+    const ledger = { ...(visit.giftLedger || {}) };
     for (const requested of (priestOffered ? requestedGifts : []).slice(0, 4)) {
       const row = churchResourceRows(state.churchResources)
         .find((entry) => entry.key === requested?.resource);
@@ -2229,6 +2238,16 @@ export class ParishAiClient extends EventTarget {
         });
         continue;
       }
+      const alreadyGiven = ledger[row.key] || 0;
+      if (amount <= alreadyGiven) {
+        transformations.push({
+          type: "gift_already_made",
+          detail: `${amount} ${row.unit} of ${row.label.toLowerCase()} was already given in this visit`,
+          code: "naturalConversation:giftLedger"
+        });
+        continue;
+      }
+      const owed = amount - alreadyGiven;
       const available = remaining[row.key] ?? 0;
       if (available <= 0) {
         transformations.push({
@@ -2238,18 +2257,20 @@ export class ParishAiClient extends EventTarget {
         });
         continue;
       }
-      if (available < amount) {
+      if (available < owed) {
         transformations.push({
           type: "gift_reduced",
           detail: `the church holds only ${available} ${row.unit} of ${row.label.toLowerCase()}`,
           code: "naturalConversation:churchGift"
         });
-        churchGifts.push({ resource: row.key, amount: available, shortfall: amount - available });
+        churchGifts.push({ resource: row.key, amount: available, shortfall: owed - available });
+        ledger[row.key] = alreadyGiven + available;
         remaining[row.key] = 0;
         continue;
       }
-      churchGifts.push({ resource: row.key, amount });
-      remaining[row.key] = available - amount;
+      churchGifts.push({ resource: row.key, amount: owed });
+      ledger[row.key] = alreadyGiven + owed;
+      remaining[row.key] = available - owed;
     }
 
     /* A villager may also give to the church out of their own household. The

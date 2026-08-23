@@ -280,3 +280,47 @@ test("a villager cannot donate more than their household holds", async () => {
 });
 
 
+
+test("confirming aid already promised does not give it twice", async () => {
+  const { state, person } = scene("gift-ledger-restatement");
+  const before = state.churchResources.bread;
+  const client = naturalClient({
+    understoodPlayerAs: "The priest offers bread.",
+    reply: "Thank you, Father. That will keep us.",
+    npcIntent: "Accept.",
+    proposedActions: [],
+    priestGivesFromChurch: [{ resource: "bread", amount: 2 }]
+  });
+  const offer = "Take two loaves from the church stores.";
+  recordExchange(state, offer, await client.conversation(state, person, offer));
+  assert.equal(state.churchResources.bread, before - 2);
+  const restated = "I shall have the two loaves brought to your door.";
+  const second = await client.conversation(state, person, restated);
+  assert.equal(second.churchGifts.length, 0);
+  assert.ok(second.promptTrace.transformations.some((entry) => entry.type === "gift_already_made"));
+  recordExchange(state, restated, second);
+  assert.equal(state.churchResources.bread, before - 2, "the same promise was honoured twice");
+  assert.deepEqual(state.currentVisit.giftLedger, { bread: 2 });
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+});
+
+test("raising an earlier offer gives only the difference", async () => {
+  const { state, person } = scene("gift-ledger-topup");
+  const before = state.churchResources.bread;
+  const two = naturalClient({
+    understoodPlayerAs: "u", reply: "Thank you.", npcIntent: "n", proposedActions: [],
+    priestGivesFromChurch: [{ resource: "bread", amount: 2 }]
+  });
+  const first = "Take two loaves.";
+  recordExchange(state, first, await two.conversation(state, person, first));
+  const four = naturalClient({
+    understoodPlayerAs: "u", reply: "Bless you.", npcIntent: "n", proposedActions: [],
+    priestGivesFromChurch: [{ resource: "bread", amount: 4 }]
+  });
+  const second = "Take four loaves in all, then.";
+  const response = await four.conversation(state, person, second);
+  assert.equal(response.churchGifts[0].amount, 2, "the top-up should be the difference only");
+  recordExchange(state, second, response);
+  assert.equal(state.churchResources.bread, before - 4);
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
+});
