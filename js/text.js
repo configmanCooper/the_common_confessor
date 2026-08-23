@@ -39,8 +39,7 @@ export function completeGeneratedText(value, maximum) {
   return `${(wordBreak >= Math.floor(maximum * 0.55) ? clipped.slice(0, wordBreak) : clipped).trim()}...`;
 }
 
-export function completeStoredText(value, maximum) {
-  const text = String(value || "")
+export function completeStoredText(value, maximum) {  const text = String(value || "")
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -62,4 +61,24 @@ export function completeStoredText(value, maximum) {
   }
   const wordBreak = clipped.lastIndexOf(" ");
   return `${(wordBreak >= Math.floor(maximum * 0.55) ? clipped.slice(0, wordBreak) : clipped).trim()}...`;
+}
+
+/* What reaches the dialogue log should read as speech.
+   A watched fortnight turned up three kinds of debris that no speaker would
+   produce: replies wrapped whole in quotation marks (the offline fallback
+   writes them, the model does not, so the log looked inconsistent), markdown
+   emphasis around a word, and a leading speaker label. None of it changes
+   meaning, so it is removed rather than treated as a fault in the line. */
+export function speakableText(value) {
+  let text = String(value || "").trim();
+  text = text.replace(/^(?:VISITOR|PRIEST|YOU)\s*[—:-]\s*/i, "");
+  const wrapped = /^(["'\u201c\u2018])([\s\S]*)(["'\u201d\u2019])$/.exec(text);
+  if (wrapped) {
+    const inner = wrapped[2];
+    // Only unwrap when the quotes really do enclose the whole line.
+    if (!/["\u201c\u201d]/.test(inner)) text = inner.trim();
+  }
+  text = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, "$1");
+  text = text.replace(/\*/g, "");
+  return text.replace(/\s+/g, " ").trim();
 }

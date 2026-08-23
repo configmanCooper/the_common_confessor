@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completeGeneratedText, completeStoredText } from "../js/text.js";
+import { completeGeneratedText, completeStoredText, speakableText } from "../js/text.js";
 
 /* A fortnight of watched play surfaced dialogue reaching the screen as
    "it feltwrong" and "seemedunconcerned". The model had written ordinary
@@ -42,3 +42,34 @@ test("clipping still ends on a sentence boundary", () => {
   assert.match(clipped, /\.$|\.\.\.$/);
   assert.ok(clipped.length <= 33);
 });
+
+/* Watched play showed three kinds of debris reaching the dialogue log that no
+   speaker would produce. Meaning is untouched; only the debris is removed. */
+
+test("a reply wrapped whole in quotation marks is unwrapped", () => {
+  assert.equal(
+    speakableText('"I must think on that. You speak plainly."'),
+    "I must think on that. You speak plainly."
+  );
+  assert.equal(speakableText("\u201cStop, Father.\u201d"), "Stop, Father.");
+});
+
+test("quotation marks inside a sentence are left alone", () => {
+  const quoted = 'He said "no" to me, Father.';
+  assert.equal(speakableText(quoted), quoted);
+});
+
+test("markdown emphasis and speaker labels are stripped", () => {
+  assert.equal(
+    speakableText("It is not that I *wish* anyone gone, Father."),
+    "It is not that I wish anyone gone, Father."
+  );
+  assert.equal(speakableText("**Truly**, Father."), "Truly, Father.");
+  assert.equal(speakableText("VISITOR \u2014 I hear you."), "I hear you.");
+});
+
+test("ordinary speech passes through untouched", () => {
+  const plain = "I will speak with the reeve tomorrow, Father.";
+  assert.equal(speakableText(plain), plain);
+});
+

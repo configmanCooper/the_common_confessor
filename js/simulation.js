@@ -74,7 +74,7 @@ import {
   upgradeReportingState
 } from "./reporting.js";
 import { PROMPT_TRACE_LIMIT } from "./dialogue_planner.js";
-import { completeGeneratedText, completeStoredText } from "./text.js";
+import { completeGeneratedText, completeStoredText, speakableText } from "./text.js";
 
 function buildNeighboringParishes(seed, homeTown) {
   const rng = new SeededRng(`${seed}:neighboring-parishes`);
@@ -2205,7 +2205,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
   if (!cleanText) {
     throw new Error("Counsel cannot be empty");
   }
-  let reply = String(response.reply || response.say || "").trim().slice(0, 600);
+  let reply = speakableText(String(response.reply || response.say || "")).slice(0, 600);
   if (!reply) {
     throw new Error("The visitor gave no response");
   }
@@ -2214,7 +2214,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
     ? response.expressedReaction
     : "continue";
   if (preview.requiredReaction !== "continue" && expressedReaction !== preview.requiredReaction) {
-    reply = authoritativeReactionReply(person, preview.requiredReaction);
+    reply = speakableText(authoritativeReactionReply(person, preview.requiredReaction));
     response.expressedReaction = preview.requiredReaction;
     response.groundedFallback = true;
   }
