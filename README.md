@@ -14,7 +14,8 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - Persistent issue threads track pressure, awareness, danger, deadlines, memories, rumors, and recurring participants.
 - Every reply receives the complete active appointment plus cumulative trust, fear, anger, sadness, confusion, offense, patience, danger, boundaries, and willingness state.
 - A deterministic conversational-obligation planner gives the newest question or command priority over background concerns, tracks mentioned facts, and records whether a reply came from facts, reactions, Gemma, or regeneration.
-- Ordinary dialogue is generated through a semantic response contract: speech acts, response plans, claim types, answered obligations, questions, and proposal positions accompany the natural prose.
+- Ordinary dialogue is one compact model call: the model interprets what the priest just said and answers it, while deterministic rules keep authority over world state, permissions, and consequences.
+- Every turn is traced from player text through supplied facts, interpreted meaning, raw model output, and final text, recording any transformation and the code path responsible.
 - Invalid model claims are repaired by sentence while valid parts of the reply are preserved.
 - Clause-level turn analysis distinguishes silence, questions, commands, suggestions, decisions, accusations, humor, unrelated observations, and up to six custom proposals without forcing every statement to be a solution.
 - Visitors may accept, reject, defer, or remain uncertain about each part of a multi-part proposal; those decisions persist into memory and departure planning.
@@ -31,20 +32,38 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - Three deterministic neighboring parishes seed causal relief stories with named priests, stewards, lords, travel time, resource commitments, and delayed reports.
 - Error notices remain visible longer, and **Export Debug Log** includes the error journal, active conversation, prompt diagnostics, and full current save state.
 
-```powershell
-npm run play
-```
+## Running the game
 
-Open the local URL printed in the terminal. `npm run play` starts this game and, when needed, The Common Crown's local AI server.
-
-The local model uses an 8,192-token context by default. To opt into 16,384 tokens before launching:
+Double-click `start.cmd`, or run:
 
 ```powershell
-$env:LOCAL_AI_CONTEXT_SIZE = 16384
-npm run play
+.\start.cmd
 ```
 
-The larger context consumes more memory and makes long prompt ingestion slower.
+That starts the local model, starts the game server, waits until both answer, and opens the browser. When you have finished playing:
+
+```powershell
+.\stop.cmd
+```
+
+Stopping matters. Closing the window does not always tear down the model runner, and an orphaned runner keeps its GPU memory until it is killed — which silently pushes the next session onto the CPU and makes replies roughly four times slower. `stop.cmd` reclaims it and reports how much was freed.
+
+Both scripts only ever touch processes belonging to this project, matched by executable path, so local-AI runners from other projects on the same machine are left alone.
+
+Useful options:
+
+```powershell
+.\start.cmd -ContextSize 16384   # larger context; costs more GPU memory
+.\start.cmd -Port 9000           # a specific port
+.\start.cmd -NoBrowser           # do not open a browser
+.\start.cmd -GpuLayers 24        # override automatic offload
+```
+
+`npm run play` and `npm run stop` do the same thing.
+
+### GPU memory is the thing that decides speed
+
+The start script reports free VRAM and picks an offload level to match. Full GPU offload is worth roughly **36 tok/s versus 8.6 tok/s** partially offloaded, so if it warns that memory is tight, closing Chrome, Edge, or another local-AI project is the single most effective fix.
 
 ## AI providers
 

@@ -6,7 +6,8 @@
   "description": "A painterly 16th-century parish conversation and village consequence simulation.",
   "scripts": {
     "start": "node scripts/server.mjs",
-    "play": "powershell -ExecutionPolicy Bypass -File scripts/play.ps1",
+    "play": "powershell -ExecutionPolicy Bypass -File scripts/start.ps1",
+    "stop": "powershell -ExecutionPolicy Bypass -File scripts/stop.ps1",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.mjs",
     "balance:year": "node scripts/one-year-balance.mjs",
