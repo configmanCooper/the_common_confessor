@@ -57,6 +57,7 @@ import {
 import {
   attendanceReason,
   resolveCongregationReactions,
+  resolveSermonImpact,
   upgradeParishState
 } from "./parish.js";
 import { buildGeneratedScenarioArchetypes } from "./scenario_catalog.js";
@@ -64,16 +65,25 @@ import {
   applyChurchAid,
   applyChurchDonation,
   churchDonationCapacity,
+  collectSundayOffering,
   giftAddressesMatter,
   grantChurchResource,
   parseChurchDonationDetail,
-  parseChurchTransferIntent
+  parseChurchTransferIntent,
+  readSermonAppeal
 } from "./church.js";
 import {
   archiveCompletedVisit,
   finalizePeriodReports,
   upgradeReportingState
 } from "./reporting.js";
+import {
+  calculateMarket,
+  describeMarketGood,
+  marketListings,
+  PURCHASABLE_GOODS,
+  TRADE_GOODS
+} from "./market.js";
 import { PROMPT_TRACE_LIMIT } from "./dialogue_planner.js";
 import { completeGeneratedText, completeStoredText, speakableText } from "./text.js";
 
@@ -2846,7 +2856,113 @@ export function executeDueCommitments(state, parentEventId) {
   }
 }
 
+/* =========================================================================
+   The Sunday market
+   -------------------------------------------------------------------------
+   The board is not stored so much as settled: it is a pure reading of the
+   parish as it stands, so the same parish always yields the same prices and a
+   replayed game reaches the same market without the numbers having to travel
+   in the log. What does travel is what the priest bought, because that spends
+   coin and fills shelves.
+   ========================================================================= */
+
+/** The market as it stands this week, recalculated if the week has turned. */
+export function marketBoard(state, { refresh = false } = {}) {
+  const day = state.calendar.absoluteDay;
+  if (refresh || !state.market || state.market.settledDay !== day) {
+    state.market = { ...calculateMarket(state), settledDay: day, purchases: [] };
+  }
+  return state.market;
+}
+
+/** Everything the priest could buy right now, with prices and reasons. */
+export function marketOffer(state) {
+  const board = marketBoard(state);
+  return {
+    season: board.season,
+    weather: board.weather,
+    coin: state.churchResources.coin,
+    listings: marketListings(board)
+  };
+}
+
+/**
+ * Spend church coin at the Sunday market. Each purchase is checked against the
+ * board and against the purse before anything moves, so a request that asks for
+ * more than the village has, or more than the church can pay for, is trimmed
+ * rather than refused outright — a priest at a stall buys what he can.
+ */
+export function buyAtMarket(state, requested, { record = true } = {}) {
+  const board = marketBoard(state);
+  const wanted = Array.isArray(requested) ? requested : [];
+  const bought = [];
+  let spent = 0;
+
+  for (const request of wanted.slice(0, PURCHASABLE_GOODS.length)) {
+    const key = String(request?.good || request?.resource || "");
+    if (!PURCHASABLE_GOODS.includes(key)) continue;
+    const good = board.goods[key];
+    if (!good || good.stock <= 0) continue;
+    const asked = Math.max(0, Math.floor(Number(request?.quantity ?? request?.amount ?? 0)));
+    if (asked <= 0) continue;
+    const affordable = Math.floor((state.churchResources.coin - spent) / good.price);
+    const amount = Math.min(asked, good.stock, Math.max(0, affordable));
+    if (amount <= 0) continue;
+    const cost = amount * good.price;
+    good.stock -= amount;
+    spent += cost;
+    bought.push({ good: key, label: good.label, unit: good.unit, amount, price: good.price, cost, stores: good.stores });
+  }
+
+  if (!bought.length) return { bought: [], spent: 0 };
+
+  state.churchResources.coin = clamp(state.churchResources.coin - spent, 0, 9999);
+  for (const purchase of bought) {
+    state.churchResources[purchase.stores] = clamp(
+      (state.churchResources[purchase.stores] || 0) + purchase.amount, 0, 9999
+    );
+  }
+  board.purchases.push(...bought);
+
+  /* Money spent in the village is money the village has. Buying from your own
+     parish is itself a small act of charity, and it shows in their purses. */
+  const sellers = new Set();
+  for (const purchase of bought) {
+    for (const producer of board.goods[purchase.good].producers) sellers.add(producer.id);
+  }
+  const perSeller = sellers.size ? spent / sellers.size : 0;
+  for (const sellerId of sellers) {
+    const person = state.residents.find((entry) => entry.id === sellerId);
+    const household = person && state.households.find((entry) => entry.id === person.householdId);
+    if (household) household.wealth = clamp(household.wealth + perSeller * 0.6, 0, 1000);
+    if (person) person.morale = clamp(person.morale + Math.min(3, perSeller * 0.4));
+  }
+
+  const summary = bought.map((purchase) => `${purchase.amount} ${purchase.unit} of ${purchase.label.toLowerCase()}`).join(", ");
+  const marketEvent = appendEvent(state, {
+    type: "market_purchase",
+    actorId: "priest",
+    targetId: null,
+    facts: { spent, items: bought.map(({ good, amount, price }) => ({ good, amount, price })) }
+  });
+  addChronicle(
+    state,
+    "The church buys at market",
+    `${summary} for ${spent} ${spent === 1 ? "penny" : "pennies"}.`,
+    "change",
+    { type: "market_purchase_noted", parentId: marketEvent.id, facts: { spent } }
+  );
+
+  if (record) {
+    appendCommand(state, "buy_at_market", {
+      purchases: bought.map(({ good, amount }) => ({ good, quantity: amount }))
+    });
+  }
+  return { bought, spent };
+}
+
 export function advanceNarrativeDirector(state, parentEventId) {
+
   const day = state.calendar.absoluteDay;
   for (const parish of state.neighboringParishes) {
     const rng = new SeededRng(`${state.seed}:neighbor-pressure:${parish.id}:${day}`);
@@ -5879,11 +5995,90 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
     attendance: attendees.length,
     summary: mechanicalSummary
   });
+  /* The collection. What the parish puts in the box depends on how the priest
+     asked, if he asked at all, and on what each household can genuinely bear.
+     Some give on a Sunday whether or not anyone asked them to. */
+  const appeal = readSermonAppeal(text);
+  const offering = collectSundayOffering(state, attendees, appeal);
+  if (offering.coin > 0 || offering.grain > 0) {
+    const offeringEvent = appendEvent(state, {
+      type: "sunday_offering",
+      actorId: null,
+      targetId: "priest",
+      facts: {
+        asked: offering.asked,
+        manner: offering.manner,
+        coin: offering.coin,
+        grain: offering.grain,
+        givers: offering.givers.length
+      }
+    });
+    const gathered = [
+      offering.coin > 0 ? `${offering.coin} ${offering.coin === 1 ? "penny" : "pennies"}` : "",
+      offering.grain > 0 ? `${offering.grain} ${offering.grain === 1 ? "sack" : "sacks"} of grain` : ""
+    ].filter(Boolean).join(" and ");
+    const households = `${offering.givers.length} ${offering.givers.length === 1 ? "household" : "households"}`;
+    addChronicle(
+      state,
+      offering.asked ? "The collection is taken" : "Offerings are left without asking",
+      offering.asked
+        ? `${households} gave after the sermon: ${gathered}.`
+        : `${households} left something for the church without being asked: ${gathered}.`,
+      offering.manner === "threatening" ? "danger" : "faith",
+      { type: "collection_noted", parentId: offeringEvent.id, facts: { manner: offering.manner } }
+    );
+    if (offering.manner === "threatening") {
+      state.priest.moralAuthority = clamp(state.priest.moralAuthority - 3);
+      state.town.metrics.harmony = clamp(state.town.metrics.harmony - 2);
+    } else if (offering.asked) {
+      state.priest.localTrust = clamp(state.priest.localTrust + 1);
+    }
+  }
   addChronicle(state, `A sermon on ${theme}`, `${attendees.length} villagers attended. ${mechanicalSummary}`, "faith", {
     type: "sermon_delivered",
     facts: { theme, attendance: attendees.length, townDeltas: deltas }
   });
+  /* The stalls go up once the parish is out of church, and what they have to
+     sell is whatever the village managed to make this week. Settling it here
+     means the priest sees prices that already account for everything the week
+     did to the people who make things. */
+  marketBoard(state, { refresh: true });
   const congregation = resolveCongregationReactions(state, theme, text, attendees, outcome);
+  /* Who it actually moved, and why. This is the part of a sermon the priest
+     most needs to see, so it is kept whole rather than reduced to a number. */
+  const impact = resolveSermonImpact(state, theme, text, attendees, congregation.consistency, congregation.reactions);
+  const aftermath = {
+    day: state.calendar.absoluteDay,
+    week: state.calendar.week,
+    theme,
+    text,
+    attendance: attendees.length,
+    consistency: congregation.consistency,
+    force: impact.force,
+    appeal: { asked: appeal.asked, manner: appeal.manner },
+    offering: {
+      coin: offering.coin,
+      grain: offering.grain,
+      givers: offering.givers.map((giver) => ({ ...giver }))
+    },
+    affected: impact.affected
+  };
+  state.lastSermonAftermath = aftermath;
+  if (impact.affected.length) {
+    const moved = impact.affected.filter((entry) => entry.direction === "moved").length;
+    const hardened = impact.affected.length - moved;
+    appendEvent(state, {
+      type: "sermon_impact",
+      actorId: "priest",
+      targetId: null,
+      facts: {
+        theme,
+        moved,
+        hardened,
+        strongest: impact.affected.slice(0, 5).map((entry) => ({ personId: entry.personId, impact: entry.impact }))
+      }
+    });
+  }
   const publicIntent = {
     Mercy: "forgiveness",
     Forgiveness: "forgiveness",
@@ -6063,6 +6258,8 @@ export function replayGame(seed, commands, replayBase = null) {
         ...validatedOutcome,
         source: command.source
       }, { record: false });
+    } else if (command.type === "buy_at_market") {
+      buyAtMarket(state, command.payload.purchases, { record: false });
     } else if (command.type === "set_mode") {
       setGameMode(state, command.payload.mode.type, { record: false });
       state.mode.returnVisitId = command.payload.mode.returnVisitId;

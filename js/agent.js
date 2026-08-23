@@ -118,6 +118,7 @@ export function legalMoves(state) {
         + (stores.length
           ? `You may also hand over church stores with these words by adding "gives": ${stores.map((row) => `${row.key} (${row.left} ${row.unit} left)`).join(", ")}. Handing something over is the same act as saying you will, so do not count it twice.`
           : "The church stores are empty.")
+        + " You may also ask this person to give something to the church. Whether they do, and how much, depends on what they have, what they think of you, and how you ask."
     });
   }
   if (visit) {
@@ -139,6 +140,9 @@ export function legalMoves(state) {
       themes: SERMON_THEMES.slice(),
       label: "Preach the Sunday sermon",
       detail: "Up to 100 words, on one theme. The whole parish hears it, and it moves many people at once."
+        + " This is also the one time you can ask the whole parish to give to the church. A plain or faithful appeal"
+        + " opens hands modestly; leaning on damnation and curses opens more of them but costs you moral authority"
+        + " and the trust of those who hear it. Some parishioners give without being asked if they think well of you."
     });
   }
   const requestable = state.residents

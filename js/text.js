@@ -80,5 +80,9 @@ export function speakableText(value) {
   }
   text = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, "$1");
   text = text.replace(/\*/g, "");
+  /* Small models occasionally stutter a single-letter word — "I I have little
+     to spare". No English sentence repeats a bare letter, so this is always a
+     generation slip rather than something the speaker meant to say. */
+  text = text.replace(/\b([AIai])(\s+\1)+\b/g, "$1");
   return text.replace(/\s+/g, " ").trim();
 }

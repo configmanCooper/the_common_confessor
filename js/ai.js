@@ -16,7 +16,8 @@ import {
   churchDonationCapacity,
   churchResourceRows,
   mentionsChurchResource,
-  parseChurchTransferIntent
+  parseChurchTransferIntent,
+  readDonationRequest
 } from "./church.js";
 import { completeGeneratedText } from "./text.js";
 
@@ -246,6 +247,16 @@ function keywordsForRequirement(text) {
   return (String(text).toLowerCase().match(/[a-z]{4,}/g) || [])
     .filter((word) => !["with", "from", "that", "this", "before", "after"].includes(word))
     .slice(0, 5);
+}
+
+/* Plain speech for what a household holds. A villager does not know a number
+   for their own means; they know whether there is anything to spare. */
+function bandOfMeans(value) {
+  if (value >= 75) return "a good deal";
+  if (value >= 55) return "enough, with a little over";
+  if (value >= 35) return "barely enough";
+  if (value >= 18) return "almost nothing";
+  return "nothing at all";
 }
 
 export function quantityPhrase(amount, unit) {
@@ -2005,6 +2016,11 @@ export class ParishAiClient extends EventTarget {
     const guarded = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed;
     const traits = (person.personality?.traits || []).slice(0, 4).join(", ");
     const people = knownPeopleForPrompt(state, person, visit);
+    const household = state.households.find((entry) => entry.id === person.householdId);
+    /* A priest may ask his parishioners for help as well as give it. The
+       visitor has to weigh that against what is actually in their house, so
+       they are told plainly what they have before they are asked to answer. */
+    const priestAsksForHelp = readDonationRequest(playerText);
 
     // Kept byte-stable across the visit so the model's prefix cache is reused.
     const system = [
@@ -2081,6 +2097,9 @@ export class ParishAiClient extends EventTarget {
       "priestGivesFromChurch: EVERY item the priest names in the words above, each as its own entry, for example [{\"resource\":\"bread\",\"amount\":2},{\"resource\":\"grain\",\"amount\":1},{\"resource\":\"beans\",\"amount\":1}]. If he says \"two loaves, a sack of grain and a bundle of firewood\", list all three. Only fill this in if he actually offered something just now, and never copy the amounts the church holds — those are what is left in store, not what he gave. Leave it empty if he offered nothing, only promised something later, or asked you to give.",
       "If he is giving you something, say so in your reply as a person would: thank him, or say what it will mean for your household, or refuse it if you would.",
       "visitorGivesToChurch: anything you are offering to the church out of your own household right now, in the same form. Leave it empty unless you are genuinely offering, and never offer more than your household could truly spare.",
+      priestAsksForHelp.asked && household
+        ? `HE IS ASKING YOU TO GIVE SOMETHING TO THE CHURCH. Your household has ${bandOfMeans(household.wealth)} in coin and ${bandOfMeans(household.food)} in the larder${household.debt > 0 ? ", and you owe money" : ""}. Decide as this person truly would: weigh what you can spare against what you think of this priest${priestAsksForHelp.manner === "threatening" ? ", and note that he is leaning on fear to get it, which you may resent even as you comply" : ""}. Answer him aloud either way, and fill in visitorGivesToChurch only if you are actually parting with something now.`
+        : "",
       turnAnalysis.proposals.length
         ? `decisions: for each of these, say accepted, rejected, deferred or unknown: ${JSON.stringify(turnAnalysis.proposals.map((proposal) => ({ proposalId: proposal.proposalId, text: proposal.rawText })))}`
         : "proposedActions: anything you say you will actually do, as action plus target. Leave empty if none."

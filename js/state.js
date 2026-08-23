@@ -23,7 +23,7 @@ import {
 export const STATE_SCHEMA_VERSION = 19;
 const COMMAND_TYPES = new Set([
   "begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon",
-  "request_visits", "set_mode", "rewind_turn"
+  "request_visits", "set_mode", "rewind_turn", "buy_at_market"
 ]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -2020,6 +2020,19 @@ export function validateState(state) {
       if (!personIds.has(command.payload.personId)) throw new Error("Begin-visit command references a missing person");
       activeVisitPersonId = command.payload.personId;
       activeVisitTurns = 0;
+    } else if (command.type === "buy_at_market") {
+      requireArray(command.payload.purchases, "Market purchase command items");
+      if (!command.payload.purchases.length || command.payload.purchases.length > 12) {
+        throw new Error("Market purchase command is invalid");
+      }
+      for (const purchase of command.payload.purchases) {
+        if (typeof purchase?.good !== "string"
+          || !Number.isInteger(purchase.quantity)
+          || purchase.quantity < 1
+          || purchase.quantity > 999) {
+          throw new Error("Market purchase command is invalid");
+        }
+      }
     } else if (command.type === "request_visits") {
       requireArray(command.payload.personIds, "Requested visit command people");
       requireArray(command.payload.results, "Requested visit command results");

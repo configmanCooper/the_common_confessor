@@ -73,3 +73,10 @@ test("ordinary speech passes through untouched", () => {
   assert.equal(speakableText(plain), plain);
 });
 
+
+test("a stuttered single-letter word is collapsed", () => {
+  assert.equal(speakableText("I I have little to spare."), "I have little to spare.");
+  assert.equal(speakableText("It is a a heavy thing."), "It is a heavy thing.");
+  assert.equal(speakableText("I have had had enough."), "I have had had enough.");
+  assert.equal(speakableText("Aye, I am ready."), "Aye, I am ready.");
+});

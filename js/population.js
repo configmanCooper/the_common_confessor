@@ -618,11 +618,34 @@ function processHealthAndAging(state, day, events) {
       }
     }
     const ageRisk = person.age > 78 ? (person.age - 77) * 0.000025 : 0;
-    const illnessRisk = person.illness && person.health < 8 ? 0.015 : 0;
+    /* Dying of an illness.
+
+       A sickness in this century is dangerous in proportion to three things:
+       what it is, how long it has held, and whether anyone is caring for the
+       person who has it. A fever in a warm house with food in it is survivable;
+       the same fever in a cold house with an empty larder and nobody to sit up
+       at night is how people died. Church medicine and a well-fed household are
+       therefore not decoration — they are the difference. */
+    let illnessRisk = 0;
+    if (person.illness) {
+      const severity = person.illness === "lung sickness" ? 1.7 : 1;
+      const duration = Math.min(2.4, 0.5 + (person.illnessDays || 0) * 0.07);
+      const frailty = person.age > 62 ? 1.9 : person.age < 5 ? 2.2 : person.age < 14 ? 1.3 : 1;
+      const weakness = Math.max(0, (55 - person.health) / 55);
+      const care = household ? household.food / 100 + household.wealth / 150 : 0.2;
+      const nursing = person.flags?.includes("tended_by_church") ? 0.45 : care > 0.7 ? 0.6 : care > 0.4 ? 1 : 1.8;
+      illnessRisk = 0.0016 * severity * duration * frailty * nursing * (0.25 + weakness * 1.9);
+    }
+    if (person.injury && !person.injury.treated) {
+      /* A wound left alone does not stay the same size. */
+      illnessRisk += (person.injury.severity / 100) * 0.004;
+    }
     if (rng.next() < ageRisk + illnessRisk) {
       person.alive = false;
       person.active = false;
-      person.causeOfDeath = person.illness || "old age";
+      person.causeOfDeath = person.illness
+        || (person.injury && !person.injury.treated ? `an untended ${person.injury.kind || "injury"}` : null)
+        || "old age";
       person.departureDay = day;
       person.pregnantDueDay = null;
       person.pregnancyCoParentId = null;
@@ -643,6 +666,215 @@ function processHealthAndAging(state, day, events) {
         tone: "danger"
       });
     }
+  }
+}
+
+/* ==========================================================================
+   Injuries, and what people do to one another
+   --------------------------------------------------------------------------
+   A wound is not a number that ticks down to zero on its own. Left alone in a
+   cold house it festers and can kill; cleaned and bound by someone who knows
+   how, it closes. That makes a healer in the parish, and a dose of the church's
+   medicine, worth something concrete.
+
+   Violence here is never random. It grows out of a bond that has actually
+   soured — resentment built up between two named people over weeks — and it
+   needs someone who has run out of other things to do: ruined, frightened, or
+   drunk on his own grievance. Most such bonds never come to anything. A few end
+   in a beating. Very rarely, where the hatred is total and the man has nothing
+   left to lose, one of them kills the other.
+   ========================================================================== */
+
+const INJURY_KINDS = Object.freeze([
+  { kind: "broken arm", description: "with a broken arm", severity: [35, 55], work: true },
+  { kind: "crushed foot", description: "with a crushed foot", severity: [30, 50], work: true },
+  { kind: "deep cut", description: "with a deep cut gone bad", severity: [25, 45], work: true },
+  { kind: "cracked ribs", description: "with cracked ribs", severity: [30, 50], work: false },
+  { kind: "burn", description: "with a bad burn", severity: [25, 45], work: true },
+  { kind: "beating", description: "from a beating", severity: [30, 60], work: false }
+]);
+
+/** Give someone a wound, and say so. */
+export function inflictInjury(state, person, kind, severity, events, cause) {
+  const template = INJURY_KINDS.find((entry) => entry.kind === kind) || INJURY_KINDS[0];
+  person.injury = {
+    kind: template.kind,
+    description: template.description,
+    severity: clamp(severity, 5, 100),
+    day: state.calendar.absoluteDay,
+    treated: false,
+    cause: cause || null
+  };
+  person.health = clamp(person.health - severity * 0.35);
+  person.stress = clamp(person.stress + severity * 0.25);
+  events?.push({
+    type: "injury",
+    actorId: person.id,
+    title: `${person.name} is hurt`,
+    text: `${person.name} is laid up ${template.description}.`,
+    tone: "danger"
+  });
+  return person.injury;
+}
+
+function processInjuries(state, day, events) {
+  for (const person of state.residents.filter((entry) => entry.alive && entry.active)) {
+    const rng = new PopulationRng(`${state.seed}:injury:${person.id}:${day}`);
+    const household = householdFor(state, person);
+
+    if (!person.injury) {
+      /* Ordinary hazards of ordinary work. Some trades are simply dangerous,
+         and the man who slips is the one who is exhausted or unwell. */
+      const dangerous = ["woodcutter", "forester", "charcoal burner", "blacksmith", "mason", "thatcher",
+        "carpenter", "miller", "tanner", "butcher", "soldier", "hunter", "ferryman", "laborer", "stablehand"];
+      if (person.age >= 14 && person.age <= 70 && dangerous.includes(person.occupation)) {
+        const tiredness = 1 + Math.max(0, person.stress - 50) / 60 + Math.max(0, 55 - person.health) / 70;
+        if (rng.next() < 0.00035 * tiredness) {
+          const template = rng.pick(INJURY_KINDS.filter((entry) => entry.work));
+          inflictInjury(state, person, template.kind, rng.int(template.severity[0], template.severity[1]), events, "work");
+        }
+      }
+      continue;
+    }
+
+    /* Who is looking after it: a healer under the same roof, the church's
+       medicine, or simply a house with food and warmth in it. */
+    const healerAtHand = state.residents.some((entry) => (
+      entry.alive && entry.active
+        && entry.householdId === person.householdId
+        && ["healer", "herbalist", "midwife"].includes(entry.occupation)
+    ));
+    const tendedByChurch = (person.flags || []).some((flag) => flag.startsWith("tended_by_church"));
+    const comfort = household ? household.food / 120 + household.wealth / 200 : 0.1;
+    const cared = tendedByChurch || healerAtHand || comfort > 0.65;
+
+    if (cared) {
+      person.injury.treated = true;
+      person.injury.severity = clamp(person.injury.severity - rng.int(3, 7), 0, 100);
+      person.health = clamp(person.health + 0.9);
+    } else {
+      person.injury.treated = false;
+      person.injury.severity = clamp(person.injury.severity + rng.int(0, 3), 0, 100);
+      person.health = clamp(person.health - 0.5);
+      if (person.injury.severity > 70 && !person.illness && rng.next() < 0.03) {
+        person.illness = "wound fever";
+        person.illnessDays = 1;
+        events.push({
+          type: "illness_began",
+          actorId: person.id,
+          title: `${person.name}'s wound turns bad`,
+          text: `${person.name}'s untended ${person.injury.kind} has gone to wound fever.`,
+          tone: "danger"
+        });
+      }
+    }
+
+    if (person.injury.severity <= 4) {
+      const kind = person.injury.kind;
+      person.injury = null;
+      events.push({
+        type: "injury_healed",
+        actorId: person.id,
+        title: `${person.name} is mended`,
+        text: `${person.name}'s ${kind} has healed.`,
+        tone: "change"
+      });
+    }
+  }
+}
+
+function processViolence(state, day, events) {
+  for (const bond of state.relationships || []) {
+    const resentment = bond.resentment ?? 0;
+    const affection = bond.affection ?? 50;
+    /* Only bonds that have genuinely gone rotten are even considered. */
+    if (resentment < 68 || affection > 30) continue;
+
+    const actor = state.residents.find((entry) => entry.id === bond.actorId);
+    const target = state.residents.find((entry) => entry.id === bond.targetId);
+    if (!actor?.alive || !actor.active || !target?.alive || !target.active) continue;
+    if (actor.age < 15 || actor.age > 70) continue;
+
+    const rng = new PopulationRng(`${state.seed}:violence:${bond.id}:${day}`);
+    const household = householdFor(state, actor);
+    const traits = actor.personality?.traits || [];
+
+    /* Someone with something to lose rarely does this. Desperation, drink and a
+       violent temper are what turn a grudge into a broken arm. */
+    let pressure = (resentment - 68) / 32;
+    pressure += Math.max(0, actor.stress - 60) / 55;
+    pressure += Math.max(0, 35 - actor.morale) / 70;
+    if (household && household.food < 22) pressure += 0.35;
+    if (household && household.wealth < 15) pressure += 0.3;
+    if (traits.includes("violent") || traits.includes("hot-tempered") || traits.includes("wrathful")) pressure += 0.5;
+    if (traits.includes("vengeful") || traits.includes("resentful")) pressure += 0.3;
+    if (traits.includes("gentle") || traits.includes("pious") || traits.includes("devout")) pressure -= 0.45;
+    /* A parish that holds together, and a priest they believe, restrain people. */
+    pressure -= (state.town.metrics.harmony - 50) / 130;
+    pressure -= Math.max(0, actor.faith - 55) / 110;
+    pressure -= Math.max(0, actor.trustPriest - 60) / 120;
+    pressure -= (state.town.metrics.safety - 50) / 150;
+    if (pressure <= 0) continue;
+    if (rng.next() > 0.0022 * pressure) continue;
+
+    /* How far it goes. Killing is the rarest end of this, and needs a hatred
+       that has consumed everything else. */
+    const murderous = resentment > 92
+      && affection < 10
+      && pressure > 1.6
+      && (traits.includes("violent") || traits.includes("vengeful") || actor.morale < 15)
+      && rng.next() < 0.1;
+
+    if (murderous) {
+      target.alive = false;
+      target.active = false;
+      target.causeOfDeath = "violence";
+      target.departureDay = day;
+      target.pregnantDueDay = null;
+      target.pregnancyCoParentId = null;
+      const spouse = state.residents.find((entry) => entry.id === target.spouseId);
+      if (spouse?.alive) {
+        spouse.maritalStatus = "widowed";
+        spouse.spouseId = null;
+        spouse.marriageDay = null;
+      }
+      target.maritalStatus = "deceased";
+      target.spouseId = null;
+      target.marriageDay = null;
+      actor.flags = [...(actor.flags || []), "suspected_of_killing"];
+      actor.reputation = clamp(actor.reputation - 45);
+      actor.stress = clamp(actor.stress + 40);
+      state.town.metrics.safety = clamp(state.town.metrics.safety - 9);
+      state.town.metrics.harmony = clamp(state.town.metrics.harmony - 7);
+      state.material.modifiers.crime = (state.material.modifiers.crime || 0) + 14;
+      events.push({
+        type: "killing",
+        actorId: actor.id,
+        targetId: target.id,
+        title: `${target.name} is killed`,
+        text: `${target.name} is found dead. ${actor.name} is spoken of, and the parish is afraid.`,
+        tone: "danger"
+      });
+      continue;
+    }
+
+    const severity = rng.int(25, 55) + Math.round(Math.min(20, pressure * 10));
+    inflictInjury(state, target, "beating", severity, events, actor.id);
+    actor.reputation = clamp(actor.reputation - 18);
+    target.stress = clamp(target.stress + 18);
+    bond.resentment = clamp(resentment + 8);
+    bond.fear = clamp((bond.fear ?? 0) + 20);
+    state.town.metrics.safety = clamp(state.town.metrics.safety - 2.5);
+    state.town.metrics.harmony = clamp(state.town.metrics.harmony - 1.5);
+    state.material.modifiers.crime = (state.material.modifiers.crime || 0) + 5;
+    events.push({
+      type: "assault",
+      actorId: actor.id,
+      targetId: target.id,
+      title: `${actor.name} attacks ${target.name}`,
+      text: `A grudge between ${actor.name} and ${target.name} has come to blows.`,
+      tone: "danger"
+    });
   }
 }
 
@@ -848,6 +1080,8 @@ export function advancePopulationDay(state) {
   state.material.weather = weatherRng.pick(weatherBySeason[state.material.season]);
   processHouseholds(state, day, events);
   processHealthAndAging(state, day, events);
+  processInjuries(state, day, events);
+  processViolence(state, day, events);
   processFamilyAndWork(state, day, events);
   processMigration(state, day, events);
   spreadRumors(state, day, events);
