@@ -170,12 +170,30 @@ test("AI chains cannot reuse participants for conflicting marriages", () => {
   const state = createGame("conflicting-marriage-chain");
   const visit = beginVisit(state);
   const first = materializeResident(state, visit.personId, true);
-  const second = materializeResident(state, first.relationshipIds[0], true);
-  let third = state.residents.find((person) => (
-    person.id !== first.id
-    && person.id !== second.id
-    && !areProhibitedKin(state, second.id, person.id)
-  ));
+  /* Both partners have to be people this parish would actually let marry, or
+     the chain is refused at the first step for reasons this test is not about.
+     Kin and members of the same household are therefore excluded explicitly
+     rather than being left to whoever the seed happens to put first. */
+  const eligible = (candidate, ...others) => (
+    candidate.active
+    && candidate.alive
+    && candidate.age >= 18
+    && others.every((other) => (
+      candidate.id !== other.id
+      && candidate.householdId !== other.householdId
+      && !areProhibitedKin(state, other.id, candidate.id)
+    ))
+  );
+  const second = materializeResident(
+    state,
+    state.residents.find((person) => eligible(person, first))?.id,
+    true
+  );
+  assert.ok(second, "the parish should contain someone the visitor could marry");
+  let third = state.residents.find((person) => eligible(person, first, second));
+  assert.ok(third, "the parish should contain someone the groom could conflictingly marry");
+  if (!first.relationshipIds.includes(second.id)) first.relationshipIds.push(second.id);
+  if (!second.relationshipIds.includes(first.id)) second.relationshipIds.push(first.id);
   if (!second.relationshipIds.includes(third.id)) second.relationshipIds.push(third.id);
   if (!third.relationshipIds.includes(second.id)) third.relationshipIds.push(second.id);
   first.sex = "female";

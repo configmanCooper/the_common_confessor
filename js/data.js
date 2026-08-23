@@ -146,10 +146,19 @@ export function buildFirstNameBank(sex) {
   for (const prefix of NAME_PREFIXES) {
     for (const suffix of suffixes) {
       bank.add(titleCase(`${prefix}${suffix}`));
-      bank.add(titleCase(`${prefix}${suffix.replace(/^[aeiou]/, "")}`));
+      /* The elided form exists to stop two vowels colliding — Odo and "ard"
+         should be able to give Odord. It must only be used when the prefix
+         actually ends in a vowel: dropping the vowel after a consonant welds
+         the two halves into something no one could say, which is where Idrd,
+         Edld and Branrd came from. */
+      if (/[aeiou]$/i.test(prefix) && /^[aeiou]/i.test(suffix)) {
+        bank.add(titleCase(`${prefix}${suffix.slice(1)}`));
+      }
     }
   }
-  return [...bank];
+  /* A prefix ending in the letter its suffix begins with would otherwise give
+     Dannne three n's in a row. No English name has that. */
+  return [...bank].map((name) => name.replace(/([a-z])\1{2,}/gi, "$1$1"));
 }
 
 export function buildSurnameBank() {

@@ -509,6 +509,10 @@ test("vulnerable visitors do not select unknown watchmen as safe helpers", () =>
   person.age = 14;
   person.relationshipIds = [];
   state.relationships = state.relationships.filter((relationship) => relationship.actorId !== person.id);
+  /* This is about whether the watch is known to the child, so the scenario must
+     not be one that implicates the watch — otherwise the helper is refused for
+     a different and equally correct reason, and the test proves nothing. */
+  visit.scenarioFacts = [];
   const watchman = state.residents.find((resident) => resident.occupation === "watchman" && resident.id !== person.id);
   assert.ok(watchman);
   assert.equal(selectSafeConversationHelper(state, person, visit), null);
