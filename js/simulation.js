@@ -1448,7 +1448,7 @@ export function requestVisits(state, personIds, reason = "", { record = true } =
   return results;
 }
 
-function scheduleResidentFollowup(state, personId, reason, sourceEventId, type = "resident_followup") {
+function scheduleResidentFollowup(state, personId, reason, sourceEventId, type = "resident_followup", payload = {}) {
   const person = state.residents.find((resident) => resident.id === personId);
   if (!person?.active || !person.alive) return null;
   if (state.eventQueue.some((event) => (
@@ -1464,7 +1464,7 @@ function scheduleResidentFollowup(state, personId, reason, sourceEventId, type =
     sourceEventId,
     actorId: personId,
     targetId: "priest",
-    payload: {}
+    payload
   };
   state.eventQueue.push(event);
   return event;
@@ -1894,8 +1894,12 @@ export function beginVisit(state, { record = true } = {}) {
       opening: queued.type === "sermon_followup"
         ? `Father, I have come because of what happened after Sunday's sermon.`
         : queued.type === "priest_summons"
-          ? `Father, I was told that you asked me to come and speak with you. ${queued.reason}`
-        : `Father, I have come because of what happened in the village: ${queued.reason}`,
+          ? `Father, I was told that you asked me to come and speak with you.`
+          : queued.payload?.promise
+            ? `Father, I said I would ${queued.payload.promise}. ${queued.payload.kept
+              ? "I have come to tell you what came of it."
+              : "I have come to tell you why I did not."}`
+            : `Father, I have come because of what happened in the village: ${queued.reason}`,
       detail: queued.reason,
       relatedPersonId,
       relatedName: state.residents.find((resident) => resident.id === relatedPersonId)?.name || null,
@@ -3169,13 +3173,28 @@ export function executeDueCommitments(state, parentEventId) {
         }
       );
       commitment.fulfilledEventId = state.chronicle[0].eventId;
+      /* A follow-up must be about the thing that actually happened. It used to
+         say only that somebody "returns to report what happened after keeping
+         the promise", so the visitor arrived with no subject and talked about
+         whatever came to hand. The promise itself and the person it concerned
+         travel with the summons now, and the visitor opens on them. */
+      const concerned = state.residents.find((resident) => resident.id === commitment.targetId);
+      const promise = String(commitment.payload?.text || "").replace(/\s+/g, " ").trim().slice(0, 140);
       scheduleResidentFollowup(
         state,
         actor.id,
         fulfilled
-          ? `${actor.name} returns to report what happened after keeping the promise.`
-          : `${actor.name} returns to explain why the promise was not kept.`,
-        commitment.fulfilledEventId
+          ? `${actor.name} promised to ${promise || "act on the matter"}${concerned ? `, which concerned ${concerned.name}` : ""}, and has now done it.`
+          : `${actor.name} promised to ${promise || "act on the matter"}${concerned ? `, which concerned ${concerned.name}` : ""}, and has not done it.`,
+        commitment.fulfilledEventId,
+        "resident_followup",
+        {
+          commitmentId: commitment.id,
+          promise,
+          kept: fulfilled,
+          concernedId: concerned?.id || null,
+          concernedName: concerned?.name || null
+        }
       );
       continue;
     }
