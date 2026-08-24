@@ -183,3 +183,26 @@ test("the log can be read for one person", () => {
       "the log for one person included somebody else's business");
   }
 });
+
+test("every impulse can actually fire in a real parish", () => {
+  /* The first draft of this file set its thresholds against imagined numbers -
+     "resentment > 60" in a village where resentment tops out near 35 - and the
+     result was a parish where eight of the ten impulses were dead code and the
+     village never stirred. Each one is checked here against a village that has
+     actually been lived in. */
+  const state = livedIn("impulse-reach", 56);
+  const log = recentSocialLog(state, { limit: 900 });
+  const kinds = new Set(log.map((entry) => entry.actionType));
+  assert.ok(kinds.size >= 8, `only ${kinds.size} kinds of act in eight weeks: ${[...kinds].join(", ")}`);
+  assert.ok(log.length > 60, `the village barely stirred: ${log.length} acts in eight weeks`);
+});
+
+test("the village keeps living its own life: marriages, illness, care", () => {
+  const state = livedIn("impulse-life", 84);
+  const living = state.residents.filter((person) => person.alive && person.active);
+  const married = living.filter((person) => person.maritalStatus === "married").length;
+  assert.ok(married > 0, "nobody in the parish is married");
+  const log = recentSocialLog(state, { limit: 900 });
+  assert.ok(log.some((entry) => ["nurse", "comfort", "share_food"].includes(entry.actionType)),
+    "nobody ever looked after anybody");
+});

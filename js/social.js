@@ -140,28 +140,40 @@ const ANSWERS = Object.freeze({
 
 /* Which acts a person might undertake unprompted, and what makes them likely.
    Each reads the actor's real condition rather than a label, so the village
-   behaves differently when it is hungry, frightened, or content. */
+   behaves differently when it is hungry, frightened, or content.
+
+   The thresholds below are set against what this parish's figures actually do,
+   not against what round numbers suggest they might. Measured over a settled
+   village: food runs 38-64, resentment tops out near 35, attraction near 45,
+   morale sits around 56. Writing "resentment > 60" reads well and can never
+   once be true, which is how a first draft of this file left the whole village
+   inert except for the one impulse whose threshold happened to be reachable. */
 const IMPULSES = Object.freeze([
   {
     action: "share_food",
-    wants: (state, person, household, bond, other, otherHousehold) => (
-      household && otherHousehold && household.food > 55 && otherHousehold.food < 35
-        ? 0.5 + (person.personality?.traits || []).includes("generous") * 0.5
-        : 0
-    ),
+    wants: (state, person, household, bond, other, otherHousehold) => {
+      if (!household || !otherHousehold) return 0;
+      /* Relative want, not an absolute line: a fuller house beside an emptier
+         one, which is a thing that happens every week in a real village. */
+      const gap = household.food - otherHousehold.food;
+      if (gap < 8) return 0;
+      return Math.min(0.7, gap / 30) + ((person.personality?.traits || []).includes("generous") ? 0.3 : 0);
+    },
     mood: "kindly"
   },
   {
     action: "nurse",
     wants: (state, person, household, bond, other) => (
-      other.illness && (bond.affection ?? 50) > 55 ? 0.7 : 0
+      other.illness || other.injury ? 0.4 + Math.max(0, (bond.affection ?? 0) - 30) / 70 : 0
     ),
     mood: "concerned"
   },
   {
     action: "comfort",
     wants: (state, person, household, bond, other) => (
-      other.morale < 30 && (bond.affection ?? 50) > 45 ? 0.5 : 0
+      other.morale < 48 && (bond.affection ?? 0) > 38
+        ? 0.25 + (48 - other.morale) / 40
+        : 0
     ),
     mood: "kindly"
   },
@@ -169,29 +181,39 @@ const IMPULSES = Object.freeze([
     action: "court",
     wants: (state, person, household, bond, other) => (
       person.maritalStatus === "single" && other.maritalStatus === "single"
-        && person.age >= 17 && other.age >= 17
+        && person.age >= 17 && other.age >= 17 && person.age <= 55
         && Math.abs(person.age - other.age) <= 14
         && person.sex !== other.sex
-        && (bond.attraction ?? 0) > 45 ? 0.8 : 0
+        && (bond.attraction ?? 0) > 28
+        ? 0.3 + ((bond.attraction ?? 0) - 28) / 40
+        : 0
     ),
     mood: "hopeful"
   },
   {
     action: "marry",
-    wants: (state, person, household, bond, other) => (
-      person.maritalStatus === "courting" && other.maritalStatus === "courting"
-        && person.spouseId == null && other.spouseId == null
-        && (bond.affection ?? 50) > 70 ? 0.6 : 0
-    ),
+    wants: (state, person, household, bond, other) => {
+      /* There is no "courting" status in this village; courtship shows itself
+         as attraction climbing past what any pair start with. Natural
+         attraction tops out around 45, and each courtship adds to it, so a
+         bond above that has been actively courted and is ready to be asked. */
+      if (person.maritalStatus !== "single" || other.maritalStatus !== "single") return 0;
+      if (person.spouseId != null || other.spouseId != null) return 0;
+      if (person.age < 17 || other.age < 17 || person.sex === other.sex) return 0;
+      if (Math.abs(person.age - other.age) > 14) return 0;
+      const attraction = bond.attraction ?? 0;
+      const affection = bond.affection ?? 0;
+      if (attraction < 52 || affection < 45) return 0;
+      return 0.45 + (attraction - 52) / 60;
+    },
     mood: "joyful"
   },
   {
     action: "gossip",
     wants: (state, person, household, bond, other) => (
-      /* Talk needs something to be about. People gossip when there is a rift,
-         a secret, or a grievance in reach - not simply because they exist. */
-      ((bond.resentment ?? 0) > 35 || (other.reputation ?? 50) < 40 || (person.flags || []).length > 0)
-        ? ((person.personality?.traits || []).includes("gossipy") ? 0.3 : 0.08)
+      /* Talk needs something to be about: a rift, a poor name, or a grievance. */
+      ((bond.resentment ?? 0) > 22 || (other.reputation ?? 60) < 48)
+        ? ((person.personality?.traits || []).includes("gossipy") ? 0.28 : 0.09)
         : 0
     ),
     mood: "idle"
@@ -199,31 +221,67 @@ const IMPULSES = Object.freeze([
   {
     action: "steal",
     wants: (state, person, household, bond, other, otherHousehold) => (
-      household && otherHousehold && household.food < 20 && otherHousehold.food > 50
-        && person.faith < 45 ? 0.35 : 0
+      household && otherHousehold
+        && household.food < 45 && otherHousehold.food - household.food > 10
+        && person.faith < 50
+        ? 0.12 + (45 - household.food) / 40
+        : 0
     ),
     mood: "desperate"
   },
   {
     action: "threaten",
     wants: (state, person, household, bond) => (
-      (bond.resentment ?? 0) > 60 && person.stress > 60 ? 0.4 : 0
+      (bond.resentment ?? 0) > 26 && person.stress > 52
+        ? 0.15 + ((bond.resentment ?? 0) - 26) / 25
+        : 0
     ),
     mood: "furious"
   },
   {
     action: "make_peace",
     wants: (state, person, household, bond) => (
-      (bond.resentment ?? 0) > 45 && person.faith > 60 && person.trustPriest > 60 ? 0.45 : 0
+      (bond.resentment ?? 0) > 18 && person.faith > 55 && person.trustPriest > 52
+        ? 0.3 + Math.max(0, person.faith - 55) / 60
+        : 0
     ),
     mood: "weary"
   },
   {
     action: "organize_aid",
     wants: (state, person) => (
-      person.faith > 70 && person.morale > 55 && (state.town.metrics.mercy ?? 50) > 55 ? 0.3 : 0
+      /* Kept deliberately modest: it was the only impulse that could fire in
+         the first draft, and it drowned out everything else. */
+      person.faith > 68 && person.morale > 60 && (state.town.metrics.mercy ?? 50) > 52 ? 0.16 : 0
     ),
     mood: "resolved"
+  },
+  {
+    action: "teach",
+    wants: (state, person, household, bond, other) => (
+      person.age > 30 && other.age < 25 && (bond.familiarity ?? 0) > 45
+        && ["teacher", "scribe", "clerk", "carpenter", "mason", "blacksmith", "weaver"].includes(person.occupation)
+        ? 0.3 : 0
+    ),
+    mood: "patient"
+  },
+  {
+    action: "lend_money",
+    wants: (state, person, household, bond, other, otherHousehold) => (
+      household && otherHousehold
+        && household.wealth - otherHousehold.wealth > 4
+        && (otherHousehold.debt ?? 0) > 0
+        && (bond.affection ?? 0) > 40 ? 0.3 : 0
+    ),
+    mood: "obliging"
+  },
+  {
+    action: "pray_with",
+    wants: (state, person, household, bond, other) => (
+      person.faith > 62 && (other.morale < 52 || other.illness) && (bond.familiarity ?? 0) > 40
+        ? 0.22 : 0
+    ),
+    mood: "devout"
   }
 ]);
 
@@ -449,7 +507,7 @@ export function resolveDueIntentions(state, perform) {
  * bond with, and those who have reason to act are set to do so during the week
  * ahead. This is what keeps the village moving when the priest is not looking.
  */
-export function planWeeklySocialLife(state, { limit = 14 } = {}) {
+export function planWeeklySocialLife(state, { limit = 18 } = {}) {
   upgradeSocialState(state);
   const planned = [];
   const bonds = (state.relationships || []).slice();
