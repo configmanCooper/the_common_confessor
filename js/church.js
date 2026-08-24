@@ -123,8 +123,15 @@ export function grantChurchResource(state, person, resource, requestedAmount) {
 
   let addressedNeed = false;
   if (resource === "coin") {
-    household.wealth = clamp(household.wealth + amount);
-    addressedNeed = (household.debt || 0) > 0 || household.wealth < 25;
+    /* Coin goes where it is actually needed. A household in debt is being bled
+       a little every day by it, so silver clears the debt first and only what
+       is left over becomes money in hand - which is what the household would
+       do with it anyway, and what makes the gift felt for longer than a week. */
+    const owed = household.debt || 0;
+    const towardsDebt = Math.min(owed, amount);
+    household.debt = Math.max(0, owed - towardsDebt);
+    household.wealth = clamp(household.wealth + (amount - towardsDebt));
+    addressedNeed = owed > 0 || household.wealth < 25;
   } else if (resource === "medicine") {
     const ill = Boolean(person.illness);
     const hurt = Boolean(person.injury);
@@ -154,9 +161,18 @@ export function grantChurchResource(state, person, resource, requestedAmount) {
       ];
     }
   } else if (resource === "firewood") {
-    addressedNeed = person.health < 60 || Boolean(person.illness) || (household.food ?? 100) < 45;
-    person.health = clamp(person.health + amount * (addressedNeed ? 3 : 1));
-    person.stress = clamp(person.stress - amount * 2);
+    /* Fuel answers cold. A household already stacked to the roof is neither
+       warmer nor richer for another bundle - it simply has more wood - so what
+       this measures is how short of it they were. A thin woodpile, a sick body
+       that needs the fire kept in, or a house too poor to buy any. */
+    const woodpile = household.fuel ?? 0;
+    const cold = woodpile < 10;
+    addressedNeed = cold || Boolean(person.illness) || person.health < 60 || (household.food ?? 100) < 45;
+    const warmth = cold ? Math.max(0.25, Math.min(1, (10 - woodpile) / 10)) : 0.1;
+    person.health = clamp(person.health + amount * (addressedNeed ? 3 : 1) * warmth);
+    person.stress = clamp(person.stress - amount * 2 * warmth);
+    /* Into the woodpile, where it is burned instead of bought. */
+    household.fuel = clamp(woodpile + amount * 1.5, 0, 100);
   } else {
     const hungry = (household.food ?? 100) < 55;
     addressedNeed = hungry;

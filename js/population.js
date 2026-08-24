@@ -144,6 +144,9 @@ export function upgradePopulationState(state) {
     household.wealth ??= 50;
     household.food ??= 50;
     household.debt ??= 0;
+    /* A woodpile a household would ordinarily keep: enough that it is not
+       cold, and not so much that a gift of fuel is meaningless. */
+    household.fuel ??= 16;
     household.reputation ??= 50;
     household.dwelling ??= "cottage";
     household.dailyProduction ??= 0;
@@ -477,7 +480,19 @@ function processHouseholds(state, day, events) {
     const weatherFactor = ["storm", "frost", "snow"].includes(state.material.weather) ? 0.75 : state.material.weather === "sun" ? 1.12 : 1;
     const production = workers.reduce((total, worker) => {
       const base = Math.max(0.35, worker.prosperity / 42);
-      return total + base * (["farmer", "shepherd", "miller"].includes(worker.occupation) ? harvestFactor * weatherFactor : 1);
+      /* A man in his bed brings nothing home. The household economy read only
+         prosperity, so a worker could be bedridden with lung sickness for a
+         fortnight and his household lose not a penny by it - which made
+         medicine a kindness with no consequence rather than the thing that
+         puts a family back on its feet. */
+      const wellEnough = worker.illness
+        ? (worker.illness === "lung sickness" ? 0.2 : 0.4)
+        : worker.injury
+          ? (worker.injury.severity >= 60 ? 0.25 : 0.65)
+          : 1;
+      const strength = 0.55 + clamp(worker.health, 0, 100) / 100 * 0.45;
+      return total + base * wellEnough * strength
+        * (["farmer", "shepherd", "miller"].includes(worker.occupation) ? harvestFactor * weatherFactor : 1);
     }, 0);
     const householdSupport = members.reduce((total, member) => {
       if (member.age >= 10 && member.age < 14 && member.occupation === "child laborer") return total + 0.22;
@@ -488,14 +503,40 @@ function processHouseholds(state, day, events) {
       total + (member.age < 10 ? 0.5 : 0.85) * (state.material.season === "Winter" ? 1.1 : 1)
     ), 0);
     const totalProduction = production + householdSupport;
-    const shortage = Math.max(0, consumption - totalProduction);
+    const consumptionShortfall = Math.max(0, consumption - totalProduction);
+    /* A household short of what it eats does not always go to market. It goes
+       to its own larder first, and only buys what the larder cannot cover.
+       That is the piece this economy was missing: a full store meant nothing,
+       because the shortfall was bought at market whatever was on the shelf.
+       Now anything that fills a larder - a good harvest, a neighbour's
+       kindness, or bread from the church - is felt twice, once as food and
+       again as coin not spent.
+       It is self-limiting in the way it should be: a household that already
+       has plenty was never going to buy, so giving it bread saves it nothing.
+       Only the ones actually running short keep any silver by it. */
+    const larder = household.food ?? 50;
+    const drawableFromStore = Math.max(0, Math.min(consumptionShortfall, (larder - 20) / 25));
+    const shortage = consumptionShortfall - drawableFromStore;
     const surplus = Math.max(0, totalProduction - consumption);
     const marketCost = shortage * (state.material.grainPrice / 50) * 0.15;
     const marketIncome = surplus * (state.material.grainPrice / 50) * 0.16;
+    /* Keeping warm is an expense, and a heavier one in winter. A household with
+       fuel in the woodpile burns that instead of buying, so firewood - from
+       their own cutting, a neighbour, or the church - is felt as coin the same
+       way a full larder is. A household with plenty stacked was never going to
+       buy any, so it keeps nothing by being given more. */
+    const fuelNeed = state.material.season === "Winter" ? 0.5
+      : state.material.season === "Autumn" ? 0.25
+        : 0.1;
+    const woodpile = household.fuel ?? 0;
+    const burned = Math.min(woodpile, fuelNeed);
+    household.fuel = clamp(woodpile - burned, 0, 100);
+    const fuelCost = (fuelNeed - burned) * (state.material.season === "Winter" ? 0.5 : 0.3);
     household.dailyProduction = totalProduction;
     household.food = clamp(household.food + totalProduction - consumption, 0, 100);
     household.wealth = clamp(
-      household.wealth + totalProduction * 0.24 + marketIncome - consumption * 0.15 - marketCost - household.debt * 0.002,
+      household.wealth + totalProduction * 0.24 + marketIncome
+        - consumption * 0.15 - marketCost - fuelCost - household.debt * 0.002,
       0,
       100
     );

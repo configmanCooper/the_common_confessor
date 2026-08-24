@@ -1337,7 +1337,7 @@ function conversationIntensity(visit) {
   return "angry, and entitled to be. Plain accusation is in character.";
 }
 
-function knownPeopleForPrompt(state, person, visit, limit = 10) {
+function knownPeopleForPrompt(state, person, visit, limit = 14) {
   const seen = new Set([person.id]);
   const rows = [];
   const push = (resident) => {
@@ -1350,6 +1350,13 @@ function knownPeopleForPrompt(state, person, visit, limit = 10) {
   for (const subjectId of thread?.subjectIds || []) {
     push(state.residents.find((resident) => resident.id === subjectId));
   }
+  /* The people under this visitor's own roof. Without them the model has no
+     real name for a wife, a brother, or a grown child, and it will cheerfully
+     invent one rather than leave the sentence unfinished. */
+  for (const resident of state.residents) {
+    if (rows.length >= limit) break;
+    if (resident.householdId === person.householdId) push(resident);
+  }
   for (const relationId of person.relationshipIds || []) {
     if (rows.length >= limit) break;
     push(state.residents.find((resident) => resident.id === relationId));
@@ -1361,6 +1368,74 @@ function knownPeopleForPrompt(state, person, visit, limit = 10) {
     }
   }
   return rows.slice(0, limit);
+}
+
+/* Villagers the model invented.
+
+   The parish has exactly two hundred people and every one of them is named
+   before the game begins. When the model needs a person the prompt did not
+   supply - "the other two workers", a sick neighbour, an apprentice - it will
+   invent a name rather than leave the sentence unfinished, and the priest then
+   repeats that name back as though it were a real parishioner. In one watched
+   run a man called Thomas was discussed twenty-eight times and existed
+   nowhere in the village.
+
+   This finds name-shaped words belonging to nobody. It deliberately errs
+   towards silence: a capitalised word is only suspected if it is never used in
+   lowercase anywhere in the same text, which clears ordinary sentence openers
+   like "Did" or "Forgive" without needing a dictionary of English. */
+const NON_NAME_CAPITALS = new Set([
+  "Father", "God", "Lord", "Christ", "Jesus", "Saint", "Amen", "Sunday", "Monday",
+  "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Church", "Mass",
+  "Advent", "Lent", "Easter", "Christmas", "Michaelmas", "Candlemas", "Whitsun",
+  "Scripture", "Gospel", "Commandment", "Heaven", "Hell", "Almighty", "Blessed",
+  "King", "Queen", "Bishop", "Abbot", "Prior", "Reeve", "Bailiff", "Watchman",
+  "Constable", "Steward", "Sheriff", "Clerk", "Master", "Mistress", "Goodwife",
+  "Goodman", "Widow", "Mother", "Father", "Brother", "Sister", "Uncle", "Aunt",
+  /* Capitalised mid-sentence but never anyone's name. */
+  "Him", "Himself", "Her", "Herself", "Them", "Themselves", "His", "Hers",
+  "Old", "Man", "Woman", "Christian", "Latin", "English"
+]);
+
+export function unknownPersonNames(state, text) {
+  const speech = String(text || "");
+  if (!speech.trim()) return [];
+  const known = new Set();
+  const remember = (value) => {
+    for (const part of String(value || "").split(/[^A-Za-z]+/)) {
+      if (part) known.add(part.toLowerCase());
+    }
+  };
+  for (const resident of state.residents || []) {
+    remember(resident.name);
+    remember(resident.firstName);
+    remember(resident.surname);
+  }
+  for (const actor of state.externalActors || []) remember(actor.name);
+  remember(state.town?.name);
+  for (const word of NON_NAME_CAPITALS) known.add(word.toLowerCase());
+
+  /* Any word the writer also used in lowercase is an ordinary word that
+     happened to start a sentence, not somebody's name. */
+  const usedLowercase = new Set((speech.match(/\b[a-z]{2,}\b/g) || []));
+  const found = new Map();
+  /* Only words used inside a sentence are considered. A capital at the start
+     of a sentence, after a full stop, or opening a quotation is ambiguous -
+     "Did", "Forgive", "Nothing" - whereas a capital in the middle of a clause
+     is almost always somebody's name. A genuine phantom is discussed enough
+     that it appears mid-sentence at least once. */
+  const pattern = /(^|[.!?]\s+|["'\u201c\u2018]\s*)?\b([A-Z][a-z]{2,})\b/g;
+  let match = pattern.exec(speech);
+  while (match !== null) {
+    const sentenceInitial = Boolean(match[1]) || match.index === 0;
+    const word = match[2];
+    const lower = word.toLowerCase();
+    if (!sentenceInitial && !known.has(lower) && !usedLowercase.has(lower)) {
+      found.set(word, (found.get(word) || 0) + 1);
+    }
+    match = pattern.exec(speech);
+  }
+  return [...found.keys()];
 }
 
 function openThreadsForPrompt(visit, limit = 3) {
@@ -2098,6 +2173,7 @@ export class ParishAiClient extends EventTarget {
       "The simulation supplies the true situation; you supply only natural dialogue. Do not narrate, summarize a scenario, label emotions, or mention being an AI.",
       "Write in first person. Never refer to the speaker by their own name. Address the priest naturally if appropriate.",
       "Refer to other villagers by first name when familiar, or by an appropriate title and surname for officials and masters. Avoid repeatedly using full names unless the priest asks for one or two people share a name.",
+      "Name only people supplied in the context. This village has a fixed population and every inhabitant is already named. If you need to mention anyone else - a neighbour, another worker, an apprentice, a child - describe them by their role or relationship instead, such as 'my neighbour', 'the other two workers', or 'my sister's boy'. Never invent a personal name.",
       "Use two to five varied sentences, usually 35 to 100 words. The visitor may hesitate, pause, begin indirectly, or reveal details in an emotionally believable order.",
       "Do not mechanically list every supplied fact. Choose the details this person would actually say first, while preserving all names, quantities, relationships, and events you do mention.",
       "Never turn a supplied fact into an unsupported rumor, uncertainty, or denial. If a permitted fact says the visitor committed or witnessed an act, the visitor must not claim ignorance or innocence.",
@@ -2274,6 +2350,7 @@ export class ParishAiClient extends EventTarget {
       "- You are not only being questioned. Ask the priest something back when you would really want to know: whether he will come with you, what to tell your family, whether it is a sin, what happens if you refuse.",
       "- You may agree, disagree, refuse, hesitate, or admit you do not know. If his suggestion genuinely settles your worry and you trust it, simply accept it and say so. Never drag things out to fill time.",
       "- Only name people you know or who were already named. Never invent an official, expert, place, or institution; say plainly if no one suitable exists.",
+      "- This also means ordinary villagers. Every soul in this parish is already named, and the names above are the only ones you have. Never make up a personal name for a neighbour, a fellow worker, an apprentice, a sick man, or a child. Speak of them by role or relation instead: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'my sister's boy'. An invented name becomes a person who does not exist, and the priest will go looking for them.",
       "- The same holds for families and households. Surnames in this village are the ones listed above and no others: never speak of \"the Blackwood family\" or any house you have not been told exists. If you mean a household, name someone in it, or say \"the family up the lane\" without giving them a surname.",
       "- The priest does not leave his church. He cannot call on you at home, walk anywhere with you, or go to anyone himself. He can send for people to come to him, or send the watch. If he says he will come to you, you may gently say that you will come to him instead, or ask him to send someone.",
       "- Leave the priest something to take hold of: what you want, what you refuse, what would have to change, or a question he must answer.",
@@ -2406,6 +2483,46 @@ export class ParishAiClient extends EventTarget {
           type: "repetition_regeneration_failed",
           detail: retryError.message,
           code: "naturalConversation:repetition"
+        });
+      }
+    }
+
+    /* Villagers conjured out of nothing. The parish is a closed population of
+       two hundred named souls, so a name belonging to none of them is a person
+       who does not exist - and the priest will repeat it back, ask after them,
+       and send the watch to find them. Ask once for the line again, naming only
+       real people. */
+    const invented = unknownPersonNames(state, reply);
+    if (invented.length) {
+      transformations.push({
+        type: "invented_villager_regeneration",
+        detail: `named nobody who exists: ${invented.join(", ")}`,
+        code: "naturalConversation:inventedVillager"
+      });
+      try {
+        const retryPrompt = buildPrompt(
+          `- You named ${invented.join(" and ")}, and no such person lives in this village. Say the same thing again, but refer to them by role or relation instead - 'my neighbour', 'the other two workers', 'the old man at the end of the lane' - or name someone from the people you actually know.`
+        );
+        prompt = retryPrompt.user;
+        const retry = await this.complete(
+          prompt,
+          schema,
+          "parish_natural_conversation_names",
+          200,
+          Math.min(this.timeoutMs, 40000),
+          { system: retryPrompt.system }
+        );
+        const retryReply = trimToSentence(boundedProse(stripControlSuffix(retry.reply), 600));
+        /* Only take the retry if it actually mended the problem. */
+        if (retryReply && unknownPersonNames(state, retryReply).length === 0) {
+          raw = retry;
+          reply = retryReply;
+        }
+      } catch (retryError) {
+        transformations.push({
+          type: "invented_villager_regeneration_failed",
+          detail: retryError.message,
+          code: "naturalConversation:inventedVillager"
         });
       }
     }
