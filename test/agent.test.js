@@ -218,3 +218,38 @@ test("the agent may hand over stores with its words, within what the church hold
   });
   assert.equal(invented.ok, false);
 });
+
+test("a gift the priest never mentions is refused", () => {
+  const state = createGame("gives-unspoken");
+  beginVisit(state);
+  const moves = legalMoves(state);
+  const speak = moves.find((move) => move.kind === "speak");
+  assert.ok(speak?.allowsGifts);
+
+  /* Straight from a watched run: the priest handed over a loaf while refusing
+     to take sides, and the visitor never acknowledged the bread because there
+     was nothing in his words to acknowledge. */
+  const silent = validateAgentChoice(moves, {
+    move: speak.index,
+    text: "I will not lend the Church's weight to either claim without sound witness.",
+    gives: [{ resource: "bread", amount: 1 }],
+    reason: "This gathers evidence while avoiding a premature public intervention."
+  });
+  assert.equal(silent.ok, false, "a gift nobody mentions should be refused");
+
+  const spoken = validateAgentChoice(moves, {
+    move: speak.index,
+    text: "Take this bread for your children.",
+    gives: [{ resource: "bread", amount: 1 }],
+    reason: "They are hungry."
+  });
+  assert.equal(spoken.ok, true, "saying it plainly should be enough");
+
+  const justified = validateAgentChoice(moves, {
+    move: speak.index,
+    text: "You will not go hungry this week.",
+    gives: [{ resource: "bread", amount: 1 }],
+    reason: "A loaf of bread meets their immediate hunger."
+  });
+  assert.equal(justified.ok, true, "explaining it in the reason should be enough");
+});

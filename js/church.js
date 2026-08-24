@@ -219,6 +219,13 @@ export function churchDonationCapacity(state, person, resource) {
     : Math.floor(household.food / Math.max(1, definition.householdValue));
 }
 
+/* Does this sentence name one particular thing the church keeps? Used to check
+   that a priest handing something over has actually said so. */
+export function namesChurchResource(text, key) {
+  const speech = String(text || "").toLowerCase();
+  return (RESOURCE_ALIASES[key] || []).some((alias) => speech.includes(alias));
+}
+
 /* Does this sentence actually name something the church keeps? Used to tell a
    real offer from ordinary speech: "take" and "have" are far too common on
    their own to mean that the stores are being opened. */

@@ -14,7 +14,7 @@
  */
 
 import { EXTERNAL_ROLES, SERMON_THEMES } from "./data.js";
-import { churchResourceRows } from "./church.js";
+import { churchResourceRows, namesChurchResource } from "./church.js";
 import { availableOfficers, marketIsOpen, marketOffer } from "./simulation.js";
 
 export const AGENT_MOVE_KINDS = Object.freeze([
@@ -332,6 +332,16 @@ export function validateAgentChoice(moves, choice) {
         }
         if (amount <= 0 || amount > row.left) {
           return { ok: false, error: `The church has ${row.left} ${row.unit} of ${row.label.toLowerCase()}; ${amount} cannot be given.` };
+        }
+        /* A gift nobody mentions is a gift nobody can respond to. Handing over
+           bread while saying "I will not lend the Church's weight without sound
+           witness" leaves the visitor with a loaf and nothing to say about it,
+           and leaves the transcript incoherent. Say it, or explain it. */
+        if (!namesChurchResource(text, row.key) && !namesChurchResource(reason, row.key)) {
+          return {
+            ok: false,
+            error: `You are handing over ${row.label.toLowerCase()} without mentioning it anywhere. Say so in your words, or give a reason that explains why ${row.label.toLowerCase()} helps this person now.`
+          };
         }
         gives.push({ resource: row.key, amount });
       }
