@@ -9,6 +9,7 @@ import {
 } from "./conversation.js";
 import { upgradePopulationState } from "./population.js";
 import { upgradeParishState } from "./parish.js";
+import { upgradeSocialState } from "./social.js";
 import {
   DAILY_REPORT_LIMIT,
   upgradeReportingState,

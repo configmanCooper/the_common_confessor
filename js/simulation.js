@@ -370,6 +370,11 @@ export function createGame(seed = String(Date.now())) {
     supersededTurns: [],
     commitments: [],
     nextCommitmentSequence: 1,
+    /* What the village means to do, and what it has done to itself. Present
+       from the parish's first day so nothing has to guess whether they exist. */
+    intentions: [],
+    nextIntentionSequence: 1,
+    socialLog: [],
     narrativeThreads: [],
     nextNarrativeThreadSequence: 1,
     neighboringParishes: [],
