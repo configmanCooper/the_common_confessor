@@ -2,3 +2,8 @@ node_modules/
 test/browser-smoke.png
 *.log
 exports/
+
+# The local model and its runtime: about 4.5 GB, installed by
+# scripts/setup-local-ai.ps1 rather than committed.
+models/
+tools/

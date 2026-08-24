@@ -41,6 +41,30 @@ A painterly 2D parish social simulation set in the 1500s. The game reuses The Co
 - Three deterministic neighboring parishes seed causal relief stories with named priests, stewards, lords, travel time, resource commitments, and delayed reports.
 - Error notices remain visible longer, and **Export Debug Log** includes the error journal, active conversation, prompt diagnostics, and full current save state.
 
+## Getting started
+
+Clone it, install the Node dependencies, then fetch the model once:
+
+```powershell
+git clone https://github.com/configmanCooper/the_common_confessor.git
+cd the_common_confessor
+npm install
+.\scripts\setup-local-ai.ps1
+```
+
+That last step downloads two things into the project folder and nothing else:
+
+| | size | what it is |
+|---|---|---|
+| llama.cpp | ~90 MB | the server that runs the model |
+| Gemma 3n E4B (Q4_K_M) | ~4.5 GB | the model that speaks for the villagers |
+
+Neither is in this repository — a four-gigabyte model has no business in version control — and both are ignored by git once installed. The download is resumable: if it is interrupted, run the script again and it continues from where it stopped rather than starting over. It finishes by loading the model once to prove it works.
+
+If the script finds no NVIDIA card it installs the CPU build instead, which works but answers slowly. Pass `-Cpu` to force that, or `-Force` to re-download.
+
+**No graphics card, or no wish to download several gigabytes?** You do not need any of the above. Start the game, open **Settings → Google Gemini**, and paste a free API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). The parish then speaks through `gemini-2.5-flash` and nothing else changes.
+
 ## Running the game
 
 Double-click `start.cmd`, or run:

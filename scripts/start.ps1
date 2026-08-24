@@ -37,7 +37,6 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 
 $confessorRoot = Get-ConfessorRoot
-$commonCrownRoot = Get-CommonCrownRoot
 $aiPort = Get-AiPort
 
 if ($Port -le 0) { $Port = if ($env:PORT) { [int]$env:PORT } else { 8086 } }
@@ -45,15 +44,25 @@ if ($ContextSize -le 0) {
   $ContextSize = if ($env:LOCAL_AI_CONTEXT_SIZE) { [int]$env:LOCAL_AI_CONTEXT_SIZE } else { 8192 }
 }
 
-$modelPath = Join-Path $commonCrownRoot "models\google_gemma-3n-E4B-it-Q4_K_M.gguf"
-$serverExe = Join-Path $commonCrownRoot "tools\llama.cpp\bin\llama-server.exe"
+$modelPath = Get-ModelPath
+$serverExe = Get-ServerExePath
 
 Write-Host ""
 Write-Host "The Common Confessor" -ForegroundColor Cyan
 Write-Host "--------------------"
 
-if (-not (Test-Path $serverExe) -or -not (Test-Path $modelPath)) {
-  throw "The local model was not found under '$commonCrownRoot'. Run The Common Crown's scripts\setup-local-ai.ps1 first."
+if (-not $serverExe -or -not $modelPath) {
+  throw @"
+The local model is not installed yet.
+
+Run this once to fetch it (about 4.5 GB, and it can be resumed):
+
+    .\scripts\setup-local-ai.ps1
+
+If you would rather not download a model at all, the game can use Google
+Gemini's free tier instead: start it with .\start.cmd, then choose
+Settings -> Google Gemini and paste an API key.
+"@
 }
 
 # 1. Clear anything this project leaked previously. Other projects are untouched.
@@ -107,7 +116,7 @@ $aiArgs = @(
   "--jinja",
   "--no-webui"
 )
-$aiProcess = Start-Process -FilePath $serverExe -ArgumentList $aiArgs -WorkingDirectory $commonCrownRoot -WindowStyle Minimized -PassThru
+$aiProcess = Start-Process -FilePath $serverExe -ArgumentList $aiArgs -WorkingDirectory (Split-Path -Parent $serverExe) -WindowStyle Minimized -PassThru
 
 $deadline = (Get-Date).AddMinutes(5)
 while (-not (Test-AiReady)) {

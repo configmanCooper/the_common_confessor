@@ -14,7 +14,8 @@
     "balance:social-12w": "node scripts/twelve-week-social-balance.mjs",
     "balance:reaction-year": "node scripts/one-year-reaction-balance.mjs",
     "test:dialogue-matrix": "node scripts/dialogue-style-matrix.mjs",
-    "test:framework-soak": "node scripts/thirty-day-framework-soak.mjs"
+    "test:framework-soak": "node scripts/thirty-day-framework-soak.mjs",
+    "setup:ai": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-ai.ps1"
   },
   "dependencies": {
     "@github/copilot-sdk": "^1.0.8",

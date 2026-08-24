@@ -4,7 +4,9 @@ import { ParishAiClient, GEMINI_MODEL } from "../js/ai.js";
 import { createGame } from "../js/simulation.js";
 import { serializeState } from "../js/state.js";
 
-const SECRET = "AIza-this-is-not-a-real-key-000";
+/* Deliberately not shaped like a Google key, so no secret scanner mistakes
+   this fixture for the real thing. */
+const SECRET = "not-a-real-key-for-tests-only";
 
 function stubGemini(reply, { ok = true, status = 200, body = "" } = {}) {
   const calls = [];

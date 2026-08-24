@@ -8,10 +8,41 @@
 $script:ConfessorRoot = Split-Path -Parent $PSScriptRoot
 $script:CommonCrownRoot = Join-Path (Split-Path -Parent $script:ConfessorRoot) "The Common Crown"
 $script:AiPort = 8095
+$script:ModelFileName = "google_gemma-3n-E4B-it-Q4_K_M.gguf"
 
 function Get-CommonCrownRoot { return $script:CommonCrownRoot }
 function Get-ConfessorRoot { return $script:ConfessorRoot }
 function Get-AiPort { return $script:AiPort }
+function Get-ModelFileName { return $script:ModelFileName }
+
+# Where the model and its runtime live.
+#
+# This game installs both into its own folder, which is what anyone cloning the
+# repository gets from scripts\setup-local-ai.ps1. It was originally written to
+# borrow them from a sibling project on this machine, so that location is still
+# accepted: an existing install should not have to be downloaded twice, and the
+# download is four and a half gigabytes.
+function Get-AiRoots {
+  $roots = @($script:ConfessorRoot)
+  if (Test-Path $script:CommonCrownRoot) { $roots += $script:CommonCrownRoot }
+  return $roots
+}
+
+function Get-ModelPath {
+  foreach ($root in Get-AiRoots) {
+    $candidate = Join-Path $root "models\$script:ModelFileName"
+    if (Test-Path $candidate) { return $candidate }
+  }
+  return $null
+}
+
+function Get-ServerExePath {
+  foreach ($root in Get-AiRoots) {
+    $candidate = Join-Path $root "tools\llama.cpp\bin\llama-server.exe"
+    if (Test-Path $candidate) { return $candidate }
+  }
+  return $null
+}
 
 function Get-FreeVramMb {
   try {
@@ -22,12 +53,18 @@ function Get-FreeVramMb {
 }
 
 # Model runners belonging to THIS project only (path-scoped).
+#
+# Matched against the exact executable this game would launch, rather than by
+# process name. The runtime may be the copy installed beside this game or one
+# borrowed from a sibling project, and in either case only a runner started
+# from that same file is ours to stop.
 function Get-OurModelProcesses {
-  $prefix = $script:CommonCrownRoot.TrimEnd('\') + '\'
+  $ourExe = Get-ServerExePath
+  if (-not $ourExe) { return @() }
   return Get-Process -Name llama-server -ErrorAction SilentlyContinue | Where-Object {
     $path = $null
     try { $path = $_.Path } catch { }
-    $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    $path -and $path.Equals($ourExe, [StringComparison]::OrdinalIgnoreCase)
   }
 }
 
