@@ -1615,6 +1615,11 @@ const ASKS_ABOUT_THEIRS = /\b(?:do you|did you|have you|has he|has she|do they|i
 /* Sending word is sending a message, not sending goods. "Send word that the
    flour must not be delayed" mentions flour and sends nothing. */
 const SENDS_A_MESSAGE = /\bsend(?:s|ing)? (?:word|for|to|someone|him|her|them|a message|a letter)\b/;
+/* A gift is something the priest does, here, now. Either he says he is doing it
+   or he holds it out. Talk about a thing being shared, or about what somebody
+   else did with it, is neither. */
+const PRIEST_IS_THE_GIVER = /\b(?:(?:i|we|the parish|the church) (?:will |shall |can |could |would |am going to |must |may )?(?:give|gives|send|sends|spare|spares|share|shares|provide|provides|offer|offers|lend|lends|grant|grants|supply|supplies|deliver|delivers|fetch|bring|brings|have|has)|let me|you (?:may|shall|can) have|you to have|from the church|out of (?:our|the church) stores)\b/;
+const HELD_OUT = /^(?:take|here|carry|keep)\b/;
 
 function givingClauses(text) {
   return String(text || "")
@@ -1637,7 +1642,8 @@ export function mentionsGiving(text) {
   for (const clause of givingClauses(speech)) {
     if (!mentionsChurchResource(clause)) continue;
     if (ASKS_ABOUT_THEIRS.test(clause)) continue;
-    if (SENDS_A_MESSAGE.test(clause) && !TRANSFER_VERBS.test(clause.replace(SENDS_A_MESSAGE, ""))) continue;
+    if (SENDS_A_MESSAGE.test(clause) && !PRIEST_IS_THE_GIVER.test(clause.replace(SENDS_A_MESSAGE, ""))) continue;
+    if (!PRIEST_IS_THE_GIVER.test(clause) && !HELD_OUT.test(clause)) continue;
     if (TRANSFER_VERBS.test(clause) || HANDING_OVER.test(clause)) return true;
   }
   return false;
