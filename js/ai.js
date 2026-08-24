@@ -1570,6 +1570,11 @@ export function peopleThePriestNamed(state, person, playerText) {
     ));
     if (!matches.length) {
       if (word === state.town?.name || !midSentence.has(word)) continue;
+      /* The priest naming himself is not a stranger. */
+      if (String(state.priest?.name || "").split(/\s+/).includes(word)) {
+        rows.push(`${word} is you — the priest of this parish.`);
+        continue;
+      }
       rows.push(`${word}: no person of that name lives in this parish, and none ever has. If the priest asks after them, say plainly that you know no such person.`);
       continue;
     }
@@ -1617,6 +1622,10 @@ export function unknownPersonNames(state, text) {
   }
   for (const actor of state.externalActors || []) remember(actor.name);
   remember(state.town?.name);
+  /* The priest himself. He is not one of the two hundred residents, so without
+     this a villager saying "Father Benedict" was told no such person exists -
+     and the strip turned him into "Father someone". */
+  remember(state.priest?.name);
   for (const word of NON_NAME_CAPITALS) known.add(word.toLowerCase());
 
   /* Any word the writer also used in lowercase is an ordinary word that

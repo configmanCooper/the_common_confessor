@@ -574,3 +574,17 @@ test("an invention outside a naming construction is simply removed", async () =>
   assert.equal(unknownPersonNames(state, cleaned).length, 0);
   assert.match(cleaned, /The child is seven years old/);
 });
+
+test("the priest is not a stranger in his own parish", async () => {
+  const { peopleThePriestNamed, stripInventedNames, unknownPersonNames } = await import("../js/ai.js");
+  const state = createGame("priest-is-known");
+  const person = state.residents.find((entry) => entry.alive !== false && entry.age >= 25);
+  /* He is not one of the two hundred residents, so a villager saying "Father
+     Benedict" was told no such person exists, and the strip turned him into
+     "Father someone" in front of the man himself. */
+  const said = `I spoke with ${state.priest.name} about it.`;
+  assert.deepEqual(unknownPersonNames(state, said), []);
+  assert.equal(stripInventedNames(state, said), said);
+  const lookup = peopleThePriestNamed(state, person, `Have you spoken to ${state.priest.name}?`);
+  assert.ok(lookup.length === 0 || /is you/.test(lookup[0]), `the priest was reported as a stranger: ${lookup[0]}`);
+});
