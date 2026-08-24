@@ -223,9 +223,34 @@ function writeTranscript(state) {
         lines.push(`  [the priest sends for ${exchange.requestedVisit}: ${exchange.reason}]`, "");
         continue;
       }
-      lines.push(`PRIEST: ${exchange.priest}`);
+      /* Summonses and petitions are moves, not speech. They were falling
+         through to the spoken-turn rendering below, which printed
+         "PRIEST: undefined" followed by "Visitor: undefined" - the one thing a
+         game about a remembered village must never show a player. */
+      if (exchange.summonedOfficer !== undefined) {
+        lines.push(
+          exchange.summonedOfficer
+            ? `  [the priest sends ${exchange.summonedOfficer} to ${exchange.purpose}: ${exchange.reason}]`
+            : `  [the priest sought an officer to ${exchange.purpose}, but none could be sent]`,
+          ""
+        );
+        continue;
+      }
+      if (exchange.petitioned) {
+        lines.push(
+          `  [the priest sends word to the ${exchange.petitioned}: ${String(exchange.matter || "").slice(0, 160)}]`,
+          ""
+        );
+        continue;
+      }
+      /* Anything unrecognised is described rather than printed as undefined. */
+      if (exchange.priest === undefined && exchange.visitor === undefined) {
+        lines.push(`  [an action was taken that this transcript cannot render: ${Object.keys(exchange).join(", ")}]`, "");
+        continue;
+      }
+      lines.push(`PRIEST: ${exchange.priest ?? "(said nothing)"}`);
       if (exchange.priestReason) lines.push(`        [why: ${exchange.priestReason}]`);
-      lines.push(`${entry.visitor}: ${exchange.visitor}`);
+      lines.push(`${entry.visitor}: ${exchange.visitor ?? "(said nothing)"}`);
       if (exchange.churchGift) {
         lines.push(`        >>> gave ${exchange.churchGift.amount} ${exchange.churchGift.unit} of ${exchange.churchGift.label.toLowerCase()} from the church stores`);
       }

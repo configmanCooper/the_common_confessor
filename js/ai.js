@@ -1362,7 +1362,12 @@ function knownPeopleForPrompt(state, person, visit, limit = 14) {
   const push = (resident) => {
     if (!resident || seen.has(resident.id) || !resident.active || !resident.alive) return;
     seen.add(resident.id);
-    rows.push(`${naturalReference(state, resident)} (${resident.occupation})`);
+    /* Age and sex travel with the name. Without them the model guessed, and a
+       newborn girl was described in one conversation as the man a woman loved
+       and in the next as a seven-year-old orphan. */
+    const years = Number.isFinite(resident.age) ? `${resident.age}` : "?";
+    const sex = resident.sex === "female" ? "f" : "m";
+    rows.push(`${naturalReference(state, resident)} (${resident.occupation}, ${sex}, aged ${years})`);
   };
   push(state.residents.find((resident) => resident.id === visit.issue.relatedPersonId));
   const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
@@ -1578,6 +1583,89 @@ export function misappliedTitles(state, text) {
     match = pattern.exec(speech);
   }
   return [...found].map(([phrase, occupation]) => `${phrase} (who is a ${occupation})`);
+}
+
+/* Facts about a person that dialogue is not allowed to redefine.
+
+   A villager's age and sex are settled before the game begins. In a watched run
+   a newborn girl, Baldanne Farmill, was spoken of on one day as the grown man a
+   woman was in love with, and on the next as a seven-year-old orphan. The
+   parish record never changed; the dialogue simply talked over it. The engine
+   owns who these people are, so a line that contradicts the record is sent
+   back rather than allowed to stand. */
+const LIFE_STAGE_WORDS = {
+  man: (person) => person.sex === "male" && person.age >= 16,
+  woman: (person) => person.sex === "female" && person.age >= 16,
+  lad: (person) => person.sex === "male" && person.age >= 8 && person.age < 25,
+  lass: (person) => person.sex === "female" && person.age >= 8 && person.age < 25,
+  boy: (person) => person.sex === "male" && person.age < 16,
+  girl: (person) => person.sex === "female" && person.age < 16,
+  child: (person) => person.age < 14,
+  infant: (person) => person.age <= 2,
+  babe: (person) => person.age <= 2,
+  widow: (person) => person.sex === "female" && (person.maritalStatus === "widowed" || Boolean(person.widowedFromId)),
+  widower: (person) => person.sex === "male" && (person.maritalStatus === "widowed" || Boolean(person.widowedFromId))
+};
+
+export function contradictedIdentities(state, text) {
+  const speech = String(text || "");
+  if (!speech.trim()) return [];
+  const living = (state.residents || []).filter((person) => person.alive !== false);
+  const bearersOf = (name) => living.filter((person) => (
+    person.firstName === name || person.surname === name || person.name === name
+  ));
+  const problems = new Map();
+
+  /* An age stated outright: "Baldanne is seven years old", "seven-year-old
+     Baldanne". A year or two either way is ordinary vagueness, not a
+     contradiction. */
+  const WORD_NUMBERS = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+    ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+    sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20
+  };
+  const toNumber = (raw) => (/^\d+$/.test(raw) ? Number(raw) : WORD_NUMBERS[String(raw).toLowerCase()]);
+  const agePatterns = [
+    /\b([A-Z][a-z]{2,})\s+is\s+(\w+)\s+years?\s+old\b/g,
+    /\b(\w+)[-\s]year[-\s]old\s+([A-Z][a-z]{2,})\b/g
+  ];
+  for (const [index, pattern] of agePatterns.entries()) {
+    let match = pattern.exec(speech);
+    while (match !== null) {
+      const name = index === 0 ? match[1] : match[2];
+      const claimed = toNumber(index === 0 ? match[2] : match[1]);
+      const bearers = bearersOf(name);
+      if (Number.isFinite(claimed) && bearers.length
+        && !bearers.some((person) => Math.abs(person.age - claimed) <= 2)) {
+        problems.set(
+          `${name} is not ${claimed}`,
+          `${name} is ${bearers.map((person) => person.age).join(" or ")}`
+        );
+      }
+      match = pattern.exec(speech);
+    }
+  }
+
+  /* A life stage that the record contradicts: calling an infant a man, a woman
+     a boy, or somebody a widow who has never been married. */
+  const stages = Object.keys(LIFE_STAGE_WORDS).join("|");
+  const stagePattern = new RegExp(`\\b(?:the|that|young|old)\\s+(${stages})\\s+([A-Z][a-z]{2,})\\b`, "gi");
+  let match = stagePattern.exec(speech);
+  while (match !== null) {
+    const stage = match[1].toLowerCase();
+    const name = match[2];
+    const bearers = bearersOf(name);
+    if (bearers.length && !bearers.some((person) => LIFE_STAGE_WORDS[stage](person))) {
+      const person = bearers[0];
+      problems.set(
+        `${name} is not a ${stage}`,
+        `${name} is ${person.sex === "female" ? "a female" : "a male"} aged ${person.age}`
+      );
+    }
+    match = stagePattern.exec(speech);
+  }
+
+  return [...problems].map(([claim, truth]) => `${claim} (${truth})`);
 }
 
 function openThreadsForPrompt(visit, limit = 3) {
@@ -2495,6 +2583,7 @@ export class ParishAiClient extends EventTarget {
       "- This also means ordinary villagers. Every soul in this parish is already named, and the names above are the only ones you have. Never make up a personal name for a neighbour, a fellow worker, an apprentice, a sick man, or a child. Speak of them by role or relation instead: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'my sister's boy'. An invented name becomes a person who does not exist, and the priest will go looking for them.",
       "- Never invent money. Do not name a sum you owe, a sum owed to you, a loan, a creditor, or a price, unless it was given to you above. If your household owes nothing, do not hint that it does. The priest acts on what you tell him, and he will set about relieving a debt that was never real.",
       "- Never give anyone an office or trade they do not hold. The people listed above are shown with their actual work; use it or use their plain name. Do not call a man Bailiff, Reeve, Watchman or Master of anything unless that is truly his office, because the priest can send for these people and will act on the authority you name.",
+      "- The people above are listed with their sex and their age in years. Never contradict either. Do not call a woman he, do not speak of a child as a grown man or a suitor, do not give anyone an age, and do not describe an infant as able to work, court, marry or speak for themselves.",
       "- The same holds for families and households. Surnames in this village are the ones listed above and no others: never speak of \"the Blackwood family\" or any house you have not been told exists. If you mean a household, name someone in it, or say \"the family up the lane\" without giving them a surname.",
       "- The priest does not leave his church. He cannot call on you at home, walk anywhere with you, or go to anyone himself. He can send for people to come to him, or send the watch. If he says he will come to you, you may gently say that you will come to him instead, or ask him to send someone.",
       "- Leave the priest something to take hold of: what you want, what you refuse, what would have to change, or a question he must answer.",
@@ -2647,11 +2736,13 @@ export class ParishAiClient extends EventTarget {
     const invented = unknownPersonNames(state, reply);
     const falseDebts = unsupportedDebtClaims(state, person, visit, reply);
     const wrongTitles = misappliedTitles(state, reply);
-    if (invented.length || falseDebts.length || wrongTitles.length) {
+    const rewritten = contradictedIdentities(state, reply);
+    if (invented.length || falseDebts.length || wrongTitles.length || rewritten.length) {
       const complaint = [
         invented.length ? `named nobody who exists: ${invented.join(", ")}` : "",
         falseDebts.length ? `claimed a debt not in the ledger: ${falseDebts.join(", ")}` : "",
-        wrongTitles.length ? `gave an office nobody holds: ${wrongTitles.join(", ")}` : ""
+        wrongTitles.length ? `gave an office nobody holds: ${wrongTitles.join(", ")}` : "",
+        rewritten.length ? `contradicted the parish record: ${rewritten.join(", ")}` : ""
       ].filter(Boolean).join("; ");
       transformations.push({
         type: "ungrounded_detail_regeneration",

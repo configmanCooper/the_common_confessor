@@ -30,11 +30,22 @@ import {
 test("new villages contain directed relationships and household economy state", () => {
   const state = createGame("population-foundation-seed");
   assert.ok(state.relationships.length > 400);
-  const relationship = state.relationships[0];
+  const isLiving = (id) => state.residents.find((person) => person.id === id)?.alive !== false;
+  /* Ties between the living run both ways. A tie to one of the parish's graves
+     does not: a villager may grieve or resent somebody who is buried, and the
+     buried hold no opinions in return. */
+  const relationship = state.relationships.find((entry) => (
+    isLiving(entry.actorId) && isLiving(entry.targetId)
+  ));
+  assert.ok(relationship, "no relationship between two living villagers");
   assert.notEqual(relationship.actorId, relationship.targetId);
   assert.ok(state.relationships.some((entry) => (
     entry.actorId === relationship.targetId && entry.targetId === relationship.actorId
   )));
+  assert.ok(
+    state.relationships.every((entry) => isLiving(entry.actorId)),
+    "somebody in the churchyard is holding an opinion"
+  );
   assert.ok(state.households.every((household) => (
     Number.isFinite(household.food)
     && Number.isFinite(household.wealth)

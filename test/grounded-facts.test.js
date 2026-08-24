@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createGame, beginVisit, finishVisit } from "../js/simulation.js";
 import { advancePopulationDay } from "../js/population.js";
-import { misappliedTitles, unsupportedDebtClaims } from "../js/ai.js";
+import { contradictedIdentities, misappliedTitles, unsupportedDebtClaims } from "../js/ai.js";
 
 /* Things the priest acts upon must be true.
 
@@ -202,4 +202,181 @@ test("a name belonging to nobody is left to the phantom-name check", () => {
     [],
     "an unknown name should not be reported as a wrong office"
   );
+});
+
+/* ---- identity is owned by the parish record, not by dialogue ---- */
+
+/* Baldanne Farmill, a newborn girl, was spoken of on one day as the grown man a
+   woman was in love with, and on the next as a seven-year-old orphan. The
+   record never changed; the dialogue talked over it. */
+test("dialogue may not give a villager an age the record contradicts", () => {
+  const state = createGame("identity-age");
+  const infant = state.residents.find((person) => person.alive !== false && person.age <= 1);
+  assert.ok(infant, "no infant in the parish to test with");
+  assert.ok(
+    contradictedIdentities(state, `${infant.firstName} is seven years old.`).length > 0,
+    "an invented age went unnoticed"
+  );
+  const adult = state.residents.find((person) => person.alive !== false && person.age >= 25);
+  assert.deepEqual(
+    contradictedIdentities(state, `${adult.firstName} is ${adult.age} years old.`),
+    [],
+    "a correct age was flagged"
+  );
+});
+
+test("dialogue may not turn an infant into a grown man", () => {
+  const state = createGame("identity-stage");
+  const infant = state.residents.find((person) => person.alive !== false && person.age <= 1);
+  assert.ok(
+    contradictedIdentities(state, `I spoke with the man ${infant.firstName} about it.`).length > 0,
+    "a newborn was allowed to be a grown man"
+  );
+  const grown = state.residents.find((person) => (
+    person.alive !== false && person.sex === "male" && person.age >= 25
+  ));
+  assert.deepEqual(
+    contradictedIdentities(state, `I spoke with the man ${grown.firstName} about it.`),
+    [],
+    "a grown man was denied being one"
+  );
+});
+
+/* ---- nobody is cast in a part they could not play ---- */
+
+test("scenarios never cast a villager in a part their age forbids", () => {
+  const tests = {
+    courtable: (person) => person.age >= 16 && person.age <= 60 && !person.spouseId,
+    child: (person) => person.age >= 4 && person.age < 14,
+    childbearing: (person) => person.sex === "female" && person.age >= 15 && person.age <= 44,
+    working: (person) => person.age >= 14 && !["infant", "retired"].includes(person.occupation),
+    adult: (person) => person.age >= 18
+  };
+  /* Only families whose *relation* carries a requirement: relatedPersonId is
+     the one the engine records, so that is the casting we can check here. */
+  const required = {
+    forbidden_courtship: "courtable",
+    coerced_marriage: "adult",
+    marriage_coercion: "adult",
+    withheld_wages: "working",
+    false_charity: "adult",
+    sanctuary_fugitive: "adult"
+  };
+  let checked = 0;
+  for (let seed = 0; seed < 25; seed += 1) {
+    const state = createGame(`casting-${seed}`);
+    for (let index = 0; index < 8; index += 1) {
+      let visit = null;
+      try {
+        visit = beginVisit(state);
+      } catch {
+        break;
+      }
+      if (!visit) break;
+      const family = String(visit.issue.scenarioId || "").replace(/_\d+$/, "");
+      const need = required[family];
+      const relation = state.residents.find((person) => person.id === visit.issue.relatedPersonId);
+      if (need && relation) {
+        checked += 1;
+        assert.ok(
+          tests[need](relation),
+          `${family} cast ${relation.name} (${relation.sex}, aged ${relation.age}) in a part needing "${need}"`
+        );
+      }
+      try {
+        finishVisit(state);
+      } catch {
+        break;
+      }
+    }
+  }
+  assert.ok(checked > 0, "no role-constrained scenario was generated, so nothing was proved");
+});
+
+test("the buried are never cast as living participants", () => {
+  for (let seed = 0; seed < 12; seed += 1) {
+    const state = createGame(`dead-casting-${seed}`);
+    const graves = new Set(state.residents.filter((person) => person.alive === false).map((person) => person.id));
+    for (let index = 0; index < 8; index += 1) {
+      let visit = null;
+      try {
+        visit = beginVisit(state);
+      } catch {
+        break;
+      }
+      if (!visit) break;
+      assert.ok(
+        !graves.has(visit.issue.relatedPersonId),
+        `${seed}: a buried villager was cast as the living party to a quarrel`
+      );
+      try {
+        finishVisit(state);
+      } catch {
+        break;
+      }
+    }
+  }
+});
+
+/* ---- the template must not show through ---- */
+
+/* Villagers arrived reciting the priest's own private justification for
+   summoning them: "Father, your message asked me to come because a trusted
+   messenger can invite a quiet return before a public investigation hardens
+   the quarrel." */
+test("a summoned villager does not recite the reason they were summoned", () => {
+  for (let seed = 0; seed < 12; seed += 1) {
+    const state = createGame(`summons-opening-${seed}`);
+    for (let index = 0; index < 8; index += 1) {
+      let visit = null;
+      try {
+        visit = beginVisit(state);
+      } catch {
+        break;
+      }
+      if (!visit) break;
+      assert.ok(
+        !/asked me to come because/.test(String(visit.issue.opening || "")),
+        `a villager recited the system's reason for their own summons: ${visit.issue.opening}`
+      );
+      try {
+        finishVisit(state);
+      } catch {
+        break;
+      }
+    }
+  }
+});
+
+test("scenario premises name the villagers they concern", () => {
+  const bare = [
+    /^Two households claim guardianship of an orphan/,
+    /^A household receives church food/,
+    /^A fugitive has claimed sanctuary/,
+    /^A birth went badly/
+  ];
+  for (let seed = 0; seed < 20; seed += 1) {
+    const state = createGame(`premise-${seed}`);
+    for (let index = 0; index < 8; index += 1) {
+      let visit = null;
+      try {
+        visit = beginVisit(state);
+      } catch {
+        break;
+      }
+      if (!visit) break;
+      const premise = String((visit.issue.scenarioFacts || [])[0]?.text || "");
+      for (const shell of bare) {
+        assert.ok(
+          !shell.test(premise),
+          `a bare template premise reached the parish: ${premise}`
+        );
+      }
+      try {
+        finishVisit(state);
+      } catch {
+        break;
+      }
+    }
+  }
 });

@@ -419,6 +419,12 @@ export function upgradePopulationState(state) {
   }
   const existing = new Set(state.relationships.map((relationship) => relationship.id));
   for (const person of state.residents || []) {
+    /* The living remember the dead; the dead hold no opinions. A grave keeps
+       its place in a mourner's list of acquaintances, which is what lets grief
+       find a real body, but it is never the actor in a relationship. This also
+       covers villagers who die during play and whose acquaintances outlive
+       them. */
+    if (person.alive === false) continue;
     for (const targetId of person.relationshipIds || []) {
       const id = relationshipId(person.id, targetId);
       if (!existing.has(id)) {

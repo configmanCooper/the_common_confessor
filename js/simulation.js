@@ -437,6 +437,10 @@ function addTheDeparted(residents, rng, surnames, { femaleNames, maleNames }) {
 
     const bind = (mourner) => {
       if (!mourner) return;
+      /* Kinship runs both ways - a buried child still has parents, and the
+         parents still had a child - so both sides keep the connection. What the
+         dead do not get is a relationship record: those carry affection,
+         resentment and fear, and are created only for living actors. */
       if (!mourner.relationshipIds.includes(departed.id)) mourner.relationshipIds.push(departed.id);
       if (!departed.relationshipIds.includes(mourner.id)) departed.relationshipIds.push(mourner.id);
     };
@@ -594,6 +598,83 @@ export function materializeResident(state, personId, revealProfile = false) {
     state.statistics.peopleRevealed += 1;
   }
   return person;
+}
+
+/* Who a scenario may cast in each part.
+
+   Scenarios named real villagers but never checked whether those villagers
+   could plausibly play the part. In a watched run Baldanne Farmill - a
+   newborn girl - was cast on Monday as an adult suitor a woman was in love
+   with ("the man I love"), and on Tuesday as an orphan whose guardianship was
+   disputed. The parish knew her age and sex all along; nothing consulted them.
+
+   The requirement is checked against the person actually cast, and where they
+   do not fit, somebody who does is found instead. If nobody in the village can
+   play the part, the scenario is not one that could happen here and another is
+   chosen. */
+const CAST_ROLE_TESTS = {
+  adult: (person) => person.age >= ADULT_AGE,
+  /* Old enough to court or be married off, and not already married. */
+  courtable: (person) => person.age >= 16 && person.age <= 60 && !person.spouseId,
+  child: (person) => person.age >= 4 && person.age < 14,
+  childbearing: (person) => person.sex === "female" && person.age >= 15 && person.age <= 44,
+  working: (person) => person.age >= 14 && !["infant", "retired"].includes(person.occupation)
+};
+
+const CAST_REQUIREMENTS = {
+  forbidden_courtship: { relation: "courtable", victim: "courtable" },
+  coerced_marriage: { relation: "adult", victim: "courtable" },
+  marriage_coercion: { relation: "adult", victim: "courtable" },
+  orphan_guardianship: { victim: "child" },
+  dangerous_apprentice: { victim: "child" },
+  unsafe_apprentice: { victim: "child" },
+  exploited_children: { victim: "child" },
+  secret_pregnancy: { victim: "childbearing" },
+  withheld_wages: { relation: "working" },
+  false_weights: { relation: "working" },
+  adulterated_ale: { relation: "working" },
+  price_gouging: { relation: "working" },
+  market_monopoly: { relation: "working" },
+  blocked_watercourse: { relation: "working" },
+  grave_robbery: { relation: "adult" },
+  blackmail_letter: { relation: "adult" },
+  forged_inheritance: { relation: "adult", victim: "adult" },
+  inheritance_document: { relation: "adult", victim: "adult" },
+  missing_person: { relation: "adult" },
+  trade_displacement: { victim: "working" },
+  corrupt_measure: { relation: "working" },
+  poaching_hunger: { victim: "adult" },
+  violent_feud: { relation: "adult" },
+  /* Newly anchored premises: these now name a real villager, so the villager
+     must be able to hold the part. A birth that went badly needs a woman who
+     could have borne a child; a disputed guardianship needs an actual child. */
+  midwife_error: { victim: "childbearing" },
+  false_charity: { relation: "adult" },
+  feast_store_theft: { relation: "adult", victim: "adult" },
+  sanctuary_fugitive: { relation: "adult" },
+  healer_secret: { victim: "adult" }
+};
+
+/* Somebody who can play the part, preferring people the visitor already knows
+   so that the matter stays close to home. */
+function castForRole(state, person, test, rng, excludeIds) {
+  const fits = (candidate) => (
+    candidate
+    && candidate.alive !== false
+    && candidate.active !== false
+    && candidate.id !== person.id
+    && !excludeIds.includes(candidate.id)
+    && CAST_ROLE_TESTS[test](candidate)
+  );
+  const known = (person.relationshipIds || [])
+    .map((id) => state.residents.find((resident) => resident.id === id))
+    .filter(fits)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (known.length) return rng.pick(known);
+  const anyone = state.residents
+    .filter(fits)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return anyone.length ? rng.pick(anyone) : null;
 }
 
 function activeResidents(state) {
@@ -1033,9 +1114,13 @@ function issueForPerson(state, person) {
     return issueFromThread(existingThread, person);
   }
   const issue = { ...rng.pick(ISSUE_TEMPLATES) };
+  /* Only the living can quarrel, withhold wages or be accused. A villager's
+     acquaintances include the graves they carry, which is what lets grief find
+     a real body to mourn, but a buried neighbour must never be cast as a living
+     participant in an ordinary matter. */
   const knownRelations = person.relationshipIds
     .map((id) => state.residents.find((resident) => resident.id === id))
-    .filter(Boolean);
+    .filter((resident) => resident && resident.alive !== false && resident.active !== false);
   let relation = knownRelations.length ? rng.pick(knownRelations) : null;
   issue.relatedPersonId = relation?.id ?? null;
   issue.relatedName = relation?.name ?? "someone in the village";
@@ -1050,7 +1135,12 @@ function issueForPerson(state, person) {
     ? relation.occupation
     : rng.pick(["grain merchant", "wool trader", "carpenter", "brewer", "miller"]);
   let victim = knownRelations.find((candidate) => candidate.id !== relation?.id)
-    || state.residents.find((candidate) => candidate.id !== person.id && candidate.id !== relation?.id);
+    || state.residents.find((candidate) => (
+      candidate.id !== person.id
+      && candidate.id !== relation?.id
+      && candidate.alive !== false
+      && candidate.active !== false
+    ));
   const victimName = victim?.name || "an older villager";
   state.scenarioHistory ||= [];
   let allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
@@ -1112,6 +1202,50 @@ function issueForPerson(state, person) {
             candidate.id !== person.id && candidate.id !== relation.id && candidate.active && candidate.alive
           ));
         }
+        allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
+        archetype = allArchetypes.find((candidate) => candidate.id === archetype.id) || archetype;
+      }
+    }
+    /* Nobody may be cast in a part they could not possibly play. Checked after
+       the fixups above, since those can substitute a different archetype. */
+    const requirements = CAST_REQUIREMENTS[archetype.familyId] || CAST_REQUIREMENTS[archetype.id];
+    if (requirements) {
+      let recast = false;
+      let impossible = false;
+      for (const role of ["relation", "victim"]) {
+        const test = requirements[role];
+        if (!test) continue;
+        const current = role === "relation" ? relation : victim;
+        if (current && CAST_ROLE_TESTS[test](current)) continue;
+        const replacement = castForRole(state, person, test, rng, [
+          role === "relation" ? victim?.id : relation?.id
+        ].filter(Boolean));
+        if (!replacement) {
+          impossible = true;
+          break;
+        }
+        if (role === "relation") {
+          relation = replacement;
+          issue.relatedPersonId = relation.id;
+          issue.relatedName = relation.name;
+        } else {
+          victim = replacement;
+        }
+        recast = true;
+      }
+      if (impossible) {
+        let alternatives = [];
+        for (const pool of [preferredPool, broadPool, availableArchetypes, allArchetypes]) {
+          const usable = pool.filter((candidate) => (
+            candidate.id !== archetype.id && candidate.familyId !== archetype.familyId
+          ));
+          if (usable.length) {
+            alternatives = usable;
+            break;
+          }
+        }
+        if (alternatives.length) archetype = rng.pick(alternatives);
+      } else if (recast) {
         allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
         archetype = allArchetypes.find((candidate) => candidate.id === archetype.id) || archetype;
       }
@@ -1666,9 +1800,21 @@ export function beginVisit(state, { record = true } = {}) {
     const issue = issueForPerson(state, person);
     issue.requestedByPriest = true;
     issue.requestReason = requested.reason;
-    issue.opening = requested.reason
-      ? `Father, your message asked me to come because ${requested.reason}. ${issue.opening}`
-      : `Father, your message asked me to come. I was not sure why you wished to see me, though there is a matter already weighing on me. ${issue.opening}`;
+    /* The reason recorded against a summons is the priest's own reasoning for
+       sending - "a trusted messenger can invite a quiet return before a public
+       investigation hardens the quarrel" - written in the third person for the
+       record. It was being pasted into the visitor's mouth, so villagers
+       arrived reciting the system's justification for their own summons. They
+       know only that they were sent for; the reason stays in state, where the
+       model can use it as context, and never in their opening words. */
+    /* Seeded from the summons itself so a replay produces the same greeting. */
+    const greetingRng = new SeededRng(`${state.seed}:summon-greeting:${person.id}:${state.calendar.absoluteDay}`);
+    issue.opening = `${greetingRng.pick([
+      "Father, you sent word for me to come.",
+      "Father, I came as your message asked.",
+      "You sent for me, Father, and here I am.",
+      "Father, your messenger found me this morning."
+    ])} ${issue.opening}`;
     const originEvent = appendEvent(state, {
       type: "requested_visit_started",
       parentId: state.events.at(-1)?.id || null,
