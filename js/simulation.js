@@ -84,6 +84,14 @@ import {
   PURCHASABLE_GOODS,
   TRADE_GOODS
 } from "./market.js";
+import {
+  planWeeklySocialLife,
+  recentSocialLog,
+  scheduleSocialAnswer,
+  resolveDueIntentions,
+  scheduleIntention,
+  upgradeSocialState
+} from "./social.js";
 import { PROMPT_TRACE_LIMIT } from "./dialogue_planner.js";
 import { completeGeneratedText, completeStoredText, speakableText } from "./text.js";
 
@@ -3464,6 +3472,20 @@ function resolvePopulationDay(state) {
       facts: { populationEvent: true }
     });
   }
+  /* Everything the village decided to do earlier and meant to do today. Each
+     one may provoke an answer a day or two further out, which is how a word in
+     the church reaches people the priest has never met. */
+  for (const done of resolveDueIntentions(state, applyAction)) {
+    addChronicle(
+      state,
+      `${done.actorName} ${done.actionType.replace(/_/g, " ")}${done.targetName ? ` — ${done.targetName}` : ""}`,
+      done.causeSummary ? `Following ${done.causeSummary}.` : "",
+      ["assault", "steal", "threaten", "betray", "kill_person", "vandalize", "evict"].includes(done.actionType)
+        ? "danger"
+        : "change",
+      { type: "deliberate_action", parentId: tick.id, actorId: done.actorId, targetId: done.targetId, facts: { actionType: done.actionType, depth: done.depth } }
+    );
+  }
   advanceIssueThreads(state, tick.id);
   executeDueCommitments(state, tick.id);
   advancePriestStanding(state, tick.id);
@@ -5982,6 +6004,19 @@ export function finishVisit(state, plan, { record = true } = {}) {
     if (result) {
       stepEventIds[stepIndex] = result.eventId;
       parentEventId = result.eventId;
+      /* What one person does, another answers - a few days later, once word
+         has reached them and they have had time to feel about it. This is what
+         carries a conversation in the church out into households the priest
+         never sees. */
+      if (result.target && result.target.id !== "priest") {
+        scheduleSocialAnswer(state, {
+          actorId: result.target.id,
+          subjectId: step.actorId,
+          actionType: step.actionType,
+          causeEventId: result.eventId,
+          causeSummary: `what ${result.actor?.name || "someone"} did after speaking with the priest`
+        });
+      }
       if (result.target
         && result.target.id !== "priest"
         && !["visit", "keep_silence", "pray_with"].includes(step.actionType)) {
@@ -6265,6 +6300,9 @@ export function applySermon(state, theme, text, outcome, { record = true } = {})
      means the priest sees prices that already account for everything the week
      did to the people who make things. */
   marketBoard(state, { refresh: true });
+  /* And the week's ordinary social life is set going: who will call on whom,
+     who will court, who will finally make peace, and who will not. */
+  planWeeklySocialLife(state);
   const congregation = resolveCongregationReactions(state, theme, text, attendees, outcome);
   /* Who it actually moved, and why. This is the part of a sermon the priest
      most needs to see, so it is kept whole rather than reduced to a number. */

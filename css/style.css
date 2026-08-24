@@ -141,3 +141,17 @@
 #outreach-dialog textarea,
 #outreach-dialog select { width: 100%; box-sizing: border-box; }
 #outreach-results { min-height: 1.2em; font-style: italic; }
+
+/* --------------------------------------------------------- village life ---
+   The record of what the parish did to itself. Depth is shown by indent, so a
+   consequence sits visibly under the thing that caused it. */
+.social-log-list { max-height: 60vh; overflow-y: auto; }
+.social-log-entry {
+  padding: 0.35rem 0 0.35rem 0.6rem;
+  border-left: 3px solid rgba(120, 95, 55, 0.45);
+  margin-bottom: 0.2rem;
+}
+.social-log-entry p { margin: 0; }
+.social-log-entry.depth-2 { margin-left: 1.2rem; border-left-color: rgba(90, 110, 70, 0.6); }
+.social-log-entry.depth-3 { margin-left: 2.4rem; border-left-color: rgba(150, 120, 60, 0.7); }
+#social-log-search { width: 100%; box-sizing: border-box; margin-bottom: 0.4rem; }

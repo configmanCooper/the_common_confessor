@@ -1,5 +1,6 @@
 import { fallbackLetterReading, ParishAiClient, quantityPhrase } from "./ai.js";
 import { churchResourceRows } from "./church.js";
+import { recentSocialLog } from "./social.js";
 import { EXTERNAL_ROLES, SERMON_THEMES, SESSION_LOCATIONS, WEEK_DAYS } from "./data.js";
 import { ChurchRenderer } from "./renderer.js";
 import {
@@ -1105,6 +1106,47 @@ function showOutreachResult(text) {
   elements["outreach-results"].textContent = text;
 }
 
+/* Everything the villagers have done to one another, and what set each of them
+   off. The player may never open this, but the village behaves as though it is
+   being read, and a priest who wants to know what his words caused can. */
+function renderSocialLog(filter = "") {
+  const query = filter.trim().toLowerCase();
+  const entries = recentSocialLog(state, { limit: 300 }).filter((entry) => (
+    !query
+    || entry.actorName.toLowerCase().includes(query)
+    || String(entry.targetName || "").toLowerCase().includes(query)
+    || entry.actionType.replace(/_/g, " ").includes(query)
+  ));
+  if (!entries.length) {
+    elements["social-log-list"].replaceChildren(Object.assign(document.createElement("p"), {
+      className: "small",
+      textContent: query
+        ? "Nothing in the parish answers to that."
+        : "The village has not stirred yet. Give it a few days."
+    }));
+    return;
+  }
+  elements["social-log-list"].replaceChildren(...entries.map((entry) => {
+    const row = document.createElement("article");
+    row.className = `social-log-entry depth-${entry.depth}`;
+    const what = document.createElement("p");
+    what.innerHTML = `<b>${entry.actorName}</b> ${entry.actionType.replace(/_/g, " ")}${entry.targetName ? ` <b>${entry.targetName}</b>` : ""}`;
+    const when = document.createElement("p");
+    when.className = "small";
+    when.textContent = `${WEEK_DAYS[entry.day % 7]}, week ${entry.week}${entry.motive ? ` · ${entry.motive}` : ""}`;
+    row.append(what, when);
+    if (entry.causeSummary) {
+      const why = document.createElement("p");
+      why.className = "small";
+      why.textContent = entry.depth > 1
+        ? `Following ${entry.causeSummary}.`
+        : entry.causeSummary;
+      row.append(why);
+    }
+    return row;
+  }));
+}
+
 function renderRegister(filter = "") {
   const query = filter.trim().toLowerCase();
   const residents = state.residents.filter((person) => (
@@ -1389,6 +1431,16 @@ elements["forget-gemini-key"].addEventListener("click", async () => {
   setGeminiKeyStatus("Key forgotten.");
   configureAiProvider();
   await refreshAiStatus();
+});
+
+elements["open-social-log"].addEventListener("click", () => {
+  if (!state) return;
+  elements["social-log-search"].value = "";
+  renderSocialLog();
+  elements["social-log-dialog"].showModal();
+});
+elements["social-log-search"].addEventListener("input", (event) => {
+  renderSocialLog(event.target.value);
 });
 
 elements["open-outreach"].addEventListener("click", () => {

@@ -49,6 +49,7 @@
       <button id="import-game">Import</button>
       <button id="open-request-visits">Request Visits</button>
       <button id="open-outreach">Send Word</button>
+      <button id="open-social-log">Village Life</button>
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
       <button id="open-reports">Reports</button>
@@ -267,6 +268,19 @@
     </div>
 
     <p id="outreach-results" class="small"></p>
+  </dialog>
+
+  <dialog id="social-log-dialog" class="parchment modal wide">
+    <header>
+      <div><p class="eyebrow">The life of the parish</p><h2>What your people have been doing</h2></div>
+      <button data-close="social-log-dialog">Close</button>
+    </header>
+    <p class="small">
+      What villagers have done to and for one another, and what set each of them off. Anything marked as
+      following something else is a consequence of an earlier act — often of a conversation in this church.
+    </p>
+    <input id="social-log-search" placeholder="Search by name or by what was done...">
+    <div id="social-log-list" class="social-log-list"></div>
   </dialog>
 
   <dialog id="chronicle-dialog" class="parchment modal wide">
