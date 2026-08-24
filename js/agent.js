@@ -207,10 +207,30 @@ export function legalMoves(state) {
      reeve, and behind them a steward and a lord. It has no constable. */
   if (visit) {
     const officers = availableOfficers(state);
-    const subjects = [
-      state.residents.find((entry) => entry.id === visit.personId),
-      state.residents.find((entry) => entry.id === visit.issue.relatedPersonId)
-    ].filter((entry) => entry && officers.every((officer) => officer.id !== entry.id));
+    /* Everyone this matter actually concerns, not merely the two people the
+       visit was filed under. A villager describing a theft names the man who
+       holds the stolen thing, and the priest who then says "if he refuses I
+       shall send the watchman" must be able to do it - otherwise he is making
+       a threat the game will not let him keep. The issue thread already knows
+       who the matter is about, so that is the honest bound: the parish at
+       large is still out of reach. */
+    const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+    const subjectIds = [
+      visit.personId,
+      visit.issue.relatedPersonId,
+      ...(thread?.subjectIds || [])
+    ].filter(Boolean);
+    const subjects = [...new Set(subjectIds)]
+      .map((id) => state.residents.find((entry) => entry.id === id))
+      .filter((entry) => (
+        entry
+        && entry.active
+        && entry.alive
+        && officers.every((officer) => officer.id !== entry.id)
+      ))
+      /* Two officers and two errands each already multiply out; a wide thread
+         would otherwise bury every other move in summonses. */
+      .slice(0, 4);
     /* An officer already on his way is not a choice the priest still has. */
     const alreadySent = (officer, subject, purpose) => (state.commitments || []).some((commitment) => (
       commitment.type === "officer_duty"

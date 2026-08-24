@@ -223,3 +223,60 @@ test("an errand already under way is not offered to the priest again", () => {
   ));
   assert.ok(!after.some((move) => move.purpose === "protect"), "the errand under way should no longer be offered");
 });
+
+/* The zealot promised "if he refuses, I shall send the watchman" about a man
+   who was neither his visitor nor the person the visit was filed under, and the
+   game had no way to let him keep that promise: the watch could only ever be
+   sent to two people. */
+test("the watch can be sent to anyone the matter concerns, not only the visitor", () => {
+  let widened = 0;
+  for (let index = 0; index < 8; index += 1) {
+    const state = createGame(`summons-reach-${index}`);
+    beginVisit(state);
+    const visit = state.currentVisit;
+    const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+    if (!thread || thread.subjectIds.length <= 2) continue;
+
+    const reachable = new Set(
+      legalMoves(state).filter((move) => move.kind === "summon_officer").map((move) => move.subjectId)
+    );
+    const officerIds = new Set(availableOfficers(state).map((officer) => officer.id));
+    const expected = thread.subjectIds.filter((id) => {
+      const person = state.residents.find((entry) => entry.id === id);
+      return person?.active && person.alive && !officerIds.has(id);
+    });
+
+    for (const id of expected.slice(0, 4)) {
+      assert.ok(reachable.has(id), `a subject of the matter was out of the watch's reach in parish ${index}`);
+    }
+    if (reachable.size > 2) widened += 1;
+  }
+  assert.ok(widened > 0, "no parish exercised a matter with more than two people in it");
+});
+
+test("summonses never crowd out the rest of the priest's choices", () => {
+  for (let index = 0; index < 8; index += 1) {
+    const state = createGame(`summons-bound-${index}`);
+    beginVisit(state);
+    const moves = legalMoves(state);
+    const summonses = moves.filter((move) => move.kind === "summon_officer");
+    assert.ok(summonses.length <= 16, `${summonses.length} summonses offered at once`);
+    assert.ok(moves.some((move) => move.kind === "speak"), "speaking must always remain on the table");
+  }
+});
+
+test("the watch is never sent to a dead or departed villager", () => {
+  const state = createGame("summons-dead");
+  beginVisit(state);
+  const visit = state.currentVisit;
+  const thread = state.issueThreads.find((entry) => entry.id === visit.issue.threadId);
+  const other = (thread?.subjectIds || []).find((id) => id !== visit.personId);
+  if (!other) return;
+  const person = state.residents.find((entry) => entry.id === other);
+  person.alive = false;
+  person.active = false;
+  const reachable = legalMoves(state)
+    .filter((move) => move.kind === "summon_officer")
+    .map((move) => move.subjectId);
+  assert.ok(!reachable.includes(other), "the watch was offered a dead man to visit");
+});
