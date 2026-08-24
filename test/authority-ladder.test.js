@@ -5,12 +5,18 @@ import {
   availableOfficers,
   beginVisit,
   createGame,
+  fallbackConversation,
+  fallbackDeparturePlan,
+  finishVisit,
+  letterRecipients,
   patronConnections,
   petitionAuthority,
+  recordExchange,
+  sendLetter,
   summonOfficer
 } from "../js/simulation.js";
 import { legalMoves } from "../js/agent.js";
-import { appendEvent } from "../js/state.js";
+import { appendEvent, deserializeState, serializeState } from "../js/state.js";
 
 /* The village has a watch, a bailiff and a reeve, and behind them a steward
    and a lord who holds four other villages from a castle half a day east.
@@ -279,4 +285,135 @@ test("the watch is never sent to a dead or departed villager", () => {
     .filter((move) => move.kind === "summon_officer")
     .map((move) => move.subjectId);
   assert.ok(!reachable.includes(other), "the watch was offered a dead man to visit");
+});
+
+/* -------------------------------------------------------------- letters --- */
+
+function letterScene(seed) {
+  const state = createGame(seed);
+  /* Someone the priest has actually met, so there is a person to write to. */
+  for (let index = 0; index < 3; index += 1) {
+    beginVisit(state);
+    const line = "Tell me what troubles you.";
+    recordExchange(state, line, { ...fallbackConversation(state, line), source: "fallback" });
+    finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
+  }
+  return state;
+}
+
+test("the priest may only write to people he could actually reach", () => {
+  const state = letterScene("letters-who");
+  const { villagers, outside } = letterRecipients(state);
+  assert.ok(villagers.length > 0, "he has met people and should be able to write to them");
+  for (const entry of villagers) {
+    const person = state.residents.find((row) => row.id === entry.id);
+    assert.ok(person.active && person.alive, "a letter was offered to someone gone from the parish");
+    assert.ok(person.age >= 14, "a letter was offered to a child");
+  }
+  /* The manor always; the diocese only once it has taken notice. */
+  assert.deepEqual(outside.map((entry) => entry.id).sort(), ["lord", "steward"]);
+});
+
+test("what a letter says decides what it does", () => {
+  const state = letterScene("letters-tone");
+  const target = letterRecipients(state).villagers[0];
+  const before = state.residents.find((row) => row.id === target.id).trustPriest;
+
+  const kind = sendLetter(state, {
+    recipientKind: "villager", recipientId: target.id,
+    text: "Come and sit with me this week; you need not speak if you would rather not.",
+    reading: { tone: "kind", asks: "visit", summary: "An invitation to grieve." }
+  });
+  assert.ok(kind, "a plain letter should send");
+  const afterKind = state.residents.find((row) => row.id === target.id).trustPriest;
+  assert.ok(afterKind > before, "a kind letter should warm them to him");
+
+  const other = letterRecipients(state).villagers[1];
+  const otherBefore = state.residents.find((row) => row.id === other.id).trustPriest;
+  sendLetter(state, {
+    recipientKind: "villager", recipientId: other.id,
+    text: "Restore what you took, or I shall name you from the pulpit.",
+    reading: { tone: "threatening", asks: "act", summary: "A threat of public shaming." }
+  });
+  const person = state.residents.find((row) => row.id === other.id);
+  assert.ok(person.trustPriest < otherBefore, "a threatening letter should cost him their trust");
+  assert.ok(person.stress > 50, "and should frighten them");
+});
+
+test("writing to the manor brings the manor", () => {
+  const state = letterScene("letters-manor");
+  const result = sendLetter(state, {
+    recipientKind: "external", recipientId: "lord",
+    text: "My lord, a family is being put off land they have held three generations.",
+    reading: { tone: "pleading", asks: "act", summary: "An eviction the steward will not address." }
+  });
+  assert.ok(result.comingInDays >= 1, "the lord should be on his way");
+  assert.ok(
+    state.eventQueue.some((event) => event.type === "external_visit" && event.role === "lord"),
+    "a visit from the lord should be queued"
+  );
+});
+
+test("a letter to nobody, or an empty letter, does nothing", () => {
+  const state = letterScene("letters-bounds");
+  assert.equal(sendLetter(state, { recipientKind: "villager", recipientId: "person-999", text: "Hello." }), null);
+  assert.equal(sendLetter(state, { recipientKind: "villager", recipientId: letterRecipients(state).villagers[0].id, text: "   " }), null);
+  assert.equal(sendLetter(state, { recipientKind: "nonsense", recipientId: "lord", text: "Hello." }), null);
+});
+
+test("letters, summonses and petitions all survive a reload", () => {
+  const state = letterScene("letters-replay");
+  const officers = availableOfficers(state);
+  const target = letterRecipients(state).villagers.find((entry) => (
+    officers.every((officer) => officer.id !== entry.id)
+  ));
+
+  sendLetter(state, {
+    recipientKind: "villager", recipientId: target.id,
+    text: "Come to me before Sunday.",
+    reading: { tone: "plain", asks: "visit", summary: "A summons to the church." }
+  });
+  sendLetter(state, {
+    recipientKind: "external", recipientId: "steward",
+    text: "The mill road is impassable and the carts cannot pass.",
+    reading: { tone: "plain", asks: "act", summary: "A broken road." }
+  });
+  summonOfficer(state, { officerId: officers[0].id, subjectId: target.id, purpose: "protect", reason: "keep the peace" });
+  petitionAuthority(state, { role: "lord", subjectId: target.id, matter: "a disputed tenancy" });
+
+  const restored = deserializeState(serializeState(state));
+  assert.deepEqual(
+    restored.commandLog.map((command) => command.type).filter((type) => (
+      ["send_letter", "summon_officer", "petition_authority"].includes(type)
+    )),
+    ["send_letter", "send_letter", "summon_officer", "petition_authority"]
+  );
+  assert.equal(
+    restored.commitments.filter((entry) => entry.type === "officer_duty").length,
+    state.commitments.filter((entry) => entry.type === "officer_duty").length,
+    "the watch was sent a different number of times on replay"
+  );
+  assert.equal(
+    restored.events.filter((event) => event.type === "letter_sent").length,
+    state.events.filter((event) => event.type === "letter_sent").length,
+    "letters were duplicated or lost on replay"
+  );
+});
+
+test("a summons made during a conversation is not also sent a second time", () => {
+  const state = createGame("summons-single");
+  beginVisit(state);
+  const visit = state.currentVisit;
+  const officer = availableOfficers(state).find((entry) => entry.id !== visit.personId);
+  const line = "I will see that no harm comes to you.";
+  recordExchange(state, line, {
+    ...fallbackConversation(state, line),
+    source: "fallback",
+    officerSummons: [{ officerId: officer.id, subjectId: visit.personId, purpose: "protect", reason: "safety" }]
+  });
+  const duties = state.commitments.filter((entry) => entry.type === "officer_duty");
+  assert.equal(duties.length, 1, "the officer was sent more than once for one instruction");
+  /* It travels inside the conversation command, not as a command of its own. */
+  assert.ok(!state.commandLog.some((command) => command.type === "summon_officer"));
+  assert.doesNotThrow(() => deserializeState(serializeState(state)));
 });

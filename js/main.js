@@ -1,12 +1,17 @@
-import { ParishAiClient, quantityPhrase } from "./ai.js";
+import { fallbackLetterReading, ParishAiClient, quantityPhrase } from "./ai.js";
 import { churchResourceRows } from "./church.js";
-import { SERMON_THEMES, SESSION_LOCATIONS, WEEK_DAYS } from "./data.js";
+import { EXTERNAL_ROLES, SERMON_THEMES, SESSION_LOCATIONS, WEEK_DAYS } from "./data.js";
 import { ChurchRenderer } from "./renderer.js";
 import {
   applySermon,
   applyVisitOpening,
+  availableOfficers,
   buyAtMarket,
+  letterRecipients,
   marketOffer,
+  petitionAuthority,
+  sendLetter,
+  summonOfficer,
   beginVisit,
   calendarLabel,
   createGame,
@@ -1004,6 +1009,102 @@ function renderMarket() {
   }));
 }
 
+/* ------------------------------------------------------------- outreach ----
+   The priest never leaves his church, so everything he does at a distance goes
+   through here: the parish officers, the manor above them, and letters.
+
+   Each of these is a real act with a cost, so none of them is a free button.
+   The engine refuses what is not possible and says why. */
+
+function renderOutreach() {
+  const visit = state.currentVisit;
+  const officers = availableOfficers(state);
+
+  elements["outreach-officers-note"].textContent = !visit
+    ? "The watch is sent about a matter you are hearing, so this is available while someone is with you."
+    : officers.length
+      ? "An officer already on his way is not offered again."
+      : "This parish has no watchman, bailiff or reeve to send.";
+
+  const officerMoves = visit
+    ? legalMoves(state).filter((move) => move.kind === "summon_officer")
+    : [];
+  elements["outreach-officers"].replaceChildren(...officerMoves.map((move) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = move.label;
+    button.title = move.detail;
+    button.addEventListener("click", () => {
+      const result = summonOfficer(state, {
+        officerId: move.officerId,
+        subjectId: move.subjectId,
+        purpose: move.purpose,
+        reason: elements["outreach-matter"].value.trim()
+      });
+      if (!result) {
+        showOutreachResult("He is already going, or cannot be sent to that person.");
+        return;
+      }
+      showOutreachResult(`${result.officer.name} goes to ${result.purpose === "investigate" ? "look into the matter concerning" : "keep the peace around"} ${result.subject.name}.`);
+      saveGame(true, true);
+      renderOutreach();
+      renderCommon();
+    });
+    return button;
+  }));
+  if (!officerMoves.length && visit && officers.length) {
+    const note = document.createElement("p");
+    note.className = "small";
+    note.textContent = "Every errand you could set them is already under way.";
+    elements["outreach-officers"].append(note);
+  }
+
+  elements["outreach-authorities"].replaceChildren(...["steward", "lord"].map((role) => {
+    const definition = EXTERNAL_ROLES[role];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `Send word to the ${definition.title}`;
+    button.title = definition.reachableFor ? `Worth troubling over: ${definition.reachableFor}` : "";
+    button.addEventListener("click", () => {
+      const matter = elements["outreach-matter"].value.trim();
+      if (!matter) {
+        showOutreachResult("Say what the matter is before sending for the manor.");
+        return;
+      }
+      const result = petitionAuthority(state, {
+        role,
+        subjectId: state.currentVisit?.personId ?? null,
+        matter
+      });
+      if (!result) {
+        showOutreachResult("That cannot be sent.");
+        return;
+      }
+      showOutreachResult(result.alreadySent
+        ? `The ${result.title} is already expected.`
+        : `Word goes to the ${result.title}; expect an answer in ${result.travelDays} day${result.travelDays === 1 ? "" : "s"}.`);
+      saveGame(true, true);
+      renderCommon();
+    });
+    return button;
+  }));
+
+  const recipients = letterRecipients(state);
+  const select = elements["outreach-letter-to"];
+  const previous = select.value;
+  select.replaceChildren(...[...recipients.outside, ...recipients.villagers].map((entry) => {
+    const option = document.createElement("option");
+    option.value = `${entry.kind}:${entry.id}`;
+    option.textContent = `${entry.name}${entry.detail ? ` — ${entry.detail}` : ""}`;
+    return option;
+  }));
+  if (previous) select.value = previous;
+}
+
+function showOutreachResult(text) {
+  elements["outreach-results"].textContent = text;
+}
+
 function renderRegister(filter = "") {
   const query = filter.trim().toLowerCase();
   const residents = state.residents.filter((person) => (
@@ -1290,6 +1391,65 @@ elements["forget-gemini-key"].addEventListener("click", async () => {
   await refreshAiStatus();
 });
 
+elements["open-outreach"].addEventListener("click", () => {
+  if (!state) return;
+  showOutreachResult("");
+  renderOutreach();
+  elements["outreach-dialog"].showModal();
+});
+
+elements["outreach-letter-text"].addEventListener("input", () => {
+  const length = elements["outreach-letter-text"].value.length;
+  elements["outreach-letter-count"].textContent = `${length} / 1200`;
+});
+
+elements["outreach-send-letter"].addEventListener("click", async () => {
+  if (!state) return;
+  const text = elements["outreach-letter-text"].value.trim();
+  if (!text) {
+    showOutreachResult("Write the letter first.");
+    return;
+  }
+  const [recipientKind, recipientId] = String(elements["outreach-letter-to"].value).split(":");
+  const recipients = letterRecipients(state);
+  const recipient = [...recipients.outside, ...recipients.villagers]
+    .find((entry) => entry.kind === recipientKind && entry.id === recipientId);
+  if (!recipient) {
+    showOutreachResult("There is no one by that name to write to.");
+    return;
+  }
+
+  elements["outreach-send-letter"].disabled = true;
+  showOutreachResult("Sealing it...");
+  /* What the letter says is a matter of reading, so the model reads it. If it
+     cannot, plain rules read it instead and the letter still goes. */
+  let reading;
+  try {
+    reading = aiReady && state.settings.aiEnabled
+      ? await ai.readLetter(state, recipient, text)
+      : fallbackLetterReading(text);
+  } catch (error) {
+    reading = fallbackLetterReading(text);
+    logRuntimeError("letter_reading", error);
+  }
+
+  const result = sendLetter(state, { recipientKind, recipientId, text, reading });
+  elements["outreach-send-letter"].disabled = false;
+  if (!result) {
+    showOutreachResult("That letter could not be sent.");
+    return;
+  }
+  elements["outreach-letter-text"].value = "";
+  elements["outreach-letter-count"].textContent = "0 / 1200";
+  const parts = [`The letter goes to ${result.recipientName}.`];
+  if (result.comingInDays) parts.push(`Expect them in ${result.comingInDays} day${result.comingInDays === 1 ? "" : "s"}.`);
+  if (result.alreadyExpected) parts.push("They were already expected.");
+  if (result.visitRequested) parts.push(`Asked to come: ${result.visitRequested}.`);
+  showOutreachResult(parts.join(" "));
+  saveGame(true, true);
+  renderCommon();
+});
+
 elements["new-game"].addEventListener("click", () => {  if (!initializationComplete || startActionInFlight) return;
   const seed = elements["seed-input"].value.trim() || `${Date.now()}`;
   startGame(createGame(seed), true);
@@ -1410,6 +1570,29 @@ async function watchTakeTurn() {
       elements["sermon-theme"].value = decision.theme;
       elements["sermon-text"].value = decision.text;
       await deliverSermon();
+    } else if (decision.move.kind === "summon_officer") {
+      const result = summonOfficer(state, {
+        officerId: decision.move.officerId,
+        subjectId: decision.move.subjectId,
+        purpose: decision.move.purpose,
+        reason: decision.reason
+      });
+      showToast(result
+        ? `${result.officer.name} sent to ${result.purpose === "investigate" ? "look into" : "keep the peace around"} ${result.subject.name}.`
+        : "That officer is already going.");
+      saveGame(true, true);
+      renderCommon();
+    } else if (decision.move.kind === "petition_authority") {
+      const result = petitionAuthority(state, {
+        role: decision.move.role,
+        subjectId: state.currentVisit?.personId ?? null,
+        matter: decision.text || decision.reason
+      });
+      showToast(result
+        ? (result.alreadySent ? `The ${result.title} is already expected.` : `Word sent to the ${result.title}.`)
+        : "That petition could not be sent.");
+      saveGame(true, true);
+      renderCommon();
     } else if (decision.move.kind === "buy_at_market") {
       const result = buyAtMarket(state, decision.purchases);
       if (result.spent) {

@@ -1967,6 +1967,46 @@ function geminiContent(payload) {
   }
 }
 
+const letterReadingSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "tone", "asks"],
+  properties: {
+    summary: { type: "string", maxLength: 240 },
+    tone: { type: "string", enum: ["kind", "plain", "commanding", "threatening", "pleading"] },
+    asks: { type: "string", enum: ["visit", "act", "explain", "nothing"] }
+  }
+};
+
+/* A letter is the priest's own words, so what it amounts to is a question of
+   reading rather than of rules. The model says what was written and what it
+   asks for; the engine decides what that does, as it does everywhere else. */
+export function validateLetterReading(value) {
+  const tones = ["kind", "plain", "commanding", "threatening", "pleading"];
+  const asks = ["visit", "act", "explain", "nothing"];
+  return {
+    summary: String(value?.summary || "").slice(0, 240),
+    tone: tones.includes(value?.tone) ? value.tone : "plain",
+    asks: asks.includes(value?.asks) ? value.asks : "nothing"
+  };
+}
+
+/* Read without a model, so a letter still works when nothing is listening. */
+export function fallbackLetterReading(text) {
+  const speech = String(text || "").toLowerCase();
+  const tone = /\b(?:damn|curse|wrath|ruin you|regret it|answer for|or else)\b/.test(speech) ? "threatening"
+    : /\b(?:command|require|must|shall not|i order|see that you)\b/.test(speech) ? "commanding"
+    : /\b(?:beg|beseech|implore|for the love of|i pray you|have mercy)\b/.test(speech) ? "pleading"
+    : /\b(?:grieve|comfort|sorry|kindly|gently|you are welcome|god keep)\b/.test(speech) ? "kind"
+    : "plain";
+  const asks = /\b(?:come|call on me|visit|attend me|present yourself|sit with me)\b/.test(speech) ? "visit"
+    : /\b(?:tell me|explain|account for|why did|let me know|answer)\b/.test(speech) ? "explain"
+    : /\b(?:do|see to|settle|intervene|put right|act|remedy)\b/.test(speech) ? "act"
+    : "nothing";
+  const summary = String(text || "").split(/(?<=[.!?])\s+/)[0]?.slice(0, 240) || "";
+  return { summary, tone, asks };
+}
+
 export class ParishAiClient extends EventTarget {
   constructor({
     endpoint = "/local-ai",
@@ -2006,6 +2046,23 @@ export class ParishAiClient extends EventTarget {
     const payload = await response.json();
     if (payload?.status !== "ok") throw new Error("The selected AI provider is unavailable");
     return payload;
+  }
+
+  async readLetter(state, recipient, text) {
+    const prompt = [
+      "A 16th-century parish priest has written a letter. Read it and report what it amounts to.",
+      `The letter is addressed to ${recipient.name}${recipient.detail ? `, ${recipient.detail}` : ""}.`,
+      "",
+      "summary: one sentence, in plain words, saying what the priest has written and why.",
+      "tone: kind, plain, commanding, threatening, or pleading. Judge how it would feel to receive, not how the priest would describe it.",
+      "asks: visit if he wants them to come to him; act if he wants something done; explain if he wants an answer or account; nothing if he asks for neither.",
+      "",
+      "Report only what is actually in the letter. Do not invent an errand he did not set.",
+      "",
+      `LETTER=${JSON.stringify(String(text).slice(0, 1200))}`
+    ].join("\n");
+    const raw = await this.complete(prompt, letterReadingSchema, "parish_letter", 220);
+    return validateLetterReading(raw);
   }
 
   async opening(state, person) {

@@ -2508,7 +2508,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
       subjectId: summons.subjectId,
       purpose: summons.purpose,
       reason: summons.reason
-    });
+    }, { record: false });
     if (result) {
       (visit.mechanicalEventIds ||= []).push(result.eventId);
       (response.officerSummonsApplied ||= []).push({
@@ -2523,7 +2523,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
       role: petition.role,
       subjectId: person.id,
       matter: petition.matter
-    });
+    }, { record: false });
     if (result?.eventId) {
       (visit.mechanicalEventIds ||= []).push(result.eventId);
       (response.authorityPetitionsApplied ||= []).push({ role: result.role, title: result.title });
@@ -2604,6 +2604,20 @@ export function recordExchange(state, playerText, response, { record = true } = 
         visitorDonations: donations.map((gift) => ({
           resource: String(gift.resource),
           amount: Math.max(0, Math.floor(Number(gift.amount) || 0))
+        })),
+        /* The watch and the manor were sent for inside this exchange, so they
+           have to travel inside its command. Without these two lines the
+           summons happened once, live, and never again on replay, and the
+           reloaded parish disagreed with its own save. */
+        officerSummons: (response.officerSummons || []).slice(0, 2).map((summons) => ({
+          officerId: String(summons.officerId || ""),
+          subjectId: String(summons.subjectId || ""),
+          purpose: String(summons.purpose || "protect"),
+          reason: String(summons.reason || "").slice(0, 240)
+        })),
+        authorityPetitions: (response.authorityPetitions || []).slice(0, 2).map((petition) => ({
+          role: String(petition.role || "steward"),
+          matter: String(petition.matter || "").slice(0, 240)
         })),
         structuredFallback: Boolean(response.structuredFallback),
         stagnationCount: Math.max(0, Number(response.stagnationCount) || 0),
@@ -4166,7 +4180,7 @@ export function summonOfficer(state, {
   purpose = "protect",
   reason = "",
   sourceEventId = null
-} = {}) {
+} = {}, { record = true } = {}) {
   const officers = availableOfficers(state);
   if (!officers.length) return null;
   const officer = officers.find((entry) => entry.id === officerId) || officers[0];
@@ -4239,6 +4253,19 @@ export function summonOfficer(state, {
     emotion: purpose === "investigate" ? "anxious" : "grateful",
     type: "interaction"
   });
+  /* When this is called on its own - from a button, or by the watching model -
+     it has to carry itself in the command log or a reloaded parish will not
+     have sent the watch at all. When it is called from inside an exchange the
+     conversation command already carries it, and recording here as well would
+     send the officer twice on replay. */
+  if (record) {
+    appendCommand(state, "summon_officer", {
+      officerId: officer.id,
+      subjectId: subject.id,
+      purpose,
+      reason: String(reason || "").slice(0, 240)
+    });
+  }
   return { officer, subject, purpose, eventId: event.id, commitmentId: commitment.id };
 }
 
@@ -4251,7 +4278,7 @@ export function petitionAuthority(state, {
   subjectId = null,
   matter = "",
   sourceEventId = null
-} = {}) {
+} = {}, { record = true } = {}) {
   if (!["steward", "lord"].includes(role)) return null;
   const definition = EXTERNAL_ROLES[role];
   if (!definition) return null;
@@ -4291,7 +4318,173 @@ export function petitionAuthority(state, {
      a dispute; troubling the lord raises the stakes for everyone. */
   if (role === "steward") state.priest.moralAuthority = clamp(state.priest.moralAuthority + 1);
   else state.outsideAttention.crown = clamp(state.outsideAttention.crown + 8);
+  if (record) {
+    appendCommand(state, "petition_authority", {
+      role,
+      subjectId: subjectId || null,
+      matter: String(matter || "").slice(0, 240)
+    });
+  }
   return { role, title: definition.title, travelDays, eventId: event.id };
+}
+
+/* =========================================================================
+   Letters
+   -------------------------------------------------------------------------
+   The priest does not leave his church, which leaves him one way of reaching
+   somebody who will not come: he writes to them. A letter is slower than
+   speech and colder than it, but it travels where he cannot, and it can be
+   addressed to a villager or to a man of standing outside the parish.
+
+   What a letter is *about* is the priest's own words, so the model reads it and
+   says what it amounts to. What a letter *does* is the engine's business, as
+   always: the reading is bounded, checked against who the recipient actually
+   is, and applied here.
+   ========================================================================= */
+
+/** Who a letter may be addressed to, given who the priest knows and what he has done. */
+export function letterRecipients(state) {
+  const villagers = state.residents
+    .filter((person) => (
+      person.active && person.alive && person.age >= 14
+      && (person.materialized || person.profileRevealed)
+    ))
+    .map((person) => ({
+      kind: "villager",
+      id: person.id,
+      name: person.name,
+      detail: `${person.occupation}, aged ${person.age}`
+    }));
+
+  /* Writing to the manor or the diocese is not a thing a village priest does
+     lightly, and he cannot write to someone he has never had dealings with.
+     The steward and the lord hold this village, so they are always reachable;
+     anyone further has to have taken notice of him first. */
+  const outside = [{ kind: "external", id: "steward", name: EXTERNAL_ROLES.steward.title, detail: "holds the manor's land and labour" },
+    { kind: "external", id: "lord", name: EXTERNAL_ROLES.lord.title, detail: "holds this village and four others" }];
+  for (const role of ["archdeacon", "bishop", "magistrate", "sheriff"]) {
+    const known = state.authorityStages?.recognition?.[`${role}Commendation`] != null
+      || state.authorityStages?.judgement?.summoned != null
+      || (state.events || []).some((event) => event.facts?.role === role);
+    if (known && EXTERNAL_ROLES[role]) {
+      outside.push({ kind: "external", id: role, name: EXTERNAL_ROLES[role].title, detail: "has had dealings with this parish" });
+    }
+  }
+  return { villagers, outside };
+}
+
+/**
+ * Send a letter. `reading` is the model's account of what the priest wrote;
+ * every part of it is optional and every part is bounded here.
+ */
+export function sendLetter(state, { recipientKind, recipientId, text, reading = null } = {}, { record = true } = {}) {
+  const clean = String(text || "").trim().slice(0, 1200);
+  if (!clean) return null;
+  if (!["villager", "external"].includes(recipientKind)) return null;
+
+  const person = recipientKind === "villager"
+    ? state.residents.find((entry) => entry.id === recipientId && entry.active && entry.alive)
+    : null;
+  const role = recipientKind === "external" ? EXTERNAL_ROLES[recipientId] : null;
+  if (!person && !role) return null;
+
+  const tone = ["kind", "plain", "commanding", "threatening", "pleading"].includes(reading?.tone)
+    ? reading.tone
+    : "plain";
+  const asks = ["visit", "act", "explain", "nothing"].includes(reading?.asks) ? reading.asks : "nothing";
+  const summary = String(reading?.summary || "").slice(0, 240);
+
+  const letterEvent = appendEvent(state, {
+    type: "letter_sent",
+    actorId: "priest",
+    targetId: person ? person.id : null,
+    facts: {
+      recipientKind,
+      recipientId,
+      recipientName: person ? person.name : role.title,
+      tone,
+      asks,
+      summary,
+      text: clean.slice(0, 400)
+    }
+  });
+
+  const outcome = { recipientName: person ? person.name : role.title, tone, asks, eventId: letterEvent.id };
+
+  if (person) {
+    /* A letter from the priest is an event in an ordinary villager's life. How
+       it lands depends on what it says and on what they already think of him. */
+    const warmth = { kind: 7, pleading: 4, plain: 2, commanding: -3, threatening: -9 }[tone];
+    const receptive = 0.5 + (person.trustPriest - 50) / 140 + (person.faith - 50) / 220;
+    person.trustPriest = clamp(person.trustPriest + warmth * Math.max(0.3, receptive));
+    person.stress = clamp(person.stress + (tone === "threatening" ? 12 : tone === "commanding" ? 5 : -4));
+    if (tone === "threatening") person.morale = clamp(person.morale - 6);
+    addStructuredMemory(state, person, {
+      type: "letter_received",
+      summary: summary || `The priest wrote to me.`,
+      emotion: tone === "threatening" ? "afraid" : tone === "kind" ? "grateful" : "contemplative",
+      confidence: 85,
+      sourceEventId: letterEvent.id
+    });
+
+    /* Being asked to come is a request like any other, and may be refused. */
+    if (asks === "visit" && state.calendar.absoluteDay >= 1 && state.calendar.dayIndex !== 6) {
+      const alreadyAsked = state.visitRequests.some((request) => (
+        request.personId === person.id && request.status === "pending"
+      ));
+      const todaysRequests = state.visitRequests.filter((request) => (
+        request.requestedDay === state.calendar.absoluteDay
+      ));
+      if (!alreadyAsked && todaysRequests.length < 4) {
+        const results = requestVisits(state, [person.id], summary || "asked by letter", { record: false });
+        outcome.visitRequested = results?.[0]?.status ?? null;
+      }
+    }
+    outcome.trustPriest = Math.round(person.trustPriest);
+  } else {
+    /* Writing to the manor or the diocese draws attention, which is exactly
+       what it is for and exactly what makes it dangerous. */
+    const travelDays = { steward: 1, lord: 3, archdeacon: 4, bishop: 5, magistrate: 4, sheriff: 4 }[recipientId] ?? 4;
+    if (!state.eventQueue.some((event) => event.type === "external_visit" && event.role === recipientId)) {
+      scheduleExternalVisit(
+        state,
+        recipientId,
+        summary || `The priest has written to the ${role.title.toLowerCase()}.`,
+        travelDays,
+        person?.id ?? null,
+        letterEvent.id,
+        { viaLetter: true, tone }
+      );
+      outcome.comingInDays = travelDays;
+    } else {
+      outcome.alreadyExpected = true;
+    }
+    if (recipientId === "steward") {
+      state.priest.moralAuthority = clamp(state.priest.moralAuthority + 1);
+    } else {
+      state.outsideAttention.church = clamp((state.outsideAttention.church || 0) + (recipientId === "bishop" ? 10 : 5));
+      state.outsideAttention.crown = clamp((state.outsideAttention.crown || 0) + (recipientId === "sheriff" ? 8 : 3));
+    }
+    if (tone === "threatening") state.priest.scandal = clamp(state.priest.scandal + 6);
+  }
+
+  addChronicle(
+    state,
+    `A letter to ${outcome.recipientName}`,
+    summary || clean.slice(0, 160),
+    tone === "threatening" ? "danger" : "change",
+    { type: "letter_noted", parentId: letterEvent.id, facts: { tone, asks } }
+  );
+
+  if (record) {
+    appendCommand(state, "send_letter", {
+      recipientKind,
+      recipientId,
+      text: clean,
+      reading: { tone, asks, summary }
+    });
+  }
+  return outcome;
 }
 
 export function fallbackDeparturePlan(state) {
@@ -6288,6 +6481,12 @@ export function replayGame(seed, commands, replayBase = null) {
         ...validatedOutcome,
         source: command.source
       }, { record: false });
+    } else if (command.type === "send_letter") {
+      sendLetter(state, command.payload, { record: false });
+    } else if (command.type === "summon_officer") {
+      summonOfficer(state, command.payload, { record: false });
+    } else if (command.type === "petition_authority") {
+      petitionAuthority(state, command.payload, { record: false });
     } else if (command.type === "buy_at_market") {
       buyAtMarket(state, command.payload.purchases, { record: false });
     } else if (command.type === "set_mode") {

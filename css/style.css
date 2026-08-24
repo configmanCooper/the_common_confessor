@@ -118,3 +118,26 @@
   padding: 0 0.2rem;
 }
 #gemini-key-status { font-style: italic; opacity: 0.8; }
+
+/* ------------------------------------------------------------- outreach ---
+   The watch, the manor, and letters: everything the priest does without
+   leaving his church. */
+.outreach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.3rem 0 0.6rem;
+}
+.outreach-list button {
+  font-size: 0.82rem;
+  text-align: left;
+  flex: 1 1 18rem;
+}
+#outreach-dialog h3 {
+  margin: 0.9rem 0 0.25rem;
+  border-bottom: 1px solid rgba(90, 60, 30, 0.3);
+  padding-bottom: 0.15rem;
+}
+#outreach-dialog textarea,
+#outreach-dialog select { width: 100%; box-sizing: border-box; }
+#outreach-results { min-height: 1.2em; font-style: italic; }

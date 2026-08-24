@@ -48,6 +48,7 @@
       <button id="export-debug-log">Export Debug Log</button>
       <button id="import-game">Import</button>
       <button id="open-request-visits">Request Visits</button>
+      <button id="open-outreach">Send Word</button>
       <button id="open-register">Parish Register</button>
       <button id="open-chronicle">Chronicle</button>
       <button id="open-reports">Reports</button>
@@ -223,6 +224,49 @@
     </label>
     <p id="request-visit-results" class="small"></p>
     <button id="send-visit-requests" class="primary">Send requests</button>
+  </dialog>
+
+  <dialog id="outreach-dialog" class="parchment modal wide">
+    <header>
+      <div><p class="eyebrow">Reaching beyond the church</p><h2>Send for someone, or write to them</h2></div>
+      <button data-close="outreach-dialog">Close</button>
+    </header>
+    <p class="small">
+      You do not leave this church. These are the ways your will travels without you: the parish
+      officers, the manor above them, and a letter to anyone who will read one.
+    </p>
+
+    <h3>Send the watch</h3>
+    <p id="outreach-officers-note" class="small"></p>
+    <div id="outreach-officers" class="outreach-list"></div>
+
+    <h3>Send word to the manor</h3>
+    <p class="small">
+      The steward keeps the land, rents and labour and answers within a day. The lord holds this village
+      and four others, takes three days to answer, and remembers who wastes his time.
+    </p>
+    <label>The matter
+      <textarea id="outreach-matter" maxlength="240" rows="2" placeholder="What you would have them look into..."></textarea>
+    </label>
+    <div id="outreach-authorities" class="outreach-list"></div>
+
+    <h3>Write a letter</h3>
+    <p class="small">
+      A letter goes where you cannot. What it does depends on what it says, so say it plainly: whether you
+      are asking them to come, asking them to act, or asking them to explain themselves.
+    </p>
+    <label>To
+      <select id="outreach-letter-to"></select>
+    </label>
+    <label>The letter
+      <textarea id="outreach-letter-text" maxlength="1200" rows="5" placeholder="Write as you would speak to them..."></textarea>
+    </label>
+    <div class="sermon-actions">
+      <span id="outreach-letter-count">0 / 1200</span>
+      <button id="outreach-send-letter" class="primary">Send it</button>
+    </div>
+
+    <p id="outreach-results" class="small"></p>
   </dialog>
 
   <dialog id="chronicle-dialog" class="parchment modal wide">

@@ -23,7 +23,8 @@ import {
 export const STATE_SCHEMA_VERSION = 19;
 const COMMAND_TYPES = new Set([
   "begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon",
-  "request_visits", "set_mode", "rewind_turn", "buy_at_market"
+  "request_visits", "set_mode", "rewind_turn", "buy_at_market",
+  "summon_officer", "petition_authority", "send_letter"
 ]);
 const COMMAND_SOURCES = new Set(["simulation", "fallback", "ai"]);
 let replayVerifier = null;
@@ -2020,6 +2021,26 @@ export function validateState(state) {
       if (!personIds.has(command.payload.personId)) throw new Error("Begin-visit command references a missing person");
       activeVisitPersonId = command.payload.personId;
       activeVisitTurns = 0;
+    } else if (command.type === "summon_officer") {
+      if (typeof command.payload.officerId !== "string" || !personIds.has(command.payload.officerId)
+        || typeof command.payload.subjectId !== "string" || !personIds.has(command.payload.subjectId)
+        || !["protect", "investigate", "keep_the_peace"].includes(command.payload.purpose)) {
+        throw new Error("Officer summons command is invalid");
+      }
+    } else if (command.type === "petition_authority") {
+      if (!["steward", "lord"].includes(command.payload.role)
+        || typeof command.payload.matter !== "string") {
+        throw new Error("Authority petition command is invalid");
+      }
+    } else if (command.type === "send_letter") {
+      if (typeof command.payload.text !== "string"
+        || !command.payload.text.trim()
+        || command.payload.text.length > 1200
+        || typeof command.payload.recipientKind !== "string"
+        || !["villager", "external"].includes(command.payload.recipientKind)
+        || typeof command.payload.recipientId !== "string") {
+        throw new Error("Letter command is invalid");
+      }
     } else if (command.type === "buy_at_market") {
       requireArray(command.payload.purchases, "Market purchase command items");
       if (!command.payload.purchases.length || command.payload.purchases.length > 12) {
