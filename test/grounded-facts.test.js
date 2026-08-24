@@ -523,3 +523,54 @@ test("the parish still fills the offices it cannot do without", () => {
     );
   }
 });
+
+/* ---- a villager must be able to say they have no wife ---- */
+
+test("a villager is told the plain truth of their own household", async () => {
+  const { nameablePeople } = await import("../js/ai.js");
+  const state = createGame("household-truth");
+  /* The failure this prevents: pressed to name his wife, a widower of sixty
+     with four grown children and no spouse at all invented one, and then
+     repeated the invention five times under questioning, because nothing had
+     ever told him he had none. */
+  const unmarried = state.residents.find((person) => (
+    person.alive !== false && person.age >= 40 && !person.spouseId
+  ));
+  assert.ok(unmarried, "no unmarried adult in the parish to test with");
+  const visit = beginVisit(state);
+  materializeResident(state, visit.personId, true);
+  const rows = nameablePeople(state, unmarried, state.currentVisit);
+  assert.ok(rows.length > 0, "the roster was empty");
+});
+
+test("a stripped invention never becomes somebody's name", async () => {
+  const { stripInventedNames, unknownPersonNames } = await import("../js/ai.js");
+  const state = createGame("strip-naming");
+  for (const line of [
+    "My wife is Elara, and she is thirty-two years old.",
+    "My son is called Thomas.",
+    "Her name is Agnes."
+  ]) {
+    const cleaned = stripInventedNames(state, line);
+    assert.equal(
+      unknownPersonNames(state, cleaned).length,
+      0,
+      `an invention survived the strip: ${cleaned}`
+    );
+    /* "My wife is someone" wrecked an entire visit: the priest rightly kept
+       objecting that someone is not a name, and the villager kept saying it. */
+    assert.doesNotMatch(
+      cleaned,
+      /\b(?:wife|son|daughter|husband|name)\s+(?:is|was)\s+someone\b/i,
+      `the strip produced a nonsense name: ${cleaned}`
+    );
+  }
+});
+
+test("an invention outside a naming construction is simply removed", async () => {
+  const { stripInventedNames, unknownPersonNames } = await import("../js/ai.js");
+  const state = createGame("strip-naming");
+  const cleaned = stripInventedNames(state, "The child, Elara, is seven years old.");
+  assert.equal(unknownPersonNames(state, cleaned).length, 0);
+  assert.match(cleaned, /The child is seven years old/);
+});

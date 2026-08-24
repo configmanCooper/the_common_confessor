@@ -384,6 +384,11 @@ async function main() {
       const moves = legalMoves(state);
       const sermonMove = moves.find((move) => move.kind === "deliver_sermon");
       if (sermonMove) {
+        /* A sermon is preached to the whole parish, not to the last visitor.
+           An outstanding challenge left over from Saturday's conversation had
+           the priest open his sermon with "Simlas, you said Stehelm Elmfield is
+           ill, yet the parish record says he is in health." */
+        challenges = [];
         const decision = await chooseMove(state, [sermonMove, ...moves.filter((m) => m !== sermonMove)], recent);
         const theme = decision.ok && decision.move.kind === "deliver_sermon" ? decision.theme : "Duty";
         const text = decision.ok && decision.move.kind === "deliver_sermon"

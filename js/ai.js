@@ -1444,6 +1444,33 @@ const NON_NAME_CAPITALS = new Set([
    The departed appear only where this person is actually connected to them,
    which is what lets somebody speak of a buried husband or child by name
    without reaching for a stranger. */
+/* The plain facts of a villager's family.
+ *
+ * Pressed to name his wife, a sixty-year-old widower with four grown children
+ * and no spouse at all invented one, because nothing had told him he had none.
+ * He then repeated the invention five times under questioning. A person knows
+ * whether they are married; saying so removes the need to make anything up.
+ */
+function householdTruthLine(state, person) {
+  const spouse = person.spouseId
+    ? state.residents.find((resident) => resident.id === person.spouseId)
+    : null;
+  const late = person.widowedFromId
+    ? state.residents.find((resident) => resident.id === person.widowedFromId)
+    : null;
+  const children = (person.childrenIds || [])
+    .map((id) => state.residents.find((resident) => resident.id === id))
+    .filter((child) => child && child.alive !== false);
+  const parts = [];
+  if (spouse) parts.push(`You are married to ${spouse.firstName}.`);
+  else if (late) parts.push(`You are widowed. ${late.firstName} died, and you have no wife or husband now.`);
+  else parts.push("You have no wife or husband. You are not married and never speak as though you were.");
+  parts.push(children.length
+    ? `Your children are ${children.map((child) => child.firstName).join(", ")}, and you have no others.`
+    : "You have no children.");
+  return `THE TRUTH OF YOUR HOUSEHOLD: ${parts.join(" ")}`;
+}
+
 export function nameablePeople(state, person, visit, limit = 22) {
   const seen = new Set([person.id]);
   const rows = [];
@@ -1851,8 +1878,20 @@ export function stripInventedNames(state, text) {
       /* "young Agnes" -> "the young one" */
       .replace(new RegExp(`\\byoung\\s+${bare}\\b`, "g"), "the young one")
       .replace(new RegExp(`\\bold\\s+${bare}\\b`, "g"), "the old one")
-      /* "His eldest, Margery, is" has already lost the appositive above; what
-         remains is a name standing alone. */
+      /* A naming construction must never survive as "my wife is someone",
+         which is how a stripped invention wrecked an entire visit: the priest
+         quite rightly kept objecting that "someone" is not a name, and the
+         villager kept repeating it. Where the sentence exists in order to give
+         a name, the whole claim goes rather than its subject. */
+      .replace(
+        new RegExp(`\\b(?:my|his|her|their|the)\\s+name\\s+(?:is|was)\\s+(?:called\\s+|named\\s+)?${bare}\\b`, "gi"),
+        "I cannot give you a name"
+      )
+      .replace(
+        new RegExp(`\\b(my|his|her|their|the)\\s+([a-z]+)\\s+(?:is|was)\\s+(?:called\\s+|named\\s+)?${bare}\\b`, "gi"),
+        (whole, determiner, relation) => `I cannot give you a name for ${String(determiner).toLowerCase()} ${relation}`
+      )
+      .replace(new RegExp(`\\b(?:is|was)\\s+(?:called|named)\\s+${bare}\\b`, "gi"), "I cannot give you a name")
       .replace(new RegExp(`\\b${bare}\\b`, "g"), "someone");
   }
   return result
@@ -2771,8 +2810,10 @@ export class ParishAiClient extends EventTarget {
         ? [
           "EVERY PERSON YOU MAY NAME — this is the whole of it, and there is nobody else:",
           ...people.map((row) => `  ${row}`),
-          "Do not name any person who is not on that list. Not a neighbour, not a fellow worker, not an apprentice, not a child, not a healer, not an officer. If you must speak of someone who is not listed, describe them without a name: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'a woman at the market'. Never contradict a listed person's sex or age, and never state an age for anyone."
-        ].join("\n")
+          householdTruthLine(state, person),
+          "Do not name any person who is not on that list. Not a neighbour, not a fellow worker, not an apprentice, not a child, not a healer, not an officer. If you must speak of someone who is not listed, describe them without a name: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'a woman at the market'. Never contradict a listed person's sex or age, and never state an age for anyone.",
+          "If the priest asks you to name somebody you do not have — a wife you never had, a child who was never born, a master you do not serve — say so plainly and hold to it. Never invent a name to satisfy him, however many times he asks."
+        ].filter(Boolean).join("\n")
         : "",
       "",
       "How you speak:",
