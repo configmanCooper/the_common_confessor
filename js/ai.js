@@ -260,6 +260,25 @@ function bandOfMeans(value) {
   return "nothing at all";
 }
 
+/* What the household actually has, in words a person would use about their own
+   life. The visitor is told this every turn so that talk of money stays tied to
+   the ledger: an invented debt is not a colourful detail, it sends the priest
+   looking for a creditor who does not exist. */
+function householdMeansLine(household, visit) {
+  const debt = Number(household.debt) || 0;
+  const owing = debt > 0.5
+    ? `Your household owes about ${Math.round(debt)} silver pennies, and the reckoning weighs on you.`
+    : "Your household owes nothing to anybody. You are in no one's debt, and you must not say or imply that you are.";
+  const scenarioDebt = (visit?.scenarioFacts || []).some((fact) => /\bdebt|owe|unpaid|wages\b/i.test(String(fact.text)));
+  return [
+    `What is actually in your house: ${bandOfMeans(household.wealth)} in ready coin, ${bandOfMeans(household.food)} in the larder.`,
+    owing,
+    scenarioDebt
+      ? "Any debt in the matter you came about is the one described above under your situation, with the sum given there. Do not name a different sum."
+      : "Do not invent a debt, a loan, a sum of money, or a creditor. If money comes up and none was given to you, speak of it plainly without naming a figure."
+  ].join(" ");
+}
+
 export function quantityPhrase(amount, unit) {
   const singular = {
     pennies: "penny",
@@ -1438,6 +1457,59 @@ export function unknownPersonNames(state, text) {
   return [...found.keys()];
 }
 
+/* Debts the ledger does not carry.
+
+   In a watched run a woman whose household owed nothing announced that she
+   owed twenty silver pennies. The sum, the creditor and the obligation were
+   all invented, and the priest reasonably went to work on a debt that did not
+   exist. A visitor may only speak of owing money when their household really
+   is in debt, or when the matter they came about is itself about a debt and
+   supplied the figure. */
+const MONEY_WORDS = "(?:silver\\s+)?(?:pennies|penny|pence|shillings?|marks?|coins?|florins?|groats?)";
+
+export function unsupportedDebtClaims(state, person, visit, text) {
+  const speech = String(text || "");
+  if (!speech.trim()) return [];
+  const household = (state.households || []).find((entry) => entry.id === person?.householdId);
+  const realDebt = Number(household?.debt) || 0;
+  if (realDebt > 0.5) return [];
+
+  /* A debt named by the scenario is genuine: the engine authored the sum and
+     stores it among the visitor's facts. */
+  const supplied = (visit?.scenarioFacts || [])
+    .map((fact) => String(fact.text))
+    .filter((fact) => /\bdebt|owes?|owed|unpaid|wages\b/i.test(fact));
+  const suppliedSums = new Set();
+  for (const fact of supplied) {
+    for (const number of fact.match(/\b\d+\b/g) || []) suppliedSums.add(number);
+  }
+
+  const claims = [];
+  /* Only first-person obligations count. Denials, and debts owed by other
+     people, are not claims about this household's ledger. */
+  const pattern = new RegExp(
+    `\\b(?:I|we)\\s+(?:still\\s+|now\\s+)?(?:owe|owed)\\b(?![^.]*\\bnothing\\b)([^.!?]*)`,
+    "gi"
+  );
+  let match = pattern.exec(speech);
+  while (match !== null) {
+    const clause = match[1] || "";
+    const negated = /\bnot\b|\bno\b|\bnothing\b|\bnever\b/i.test(speech.slice(Math.max(0, match.index - 12), match.index));
+    if (!negated) {
+      const figure = clause.match(new RegExp(`\\b(\\d+)\\s+${MONEY_WORDS}`, "i"));
+      const worded = new RegExp(
+        `\\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|hundred)\\s+${MONEY_WORDS}`,
+        "i"
+      ).exec(clause);
+      if (figure && !suppliedSums.has(figure[1])) claims.push(figure[0].trim());
+      else if (worded && suppliedSums.size === 0) claims.push(worded[0].trim());
+      else if (!figure && !worded && supplied.length === 0) claims.push(`a debt this household does not carry`);
+    }
+    match = pattern.exec(speech);
+  }
+  return [...new Set(claims)];
+}
+
 function openThreadsForPrompt(visit, limit = 3) {
   const rows = [];
   for (const obligation of (visit.continuity?.obligationStack || [])) {
@@ -2351,6 +2423,7 @@ export class ParishAiClient extends EventTarget {
       "- You may agree, disagree, refuse, hesitate, or admit you do not know. If his suggestion genuinely settles your worry and you trust it, simply accept it and say so. Never drag things out to fill time.",
       "- Only name people you know or who were already named. Never invent an official, expert, place, or institution; say plainly if no one suitable exists.",
       "- This also means ordinary villagers. Every soul in this parish is already named, and the names above are the only ones you have. Never make up a personal name for a neighbour, a fellow worker, an apprentice, a sick man, or a child. Speak of them by role or relation instead: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'my sister's boy'. An invented name becomes a person who does not exist, and the priest will go looking for them.",
+      "- Never invent money. Do not name a sum you owe, a sum owed to you, a loan, a creditor, or a price, unless it was given to you above. If your household owes nothing, do not hint that it does. The priest acts on what you tell him, and he will set about relieving a debt that was never real.",
       "- The same holds for families and households. Surnames in this village are the ones listed above and no others: never speak of \"the Blackwood family\" or any house you have not been told exists. If you mean a household, name someone in it, or say \"the family up the lane\" without giving them a surname.",
       "- The priest does not leave his church. He cannot call on you at home, walk anywhere with you, or go to anyone himself. He can send for people to come to him, or send the watch. If he says he will come to you, you may gently say that you will come to him instead, or ask him to send someone.",
       "- Leave the priest something to take hold of: what you want, what you refuse, what would have to change, or a question he must answer.",
@@ -2383,6 +2456,13 @@ export class ParishAiClient extends EventTarget {
         ? `True things you know, in your own words if they come up:\n${knowledgeLines.map((line) => `- ${line}`).join("\n")}`
         : "",
       speakableFacts.length ? `Your situation:\n${speakableFacts.join("\n")}` : "",
+      /* What is actually in the house. Until now the visitor was told this only
+         when the priest asked them for a donation, so in ordinary talk the model
+         invented money freely - one woman with an empty ledger declared she owed
+         twenty silver pennies. Stating the plain truth every turn, and saying so
+         explicitly when there is no debt at all, removes the vacuum it was
+         filling. */
+      household ? householdMeansLine(household, visit) : "",
       openThreads.length ? `Still unsettled between you:\n${openThreads.map((line) => `- ${line}`).join("\n")}` : "",
       summary ? `Earlier in this conversation: ${summary}` : "",
       recent.length ? `The conversation just now:\n${recent.join("\n")}` : "",
@@ -2487,42 +2567,58 @@ export class ParishAiClient extends EventTarget {
       }
     }
 
-    /* Villagers conjured out of nothing. The parish is a closed population of
-       two hundred named souls, so a name belonging to none of them is a person
-       who does not exist - and the priest will repeat it back, ask after them,
-       and send the watch to find them. Ask once for the line again, naming only
-       real people. */
+    /* Villagers conjured out of nothing, and debts the ledger does not carry.
+       The parish is a closed population of two hundred named souls, so a name
+       belonging to none of them is a person who does not exist - and the priest
+       will repeat it back, ask after them, and send the watch to find them. An
+       invented debt is worse still, because the priest will set about relieving
+       it. Ask once for the line again, grounded in what is true. */
     const invented = unknownPersonNames(state, reply);
-    if (invented.length) {
+    const falseDebts = unsupportedDebtClaims(state, person, visit, reply);
+    if (invented.length || falseDebts.length) {
+      const complaint = [
+        invented.length ? `named nobody who exists: ${invented.join(", ")}` : "",
+        falseDebts.length ? `claimed a debt not in the ledger: ${falseDebts.join(", ")}` : ""
+      ].filter(Boolean).join("; ");
       transformations.push({
-        type: "invented_villager_regeneration",
-        detail: `named nobody who exists: ${invented.join(", ")}`,
-        code: "naturalConversation:inventedVillager"
+        type: "ungrounded_detail_regeneration",
+        detail: complaint,
+        code: "naturalConversation:ungroundedDetail"
       });
       try {
-        const retryPrompt = buildPrompt(
-          `- You named ${invented.join(" and ")}, and no such person lives in this village. Say the same thing again, but refer to them by role or relation instead - 'my neighbour', 'the other two workers', 'the old man at the end of the lane' - or name someone from the people you actually know.`
-        );
+        const notes = [
+          invented.length
+            ? `- You named ${invented.join(" and ")}, and no such person lives in this village. Refer to them by role or relation instead - 'my neighbour', 'the other two workers', 'the old man at the end of the lane' - or name someone from the people you actually know.`
+            : "",
+          falseDebts.length
+            ? `- You spoke of owing ${falseDebts.join(" and ")}, but your household owes nothing. Do not invent a debt or a sum of money. Say what is actually true of your situation instead.`
+            : ""
+        ].filter(Boolean).join("\n");
+        const retryPrompt = buildPrompt(notes);
         prompt = retryPrompt.user;
         const retry = await this.complete(
           prompt,
           schema,
-          "parish_natural_conversation_names",
+          "parish_natural_conversation_grounding",
           200,
           Math.min(this.timeoutMs, 40000),
           { system: retryPrompt.system }
         );
         const retryReply = trimToSentence(boundedProse(stripControlSuffix(retry.reply), 600));
         /* Only take the retry if it actually mended the problem. */
-        if (retryReply && unknownPersonNames(state, retryReply).length === 0) {
+        if (
+          retryReply
+          && unknownPersonNames(state, retryReply).length === 0
+          && unsupportedDebtClaims(state, person, visit, retryReply).length === 0
+        ) {
           raw = retry;
           reply = retryReply;
         }
       } catch (retryError) {
         transformations.push({
-          type: "invented_villager_regeneration_failed",
+          type: "ungrounded_detail_regeneration_failed",
           detail: retryError.message,
-          code: "naturalConversation:inventedVillager"
+          code: "naturalConversation:ungroundedDetail"
         });
       }
     }

@@ -781,6 +781,23 @@ function expandScenarioFactWeb(state, issue, person) {
         : "Several households reported sickness, but no complete named list has yet been established."
     });
   }
+  /* A concealed fever must be a real fever. The visitor confesses to hiding a
+     sickness and to having shared tools and meals, and the whole matter turns
+     on whether it spreads - but until now the engine left them perfectly well,
+     so they could not infect anyone, could not be treated, and could not
+     worsen. The fiction said contagion while the simulation said nothing was
+     wrong. */
+  if (String(issue.scenarioId || "").includes("hidden_illness") && !issue.threadId) {
+    const begun = Number(
+      (issue.scenarioFacts || []).map((fact) => String(fact.text)).join(" ")
+        .match(/fever began (\d+) days ago/i)?.[1]
+    ) || 5;
+    if (!person.illness) {
+      person.illness = "fever";
+      person.illnessDays = Math.max(person.illnessDays || 0, begun);
+      person.health = clamp(person.health - 6);
+    }
+  }
   if (String(issue.scenarioId || "").includes("panic_rumor")) {
     additions.push({
       id: "threat_status",
@@ -895,6 +912,44 @@ function issueForPerson(state, person) {
   const broadPool = allArchetypes.filter((archetype) => !recent.has(archetype.id));
   let archetype = rng.pick(preferredPool.length ? preferredPool : broadPool.length ? broadPool : availableArchetypes);
   if (archetype) {
+    /* Grief needs a real grave. This scenario had the visitor mourning a
+       neighbour chosen at random from the living, so the priest consoled a man
+       over someone who was still walking about the village and who could
+       himself knock at the church door a week later. Mourn only the actually
+       dead, and if nobody has died yet, this sorrow has not happened.
+
+       This runs before the fixups below, because it may substitute an
+       archetype that needs one of them applied to it. */
+    if (archetype.id === "faith_after_death") {
+      const dead = state.residents
+        .filter((candidate) => !candidate.alive && candidate.id !== person.id)
+        .sort((left, right) => left.id.localeCompare(right.id));
+      const close = dead.filter((candidate) => (
+        (person.relationshipIds || []).includes(candidate.id)
+        || candidate.householdId === person.householdId
+      ));
+      const mourned = close.length ? rng.pick(close) : (dead.length ? rng.pick(dead) : null);
+      if (mourned) {
+        victim = mourned;
+        allArchetypes = scenarioArchetypes(state, person, relation, victim, rng);
+        archetype = allArchetypes.find((candidate) => candidate.id === archetype.id) || archetype;
+      } else {
+        /* Nobody has died yet, so this sorrow has not happened. Fall through
+           the pools in turn: when the issue kind is grief this archetype is
+           frequently the only candidate, and filtering a single-entry pool
+           leaves nothing to choose from. A later step reconciles issue.kind
+           with whatever archetype is chosen here. */
+        let alternatives = [];
+        for (const pool of [preferredPool, broadPool, availableArchetypes, allArchetypes]) {
+          const usable = pool.filter((candidate) => candidate.id !== "faith_after_death");
+          if (usable.length) {
+            alternatives = usable;
+            break;
+          }
+        }
+        if (alternatives.length) archetype = rng.pick(alternatives);
+      }
+    }
     if (archetype.familyId === "contaminated_well" && relation?.occupation !== "tanner") {
       const compatibleRelations = state.residents
         .filter((resident) => resident.active && resident.alive
