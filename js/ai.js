@@ -1419,6 +1419,11 @@ const NON_NAME_CAPITALS = new Set([
   /* Capitalised mid-sentence but never anyone's name. */
   "Him", "Himself", "Her", "Herself", "Them", "Themselves", "His", "Hers",
   "Old", "Man", "Woman", "Christian", "Latin", "English",
+  /* Determiners and connectives that can follow a colon or dash mid-line and
+     so escape the sentence-start test. A villager saying "There is more: The
+     marriage would cancel four pennies" was being told The is nobody here. */
+  "The", "This", "That", "These", "Those", "There", "Then", "Thus", "Their",
+  "Such", "Some", "Any", "All", "Both", "Each", "Every", "Neither", "Either",
   /* Months and seasons. A villager dating a fever to "the month of April" was
      being told April is nobody who lives here. */
   "January", "February", "March", "April", "May", "June", "July", "August",
@@ -1584,11 +1589,11 @@ export function unknownPersonNames(state, text) {
   const usedLowercase = new Set((speech.match(/\b[a-z]{2,}\b/g) || []));
   const found = new Map();
   /* Only words used inside a sentence are considered. A capital at the start
-     of a sentence, after a full stop, or opening a quotation is ambiguous -
-     "Did", "Forgive", "Nothing" - whereas a capital in the middle of a clause
-     is almost always somebody's name. A genuine phantom is discussed enough
-     that it appears mid-sentence at least once. */
-  const pattern = /(^|[.!?]\s+|["'\u201c\u2018]\s*)?\b([A-Z][a-z]{2,})\b/g;
+     of a sentence, after a full stop, a colon or a dash, or opening a
+     quotation is ambiguous - "Did", "Forgive", "Nothing" - whereas a capital
+     in the middle of a clause is almost always somebody's name. A genuine
+     phantom is discussed enough that it appears mid-sentence at least once. */
+  const pattern = /(^|[.!?:;]\s+|[\u2014\u2013]\s*|["'\u201c\u2018]\s*)?\b([A-Z][a-z]{2,})\b/g;
   let match = pattern.exec(speech);
   while (match !== null) {
     const sentenceInitial = Boolean(match[1]) || match.index === 0;

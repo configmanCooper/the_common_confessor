@@ -2946,7 +2946,11 @@ export function recordExchange(state, playerText, response, { record = true } = 
       thread.visibility = disclosedVisibility;
       thread.publicAwareness = 0;
     }
-    visit.history.push({ speaker: "visitor", text: `There is more: ${visit.intent.hiddenConcern}.` });
+    /* The concern is already a sentence, so it supplies its own stop. */
+    visit.history.push({
+      speaker: "visitor",
+      text: `There is more: ${String(visit.intent.hiddenConcern).replace(/\s*\.\s*$/, "")}.`
+    });
     addStructuredMemory(state, person, {
       type: "disclosed_secret",
       summary: visit.intent.hiddenConcern,

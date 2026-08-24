@@ -108,26 +108,42 @@ export function verifyAgainstRecord(state, text, { person = null, visit = null, 
     }
   }
 
-  /* Someone spoken of as dead who is not, or as living who is buried. */
-  const deathPattern = /\b([A-Z][a-z]{2,})\s+(?:has\s+)?(?:died|is dead|was buried|passed away)\b/g;
+  /* Someone spoken of as dead who is not, or as living who is buried.
+     The whole name is captured where it is given, because matching a bare
+     surname finds the wrong relative: "Victor Hollowhurst died" was read as a
+     claim about Silissa Hollowhurst, who is alive and was never mentioned. A
+     claim is only wrong when nobody of that name is dead. */
+  const anyBearer = (name, predicate) => {
+    const bearers = (state.residents || []).filter((resident) => {
+      const full = String(resident.name || "");
+      return full === name
+        || resident.firstName === name
+        || resident.surname === name;
+    });
+    return { bearers, some: bearers.some(predicate) };
+  };
+  const deathPattern = /\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\s+(?:has\s+)?(?:died|is dead|was buried|passed away)\b/g;
   let match = deathPattern.exec(speech);
   while (match !== null) {
-    const record = lookUpPerson(state, match[1]);
-    if (record && record.alive) {
-      add("false_death", `said ${record.name} is dead`, `${record.name} is alive, aged ${record.age}`);
+    const { bearers, some } = anyBearer(match[1], (resident) => resident.alive === false);
+    if (bearers.length && !some) {
+      const living = bearers[0];
+      add("false_death", `said ${living.name} is dead`, `${living.name} is alive, aged ${living.age}`);
     }
     match = deathPattern.exec(speech);
   }
 
-  /* Someone spoken of as sick who is well. Only first-person and named claims
-     are checked; talk of "the babe" or "her boy" is about people the record
-     may not track. */
-  const illPattern = /\b([A-Z][a-z]{2,})\s+(?:is|has been|lies)\s+(?:ill|sick|abed|fevered|dying)\b/g;
+  /* Someone spoken of as sick who is well. Only named claims are checked; talk
+     of "the babe" or "her boy" is about people the record may not track. */
+  const illPattern = /\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\s+(?:is|has been|lies)\s+(?:ill|sick|abed|fevered|dying)\b/g;
   match = illPattern.exec(speech);
   while (match !== null) {
-    const record = lookUpPerson(state, match[1]);
-    if (record && record.alive && !record.illness && !record.injured) {
-      add("false_illness", `said ${record.name} is ill`, `${record.name} is in health`);
+    const { bearers, some } = anyBearer(match[1], (resident) => (
+      resident.alive === false || resident.illness || (resident.injury && !resident.injury.healed)
+    ));
+    if (bearers.length && !some) {
+      const well = bearers[0];
+      add("false_illness", `said ${well.name} is ill`, `${well.name} is in health`);
     }
     match = illPattern.exec(speech);
   }
