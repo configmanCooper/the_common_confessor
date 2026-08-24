@@ -1085,7 +1085,11 @@ test("twelve-week population runs retain referential integrity", () => {
 test("starting population is young overall and working septuagenarians are rare", () => {
   const residents = [];
   for (let index = 0; index < 10; index += 1) {
-    residents.push(...createGame(`historical-age-distribution-${index}`).residents);
+    /* The parish also carries a dozen or so graves from before the game began.
+       They are not the living population and must not be counted in its
+       demographics. */
+    residents.push(...createGame(`historical-age-distribution-${index}`).residents
+      .filter((person) => person.alive !== false));
   }
   const children = residents.filter((person) => person.age < 14);
   const seventies = residents.filter((person) => person.age >= 70);

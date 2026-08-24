@@ -12,6 +12,7 @@ export function upgradeParishState(state) {
   ];
   for (const faction of state.parishFactions) faction.memberIds = [];
   for (const person of state.residents) {
+    if (person.alive === false) continue;
     const identityHash = [...person.id].reduce((total, character) => (total * 33 + character.charCodeAt(0)) >>> 0, 5381);
     const faction = person.faith >= 65
       ? state.parishFactions[0]

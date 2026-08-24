@@ -105,6 +105,215 @@ function seedHouseholdFamilies(state) {
   }
 }
 
+/* A village is not a set of identical cottages.
+
+   Every household began the game with exactly fifty in coin, fifty in the
+   larder, no debt and the same woodpile, which meant the parish had no rich and
+   no poor and the priest's charity had nowhere meaningful to land. Standing is
+   set here from the work its people actually do, the number of mouths it feeds,
+   and its luck, so that the reeve's house and the day-labourer's hovel are
+   different places from the first morning.
+
+   The scale is the one the daily economy already uses: food and wealth run 0 to
+   100, where a larder below about twenty means buying at market. */
+const TRADE_STANDING = {
+  reeve: 3, bailiff: 3, merchant: 3, clerk: 3, innkeeper: 3, miller: 3,
+  blacksmith: 3, scribe: 3, teacher: 3, healer: 3,
+  baker: 2, brewer: 2, carpenter: 2, mason: 2, weaver: 2, dyer: 2, tailor: 2,
+  butcher: 2, tanner: 2, cooper: 2, potter: 2, candlemaker: 2, herbalist: 2,
+  midwife: 2, cobbler: 2, fishmonger: 2, beekeeper: 2, sexton: 2, sacristan: 2,
+  farmer: 2, watchman: 2, soldier: 2,
+  shepherd: 1, thatcher: 1, woodcutter: 1, fisherman: 1, peddler: 1,
+  spinner: 1, washerwoman: 1, servant: 1, laborer: 1, retired: 1,
+  hunter: 1, forester: 1, "charcoal burner": 1, goatherd: 1, stablehand: 1,
+  ferryman: 1, gravedigger: 1, unemployed: 0,
+  "child laborer": 0, infant: 0
+};
+
+function seedHouseholdMeans(state) {
+  const rng = new PopulationRng(`${state.seed || "parish"}:means`);
+  for (const household of state.households || []) {
+    const members = (household.memberIds || [])
+      .map((id) => state.residents.find((person) => person.id === id))
+      .filter((person) => person && person.alive !== false);
+    if (!members.length) continue;
+    const earners = members.filter((person) => person.age >= ADULT_AGE);
+    /* A household lives by its best trade, helped a little by second earners. */
+    const bestStanding = Math.max(0, ...members.map((person) => TRADE_STANDING[person.occupation] ?? 1));
+    const secondEarners = Math.max(0, earners.length - 1);
+    const mouths = members.length;
+    const dependants = members.filter((person) => person.age < 14 || person.age >= 70).length;
+
+    /* Luck of the family: some prosper at the same trade, some do not. */
+    const fortune = rng.int(-12, 12);
+    const base = [26, 40, 54, 70][bestStanding] ?? 40;
+    const strain = dependants * 4 + Math.max(0, mouths - 4) * 3;
+    const wealth = clamp(base + fortune + secondEarners * 5 - strain, 4, 96);
+    /* The larder tracks means but not exactly: a farming house may be poor in
+       coin and still eat, a clerk may be paid and buy everything. */
+    const larderTilt = ["farmer", "shepherd", "fisherman", "beekeeper", "miller", "baker"]
+      .includes(members[0]?.occupation) ? 10 : 0;
+    household.wealth = wealth;
+    household.food = clamp(base + rng.int(-14, 14) + larderTilt - strain, 6, 94);
+    /* Debt falls on the poor and on households with more mouths than earners. */
+    const debtRisk = (bestStanding <= 1 ? 0.45 : bestStanding === 2 ? 0.18 : 0.07)
+      + (mouths > earners.length * 2 ? 0.12 : 0);
+    household.debt = rng.next() < debtRisk ? rng.int(3, 22) : 0;
+    household.fuel = clamp(6 + bestStanding * 5 + rng.int(-5, 9), 0, 40);
+    household.dwelling = bestStanding >= 3
+      ? (rng.next() < 0.4 ? "farmhouse" : "cottage")
+      : bestStanding === 0 || (bestStanding === 1 && rng.next() < 0.45)
+        ? "hovel"
+        : "cottage";
+    for (const property of household.properties || []) {
+      if (property.type === "cottage" || property.type === household.dwelling) {
+        property.type = household.dwelling;
+        property.value = household.dwelling === "hovel" ? rng.int(6, 14)
+          : household.dwelling === "farmhouse" ? rng.int(30, 52)
+            : rng.int(15, 28);
+      }
+    }
+    household.reputation = clamp(46 + bestStanding * 4 + rng.int(-10, 10), 20, 88);
+  }
+}
+
+/* Nobody arrives in the world without a past.
+
+   Every villager began the game with an empty memory list, so the first time
+   anyone spoke to the priest they had nothing behind them: no grief, no old
+   quarrel, no wedding, no hard winter. These are the few things a person would
+   actually carry into a conversation, drawn from the family, the graves and the
+   relationships already seeded, so that what they remember is true of the
+   world rather than invented in the moment.
+
+   Seeded memories are dated before the game opens, which is why the day is
+   negative, and they are marked so that later code can tell a remembered past
+   from something that happened in play. */
+function seedPersonalHistories(state) {
+  const findPerson = (id) => state.residents.find((person) => person.id === id);
+  for (const person of state.residents || []) {
+    if (person.alive === false) continue;
+    if ((person.memories || []).length) continue;
+    const rng = new PopulationRng(`${state.seed || "parish"}:history:${person.id}`);
+    const remember = (memory) => {
+      person.memories.push({
+        id: `memory-${String(state.nextMemorySequence).padStart(7, "0")}`,
+        type: memory.type,
+        subjectId: memory.subjectId,
+        summary: memory.summary,
+        emotion: memory.emotion,
+        confidence: memory.confidence ?? 85,
+        privateMemory: Boolean(memory.privateMemory),
+        visibility: {
+          scope: memory.privateMemory ? "private_visit" : "public",
+          authorizedPersonIds: [person.id, "priest"]
+        },
+        day: memory.day,
+        seeded: true,
+        sourceEventId: null
+      });
+      state.nextMemorySequence += 1;
+    };
+
+    /* The graves they carry. */
+    for (const relatedId of person.relationshipIds || []) {
+      const departed = findPerson(relatedId);
+      if (!departed || departed.alive !== false) continue;
+      const years = Math.max(1, Math.round(Math.abs(departed.departureDay || 365) / 365));
+      const bond = departed.survivingSpouseId === person.id
+        ? `${departed.firstName}, ${person.sex === "female" ? "my husband" : "my wife"},`
+        : (departed.parentIds || []).includes(person.id)
+          ? `my child ${departed.firstName}`
+          : (departed.childrenIds || []).includes(person.id)
+            ? `my ${departed.sex === "female" ? "mother" : "father"} ${departed.firstName}`
+            : departed.firstName;
+      remember({
+        type: "bereavement",
+        subjectId: departed.id,
+        summary: `${bond} died of ${departed.causeOfDeath} about ${years === 1 ? "a year" : `${years} years`} ago.`,
+        emotion: "grief",
+        day: departed.departureDay || -365
+      });
+    }
+
+    /* Their marriage. */
+    const spouse = person.spouseId ? findPerson(person.spouseId) : null;
+    if (spouse) {
+      remember({
+        type: "life_event",
+        subjectId: spouse.id,
+        summary: `I married ${spouse.firstName}, and we keep the household together.`,
+        emotion: rng.next() < 0.75 ? "warmth" : "resignation",
+        day: -rng.int(200, 5000)
+      });
+    }
+
+    /* The quarrel they have not let go of, and the kindness they have not
+       forgotten, both taken from relationships that already exist. */
+    const bonds = (state.relationships || []).filter((entry) => entry.actorId === person.id);
+    const worst = bonds.reduce((found, entry) => (
+      (entry.resentment || 0) > (found?.resentment || 0) ? entry : found
+    ), null);
+    if (worst && (worst.resentment || 0) >= 26) {
+      const other = findPerson(worst.targetId);
+      if (other) {
+        remember({
+          type: "grievance",
+          subjectId: other.id,
+          summary: rng.pick([
+            `${other.firstName} shorted me over a debt and has never owned it.`,
+            `${other.firstName} spoke against me where the whole lane could hear.`,
+            `${other.firstName} took work that was promised to me.`,
+            `${other.firstName} let their beasts into my ground and denied it after.`,
+            `${other.firstName} carried a tale about my household that was not true.`
+          ]),
+          emotion: "resentment",
+          privateMemory: true,
+          day: -rng.int(30, 900)
+        });
+      }
+    }
+    const best = bonds.reduce((found, entry) => (
+      (entry.affection || 0) > (found?.affection || 0) ? entry : found
+    ), null);
+    if (best && (best.affection || 0) >= 52) {
+      const other = findPerson(best.targetId);
+      if (other) {
+        remember({
+          type: "kindness",
+          subjectId: other.id,
+          summary: rng.pick([
+            `${other.firstName} sat with us through a bad winter and asked nothing for it.`,
+            `${other.firstName} lent us grain when the larder was bare.`,
+            `${other.firstName} worked my ground for me when I could not stand.`,
+            `${other.firstName} has never once repeated what I told them.`
+          ]),
+          emotion: "gratitude",
+          day: -rng.int(30, 1200)
+        });
+      }
+    }
+
+    /* Something from their own life: the work, or the year that went badly. */
+    if (person.age >= ADULT_AGE) {
+      remember({
+        type: "hardship",
+        subjectId: person.id,
+        summary: rng.pick([
+          `The bad harvest three years back emptied our store and we have not caught up.`,
+          `I took my trade as a ${person.occupation} from my father and have kept it since.`,
+          `There was a winter we burned the furniture, and I do not speak of it.`,
+          `Fever went through this lane and left us thinner than it found us.`,
+          `I have worked as a ${person.occupation} since I was old enough to carry.`,
+          `We lost beasts to the murrain and bought none to replace them.`
+        ]),
+        emotion: "weariness",
+        day: -rng.int(200, 1600)
+      });
+    }
+  }
+}
+
 export function upgradePopulationState(state) {
   state.relationships ||= [];
   state.knowledge ||= [];
@@ -138,6 +347,24 @@ export function upgradePopulationState(state) {
         if (["change_job", "offer_work"].includes(step.actionType) && !step.detail) step.detail = "laborer";
       }
     }
+  }
+
+  /* Household membership must agree with who is actually alive. A living
+     villager always belongs to their household's roll; the dead never do,
+     because the roll is the list of mouths the household feeds. Repairing this
+     during the upgrade keeps older saves loadable and stops a resurrected or
+     newly buried resident from breaking the integrity check. */
+  for (const household of state.households || []) {
+    household.memberIds ||= [];
+    household.memberIds = household.memberIds.filter((memberId) => {
+      const member = (state.residents || []).find((person) => person.id === memberId);
+      return member && member.alive !== false;
+    });
+  }
+  for (const person of state.residents || []) {
+    if (person.alive === false) continue;
+    const household = (state.households || []).find((entry) => entry.id === person.householdId);
+    if (household && !household.memberIds.includes(person.id)) household.memberIds.push(person.id);
   }
 
   for (const household of state.households || []) {
@@ -183,9 +410,9 @@ export function upgradePopulationState(state) {
   }
   if (shouldSeedFamilies) {
     seedHouseholdFamilies(state);
+    seedHouseholdMeans(state);
     state.householdFamiliesSeeded = true;
   }
-
   const existing = new Set(state.relationships.map((relationship) => relationship.id));
   for (const person of state.residents || []) {
     for (const targetId of person.relationshipIds || []) {
@@ -196,6 +423,9 @@ export function upgradePopulationState(state) {
       }
     }
   }
+  /* Runs last, because a person's remembered past is drawn from the family,
+     the graves and the relationships seeded above. */
+  if (shouldSeedFamilies) seedPersonalHistories(state);
   return state;
 }
 
@@ -581,7 +811,11 @@ function spreadRumors(state, day, events) {
         });
       }
     }
-    if (rumor.heardByIds.length >= Math.min(80, state.residents.length * 0.45)) {
+    const livingCount = state.residents.reduce(
+      (total, resident) => total + (resident.alive === false ? 0 : 1),
+      0
+    );
+    if (rumor.heardByIds.length >= Math.min(80, livingCount * 0.45)) {
       rumor.active = false;
       events.push({
         type: "rumor_became_public",

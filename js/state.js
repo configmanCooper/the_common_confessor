@@ -525,6 +525,10 @@ function requireFinite(value, label, minimum = -Infinity, maximum = Infinity) {
 function buildHouseholds(residents) {
   const households = new Map();
   for (const resident of residents) {
+    /* The parish carries its graves as well as its living. The departed belong
+       to a household by kinship and memory, but they are not mouths to feed and
+       must never be counted among its members. */
+    if (resident.alive === false) continue;
     if (!households.has(resident.householdId)) {
       households.set(resident.householdId, {
         id: resident.householdId,
@@ -1540,7 +1544,13 @@ export function validateState(state) {
       if (person.illness != null && typeof person.illness !== "string") throw new Error(`Resident ${person.id} has invalid illness`);
       if (!Number.isInteger(person.illnessDays) || person.illnessDays < 0) throw new Error(`Resident ${person.id} has invalid illness duration`);
       if (person.causeOfDeath != null && typeof person.causeOfDeath !== "string") throw new Error(`Resident ${person.id} has invalid cause of death`);
-      if (!Number.isInteger(person.arrivalDay) || person.arrivalDay < 0
+      /* The parish did not begin on the first morning of play. A dozen or so
+         villagers are already buried when the game opens, and their days are
+         negative because they lived and died before it started. What must hold
+         is the ordering - nobody leaves before they arrive - not that the world
+         began at zero. */
+      if (!Number.isInteger(person.arrivalDay)
+        || (person.arrivalDay < 0 && person.alive !== false)
         || (person.departureDay != null && (!Number.isInteger(person.departureDay) || person.departureDay < person.arrivalDay))) {
         throw new Error(`Resident ${person.id} has invalid migration dates`);
       }
@@ -1635,6 +1645,11 @@ export function validateState(state) {
   }
   for (const resident of state.residents) {
     if (!householdIds.has(resident.householdId)) throw new Error(`Resident ${resident.id} references missing household ${resident.householdId}`);
+    /* The parish buries its dead but does not forget which family they belonged
+       to. The departed keep their household for kinship, surname and memory,
+       and are deliberately absent from its member list because they are not
+       mouths to feed. */
+    if (resident.alive === false) continue;
     if (householdMembership.get(resident.id) !== resident.householdId) {
       throw new Error(`Resident ${resident.id} is missing from household ${resident.householdId}`);
     }

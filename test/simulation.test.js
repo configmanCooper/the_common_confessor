@@ -42,16 +42,30 @@ test("every concern routes to a deliberate church conversation area", () => {
 
 test("new games always begin Monday with exactly 200 named residents", () => {
   const state = createGame("fixed-seed");
+  const living = state.residents.filter((person) => person.alive !== false);
   assert.equal(state.calendar.dayIndex, 0);
   assert.equal(populationCount(state), 200);
-  assert.equal(new Set(state.residents.map((person) => person.name)).size, 200);
+  assert.equal(new Set(living.map((person) => person.name)).size, 200);
+  /* The parish also opens with a dozen or so graves. They are not part of the
+     living two hundred, but no grave may share a name with anybody. */
+  assert.equal(
+    new Set(state.residents.map((person) => person.name)).size,
+    state.residents.length,
+    "a departed villager shares a name with somebody else"
+  );
   assert.equal(state.residents.filter((person) => person.materialized).length, 0);
 });
 
 test("known collision seeds still produce 200 unique full names", () => {
   for (const seed of ["audit-178", "audit-2341", "audit-9177"]) {
     const state = createGame(seed);
-    assert.equal(new Set(state.residents.map((person) => person.name)).size, 200, seed);
+    const living = state.residents.filter((person) => person.alive !== false);
+    assert.equal(new Set(living.map((person) => person.name)).size, 200, seed);
+    assert.equal(
+      new Set(state.residents.map((person) => person.name)).size,
+      state.residents.length,
+      `${seed}: a departed villager shares a name with somebody else`
+    );
   }
 });
 

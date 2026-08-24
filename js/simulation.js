@@ -319,7 +319,155 @@ function createResidents(seed, rng) {
     const nearby = residents.filter((other) => other.id !== resident.id && Math.abs(Number(other.id.slice(-3)) - Number(resident.id.slice(-3))) < 12);
     resident.relationshipIds = rng.shuffle([...new Set([...household, ...nearby])]).slice(0, rng.int(3, 7)).map((person) => person.id);
   }
+  addTheDeparted(residents, rng, surnames, { femaleNames, maleNames });
   return residents;
+}
+
+/* Every village has its graves.
+
+   The two hundred living souls are the parish; these are the ones already
+   buried, and they exist so that grief has somewhere to land. Without them a
+   new game contains nobody who has ever died, so a parishioner could not mourn
+   anyone real, and the scenario that turns on bereavement had to invent a
+   corpse - for a while it simply named a living neighbour, and the priest
+   consoled a man over someone still walking about the village.
+
+   They are cheap. Marked dead and inactive, they are skipped by every daily
+   pass, never visit, never eat and never work. They are kin and neighbours of
+   the living, carried only as memory. */
+const DEPARTED_CAUSES = [
+  "a winter fever", "lung sickness", "a fall from the barn loft",
+  "a wound that would not close", "the sweating sickness",
+  "a hard harvest and a weak chest", "drowning in the mill stream"
+];
+
+/* A cause of death that fits the age of the body. An infant does not die of
+   old age, and a man of eighty does not die in childbed. */
+function departedCause(rng, age, sex, role) {
+  if (age >= 62) return rng.next() < 0.62 ? "old age" : rng.pick(DEPARTED_CAUSES);
+  if (age <= 5) {
+    return rng.pick(["a winter fever", "the sweating sickness", "lung sickness", "a fever in the night"]);
+  }
+  if (sex === "female" && age >= 15 && age <= 44 && (role === "spouse" || rng.next() < 0.3)) {
+    return rng.next() < 0.45 ? "childbed" : rng.pick(DEPARTED_CAUSES);
+  }
+  return rng.pick(DEPARTED_CAUSES);
+}
+
+function addTheDeparted(residents, rng, surnames, { femaleNames, maleNames }) {
+  const living = residents.filter((resident) => resident.alive !== false);
+  const count = rng.int(11, 16);
+  for (let index = 0; index < count; index += 1) {
+    /* Bury them out of a real household, so somebody alive remembers them. */
+    const kin = rng.pick(living);
+    const surname = kin?.surname || rng.pick(surnames);
+    const housemates = living.filter((resident) => resident.householdId === kin?.householdId);
+
+    /* Decide what they were to the living before choosing an age, so the age
+       fits the role: a lost husband is of an age with his widow, a lost child
+       is younger than the parents who buried them. */
+    const widowCandidate = housemates.find((resident) => resident.age >= ADULT_AGE);
+    const parentCandidates = housemates.filter((resident) => resident.age >= ADULT_AGE + 16);
+    const roleRoll = rng.next();
+    let role = "neighbour";
+    if (widowCandidate && roleRoll < 0.35) role = "spouse";
+    else if (parentCandidates.length && roleRoll < 0.6) role = "child";
+    else if (housemates.length && roleRoll < 0.85) role = "parent";
+
+    const youngestParentAge = parentCandidates.length
+      ? Math.min(...parentCandidates.map((resident) => resident.age))
+      : 40;
+    const ageAtDeath = role === "spouse"
+      ? clamp(widowCandidate.age + rng.int(-8, 8), ADULT_AGE, 88)
+      : role === "child"
+        ? rng.int(1, Math.max(2, youngestParentAge - 16))
+        : role === "parent"
+          ? rng.int(48, 88)
+          : (rng.next() < 0.55 ? rng.int(52, 84) : rng.int(1, 51));
+
+    const sex = role === "spouse"
+      ? (widowCandidate.sex === "female" ? "male" : "female")
+      : (rng.next() < 0.5 ? "female" : "male");
+    const pool = sex === "female" ? femaleNames : maleNames;
+    let firstName = rng.pick(pool);
+    let guard = 0;
+    while (residents.some((resident) => resident.name === `${firstName} ${surname}`) && guard < 40) {
+      firstName = rng.pick(pool);
+      guard += 1;
+    }
+    const buriedDay = -rng.int(20, 1400);
+    const departed = {
+      id: `person-${String(residents.length + 1).padStart(3, "0")}`,
+      name: `${firstName} ${surname}`,
+      firstName,
+      surname,
+      sex,
+      age: ageAtDeath,
+      householdId: kin?.householdId || null,
+      occupation: ageAtDeath < 14 ? "child laborer" : ageAtDeath >= 60 ? "retired" : "laborer",
+      sprite: 1,
+      alive: false,
+      active: false,
+      deceased: true,
+      causeOfDeath: departedCause(rng, ageAtDeath, sex, role),
+      /* Buried before the game opens, so the days are negative. They lived in
+         the village a good while before they left it. */
+      departureDay: buriedDay,
+      arrivalDay: buriedDay - 365,
+      maritalStatus: "deceased",
+      spouseId: null,
+      parentIds: [],
+      childrenIds: [],
+      profileRevealed: false,
+      materialized: false,
+      visitCount: 0,
+      lastVisitDay: -999,
+      attendanceChance: 0,
+      trustPriest: 50,
+      faith: 50,
+      morale: 50,
+      prosperity: 50,
+      health: 0,
+      stress: 0,
+      reputation: 50,
+      relationshipIds: [],
+      memories: [],
+      flags: []
+    };
+
+    const bind = (mourner) => {
+      if (!mourner) return;
+      if (!mourner.relationshipIds.includes(departed.id)) mourner.relationshipIds.push(departed.id);
+      if (!departed.relationshipIds.includes(mourner.id)) departed.relationshipIds.push(mourner.id);
+    };
+
+    departed.survivedByRole = role;
+    if (role === "spouse") {
+      /* Death ends the marriage, exactly as the engine's own death handler
+         does: the departed keep no spouseId, or referential integrity breaks
+         because the survivor does not point back at a grave. The bond is
+         carried by the survivor instead. */
+      widowCandidate.widowedFromId = departed.id;
+      departed.survivingSpouseId = widowCandidate.id;
+      bind(widowCandidate);
+    } else if (role === "child") {
+      for (const parent of parentCandidates.slice(0, 2)) {
+        departed.parentIds.push(parent.id);
+        parent.lostChildIds ||= [];
+        if (!parent.lostChildIds.includes(departed.id)) parent.lostChildIds.push(departed.id);
+        bind(parent);
+      }
+    } else if (role === "parent") {
+      for (const grownChild of housemates.slice(0, 3)) {
+        departed.childrenIds.push(grownChild.id);
+        bind(grownChild);
+      }
+    }
+
+    /* Whatever they were, a few neighbours remember them too. */
+    for (const neighbour of rng.shuffle(living).slice(0, rng.int(1, 3))) bind(neighbour);
+    residents.push(departed);
+  }
 }
 
 export function createGame(seed = String(Date.now())) {
