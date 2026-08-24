@@ -64,13 +64,26 @@ export function lookUpPerson(state, name) {
 /* Claims a villager can make that the record can settle outright. Each finding
    says what was claimed and what is actually true, in words a priest could
    repeat back to the person who said it. */
-export function verifyAgainstRecord(state, text, { person = null, visit = null } = {}) {
+export function verifyAgainstRecord(state, text, { person = null, visit = null, priestText = "" } = {}) {
   const speech = String(text || "");
   if (!speech.trim()) return [];
   const findings = [];
   const add = (kind, claim, truth) => findings.push({ kind, claim, truth });
 
   for (const name of unknownPersonNames(state, speech)) {
+    /* Two ways a name in the visitor's mouth is not their invention. The
+       priest may have introduced it - a villager is entitled to repeat, and
+       to deny, what was said to them - and the sentence may be a denial that
+       such a person exists, which is precisely the answer the record wants. */
+    if (new RegExp(`\\b${name}\\b`).test(String(priestText || ""))) continue;
+    const denial = new RegExp(
+      `\\b(?:know|knew)\\s+(?:of\\s+)?(?:no|none|nobody|no one|no-one)\\b[^.!?]*\\b${name}\\b`
+      + `|\\b(?:do|did)\\s+not\\s+know\\b[^.!?]*\\b${name}\\b`
+      + `|\\bthere\\s+is\\s+no\\b[^.!?]*\\b${name}\\b`
+      + `|\\bno\\s+(?:such\\s+)?(?:person|man|woman|one)\\b[^.!?]*\\b${name}\\b`,
+      "i"
+    );
+    if (denial.test(speech)) continue;
     add("invented_person", `spoke of ${name}`, `no one called ${name} lives in this parish`);
   }
   for (const entry of misappliedTitles(state, speech)) {

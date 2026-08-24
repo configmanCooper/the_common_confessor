@@ -3219,7 +3219,18 @@ export function executeDueCommitments(state, parentEventId) {
          whatever came to hand. The promise itself and the person it concerned
          travel with the summons now, and the visitor opens on them. */
       const concerned = state.residents.find((resident) => resident.id === commitment.targetId);
-      const promise = String(commitment.payload?.text || "").replace(/\s+/g, " ").trim().slice(0, 140);
+      /* Commitment text is written for the record, not for a mouth: it opens
+         with a capital, ends in a full stop, and often carries a trailing
+         " — Name" tag. Dropped straight into "I said I would ..." it produced
+         "I said I would Speak with Belora with Stehelm as witness. — Belora
+         Westdale." Trim it back to the bare undertaking. */
+      const promise = String(commitment.payload?.text || "")
+        .split(/\s+[—–-]\s+/)[0]
+        .replace(/\s+/g, " ")
+        .replace(/[.;,]+\s*$/, "")
+        .trim()
+        .replace(/^[A-Z](?=[a-z])/, (letter) => letter.toLowerCase())
+        .slice(0, 140);
       scheduleResidentFollowup(
         state,
         actor.id,

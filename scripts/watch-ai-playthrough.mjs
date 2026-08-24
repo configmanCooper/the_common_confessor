@@ -569,7 +569,8 @@ async function main() {
       if (AUDIT_RECORD) {
         const findings = verifyAgainstRecord(state, spokenReply, {
           person: visitorFor(state, state.currentVisit),
-          visit: state.currentVisit
+          visit: state.currentVisit,
+          priestText
         });
         if (findings.length) {
           exchange.recordFindings = findings;
