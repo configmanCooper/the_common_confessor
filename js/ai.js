@@ -1579,6 +1579,14 @@ export function unknownPersonNames(state, text) {
     remember(resident.name);
     remember(resident.firstName);
     remember(resident.surname);
+    /* A household is spoken of in the plural - "the Winterings", "the
+       Foxes" - which is ordinary English and not an invented family. */
+    const surname = String(resident.surname || "");
+    if (surname) {
+      known.add(`${surname.toLowerCase()}s`);
+      known.add(`${surname.toLowerCase()}es`);
+      if (/y$/i.test(surname)) known.add(`${surname.slice(0, -1).toLowerCase()}ies`);
+    }
   }
   for (const actor of state.externalActors || []) remember(actor.name);
   remember(state.town?.name);
