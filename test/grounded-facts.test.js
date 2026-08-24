@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createGame, beginVisit, finishVisit } from "../js/simulation.js";
+import { createGame, beginVisit, finishVisit, materializeResident } from "../js/simulation.js";
 import { advancePopulationDay } from "../js/population.js";
-import { contradictedIdentities, misappliedTitles, unsupportedDebtClaims } from "../js/ai.js";
+import {
+  contradictedIdentities,
+  misappliedTitles,
+  nameablePeople,
+  peopleThePriestNamed,
+  unsupportedDebtClaims
+} from "../js/ai.js";
 
 /* Things the priest acts upon must be true.
 
@@ -378,5 +384,142 @@ test("scenario premises name the villagers they concern", () => {
         break;
       }
     }
+  }
+});
+
+/* ---- the model is given a closed cast, not left to invent one ---- */
+
+test("a visitor is handed the people they may name, with sex and age", () => {
+  const state = createGame("roster-contents");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const rows = nameablePeople(state, person, state.currentVisit);
+  assert.ok(rows.length >= 8, `only ${rows.length} people were offered`);
+  for (const row of rows) {
+    assert.match(row, /aged \d+/, `an entry gave no age: ${row}`);
+    assert.match(row, /man|woman|boy|girl|infant/, `an entry gave no sex or life stage: ${row}`);
+  }
+  /* Everyone offered must be a real villager. */
+  for (const row of rows) {
+    const name = row.split(" — ")[0];
+    assert.ok(
+      state.residents.some((resident) => resident.name === name),
+      `the roster offered somebody who does not exist: ${name}`
+    );
+  }
+});
+
+test("the roster includes a villager's own dead, and no one else's", () => {
+  let carried = 0;
+  for (let seed = 0; seed < 15; seed += 1) {
+    const state = createGame(`roster-graves-${seed}`);
+    const visit = beginVisit(state);
+    const person = materializeResident(state, visit.personId, true);
+    const rows = nameablePeople(state, person, state.currentVisit);
+    for (const row of rows.filter((entry) => /buried/.test(entry))) {
+      const name = row.split(" — ")[0];
+      const grave = state.residents.find((resident) => resident.name === name);
+      assert.ok(grave, `a grave in the roster belongs to nobody: ${name}`);
+      assert.equal(grave.alive, false, `${name} is offered as buried but is alive`);
+      assert.ok(
+        (person.relationshipIds || []).includes(grave.id)
+        || grave.householdId === person.householdId,
+        `${person.name} was offered a grave they have no connection to: ${name}`
+      );
+      carried += 1;
+    }
+  }
+  assert.ok(carried > 0, "no visitor in fifteen parishes carried a grave, so nothing was proved");
+});
+
+/* ---- the engine answers for anyone the priest names ---- */
+
+test("a name the priest invents is reported as belonging to nobody", () => {
+  const state = createGame("priest-names");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const found = peopleThePriestNamed(state, person, "Do you know Jerimiah?");
+  assert.equal(found.length, 1);
+  assert.match(found[0], /no person of that name lives in this parish/);
+});
+
+test("a real villager the priest names is described from the record", () => {
+  const state = createGame("priest-names");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const other = state.residents.find((resident) => (
+    resident.alive !== false && resident.id !== person.id && resident.age >= 20
+  ));
+  const found = peopleThePriestNamed(state, person, `Do you know ${other.firstName}?`);
+  assert.ok(found.length >= 1, "the record said nothing about a real villager");
+  assert.match(found[0], new RegExp(`aged ${other.age}`));
+  assert.match(found[0], new RegExp(other.occupation));
+});
+
+test("the record says whether this villager actually knows the person named", () => {
+  const state = createGame("priest-names-known");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const known = state.residents.find((resident) => (
+    resident.alive !== false && (person.relationshipIds || []).includes(resident.id)
+  ));
+  const stranger = state.residents.find((resident) => (
+    resident.alive !== false
+    && resident.id !== person.id
+    && !(person.relationshipIds || []).includes(resident.id)
+    && resident.householdId !== person.householdId
+  ));
+  if (known) {
+    assert.match(
+      peopleThePriestNamed(state, person, `Do you know ${known.firstName}?`)[0],
+      /You know them/
+    );
+  }
+  assert.match(
+    peopleThePriestNamed(state, person, `Do you know ${stranger.firstName}?`)[0],
+    /do not know them personally/
+  );
+});
+
+test("ordinary speech naming nobody produces no lookups", () => {
+  const state = createGame("priest-names");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  assert.deepEqual(peopleThePriestNamed(state, person, "Speak plainly. Tell me what you saw."), []);
+});
+
+/* ---- nobody holds work they could not hold ---- */
+
+test("no villager holds a trade their age or sex forbids", () => {
+  const womenOnly = new Set(["washerwoman", "midwife", "spinner"]);
+  const menOnly = new Set(["reeve", "bailiff", "watchman", "soldier", "gravedigger", "ferryman"]);
+  const minimumAge = { midwife: 30, healer: 26, reeve: 30, bailiff: 28, clerk: 20, teacher: 22 };
+  for (let seed = 0; seed < 10; seed += 1) {
+    const state = createGame(`trades-${seed}`);
+    for (const person of state.residents.filter((resident) => resident.alive !== false)) {
+      if (womenOnly.has(person.occupation)) {
+        assert.equal(person.sex, "female", `${person.name} is a ${person.sex} working as ${person.occupation}`);
+      }
+      if (menOnly.has(person.occupation)) {
+        assert.equal(person.sex, "male", `${person.name} is a ${person.sex} working as ${person.occupation}`);
+      }
+      const floor = minimumAge[person.occupation];
+      if (floor) {
+        assert.ok(
+          person.age >= floor,
+          `${person.name} is ${person.age} and serves as the parish ${person.occupation}`
+        );
+      }
+    }
+  }
+});
+
+test("the parish still fills the offices it cannot do without", () => {
+  for (const role of ["healer", "reeve", "bailiff", "watchman", "miller", "midwife", "carpenter", "tanner"]) {
+    const state = createGame("trades-roles");
+    assert.ok(
+      state.residents.some((person) => person.alive !== false && person.occupation === role),
+      `the parish has no ${role}`
+    );
   }
 });

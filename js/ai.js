@@ -1418,8 +1418,148 @@ const NON_NAME_CAPITALS = new Set([
   "Goodman", "Widow", "Mother", "Father", "Brother", "Sister", "Uncle", "Aunt",
   /* Capitalised mid-sentence but never anyone's name. */
   "Him", "Himself", "Her", "Herself", "Them", "Themselves", "His", "Hers",
-  "Old", "Man", "Woman", "Christian", "Latin", "English"
+  "Old", "Man", "Woman", "Christian", "Latin", "English",
+  /* Months and seasons. A villager dating a fever to "the month of April" was
+     being told April is nobody who lives here. */
+  "January", "February", "March", "April", "May", "June", "July", "August",
+  "September", "October", "November", "December",
+  "Spring", "Summer", "Autumn", "Winter", "Harvest", "Michaelmastide"
 ]);
+
+/* The people this villager may name, and nobody else.
+
+   The parish is a closed population, so the surest way to stop the model
+   inventing a neighbour is to hand it the actual cast before it writes a word.
+   Each entry carries what a speaker would need in order not to contradict the
+   record - sex, age, trade, and how they stand to the speaker - because the
+   inventions that did most damage were the ones that got those wrong: a
+   newborn girl spoken of as a grown man, a seven-year-old invented out of an
+   infant.
+
+   The departed appear only where this person is actually connected to them,
+   which is what lets somebody speak of a buried husband or child by name
+   without reaching for a stranger. */
+export function nameablePeople(state, person, visit, limit = 22) {
+  const seen = new Set([person.id]);
+  const rows = [];
+  const describe = (resident, standing) => {
+    const sex = resident.sex === "female" ? "woman" : "man";
+    const kind = resident.age < 2 ? "infant"
+      : resident.age < 14 ? (resident.sex === "female" ? "girl" : "boy")
+        : sex;
+    const buried = resident.alive === false
+      ? `, buried${resident.causeOfDeath ? ` (${resident.causeOfDeath})` : ""}`
+      : "";
+    return `${resident.name} — ${kind}, aged ${resident.age}, ${resident.occupation}${standing ? `, ${standing}` : ""}${buried}`;
+  };
+  const push = (resident, standing) => {
+    if (!resident || seen.has(resident.id) || rows.length >= limit) return;
+    if (resident.alive !== false && resident.active === false) return;
+    seen.add(resident.id);
+    rows.push(describe(resident, standing));
+  };
+  const byId = (id) => state.residents.find((resident) => resident.id === id);
+
+  /* The matter they came about comes first: those people are certain to be
+     discussed. */
+  push(byId(visit?.issue?.relatedPersonId), "the person this matter concerns");
+  const thread = state.issueThreads?.find((entry) => entry.id === visit?.issue?.threadId);
+  for (const subjectId of thread?.subjectIds || []) push(byId(subjectId), "concerned in this matter");
+
+  /* Their own household and immediate family, living and buried. */
+  if (person.spouseId) push(byId(person.spouseId), person.sex === "female" ? "your husband" : "your wife");
+  if (person.widowedFromId) push(byId(person.widowedFromId), "your late spouse");
+  for (const parentId of person.parentIds || []) push(byId(parentId), "your parent");
+  for (const childId of person.childrenIds || []) push(byId(childId), "your child");
+  for (const lostId of person.lostChildIds || []) push(byId(lostId), "your child who died");
+  for (const resident of state.residents) {
+    if (resident.householdId === person.householdId) push(resident, "of your household");
+  }
+
+  /* Everyone else they actually know, including the graves they carry. */
+  for (const relatedId of person.relationshipIds || []) {
+    const resident = byId(relatedId);
+    push(resident, resident?.alive === false ? "known to you, now dead" : "known to you");
+  }
+
+  /* The officers, because counsel so often turns on sending for one. */
+  for (const resident of state.residents) {
+    if (rows.length >= limit) break;
+    if (resident.alive !== false && ["reeve", "bailiff", "watchman", "clerk", "healer", "midwife"].includes(resident.occupation)) {
+      push(resident, `the parish ${resident.occupation}`);
+    }
+  }
+  return rows;
+}
+
+/* What the parish knows about anyone the priest has just named.
+ *
+ * A visitor cannot be expected to answer "do you know Jerimiah?" sensibly
+ * unless somebody tells them whether Jerimiah exists. Left to itself the model
+ * will oblige the question and invent him. So before the visitor answers, the
+ * engine looks up every name in the priest's line and states plainly whether
+ * that person is real, what they are, and whether this particular villager
+ * would know them - because existing in the parish and being known to one
+ * ferryman are different things.
+ */
+export function peopleThePriestNamed(state, person, playerText) {
+  const speech = String(playerText || "");
+  if (!speech.trim()) return [];
+  const spoken = new Set();
+  const usedLowercase = new Set(speech.match(/\b[a-z]{2,}\b/g) || []);
+  /* A capital opening a sentence is ambiguous - "Tell me of him", "What of
+     her" - so an unmatched word is only reported as a stranger when it appears
+     inside a clause, where a capital is almost always a name. Words that do
+     match a real villager are reported wherever they stand. */
+  const midSentence = new Set();
+  const pattern = /(^|[.!?]\s+|["'\u201c\u2018]\s*)?\b([A-Z][a-z]{2,})\b/g;
+  let match = pattern.exec(speech);
+  while (match !== null) {
+    const word = match[2];
+    if (!NON_NAME_CAPITALS.has(word) && !usedLowercase.has(word.toLowerCase())) {
+      spoken.add(word);
+      if (!(match[1] || match.index === 0)) midSentence.add(word);
+    }
+    match = pattern.exec(speech);
+  }
+  if (!spoken.size) return [];
+
+  const knownToThem = new Set([
+    ...(person?.relationshipIds || []),
+    ...(state.residents || [])
+      .filter((resident) => resident.householdId === person?.householdId)
+      .map((resident) => resident.id)
+  ]);
+  const rows = [];
+  const reported = new Set();
+  for (const word of spoken) {
+    const matches = (state.residents || []).filter((resident) => (
+      resident.firstName === word || resident.surname === word || resident.name === word
+    ));
+    if (!matches.length) {
+      if (word === state.town?.name || !midSentence.has(word)) continue;
+      rows.push(`${word}: no person of that name lives in this parish, and none ever has. If the priest asks after them, say plainly that you know no such person.`);
+      continue;
+    }
+    for (const resident of matches.slice(0, 3)) {
+      if (reported.has(resident.id) || resident.id === person?.id) continue;
+      reported.add(resident.id);
+      const stage = resident.age < 2 ? "an infant"
+        : resident.age < 14 ? (resident.sex === "female" ? "a girl" : "a boy")
+          : (resident.sex === "female" ? "a woman" : "a man");
+      const standing = resident.alive === false
+        ? `is dead — buried${resident.causeOfDeath ? `, of ${resident.causeOfDeath}` : ""}`
+        : `is ${stage}, aged ${resident.age}, and works as ${resident.occupation}`;
+      const acquaintance = resident.alive === false
+        ? ""
+        : knownToThem.has(resident.id)
+          ? " You know them."
+          : " You do not know them personally, though you may have heard the name.";
+      rows.push(`${resident.name} ${standing}.${acquaintance}`);
+    }
+  }
+  return rows.slice(0, 8);
+}
 
 export function unknownPersonNames(state, text) {
   const speech = String(text || "");
@@ -1666,6 +1806,47 @@ export function contradictedIdentities(state, text) {
   }
 
   return [...problems].map(([claim, truth]) => `${claim} (${truth})`);
+}
+
+/* Last resort when the model will not mend its own invention.
+
+   Detecting a phantom and asking for the line again works most of the time,
+   but not always: in one audited day the guard fired sixteen times and eleven
+   lines still reached the player with an invented villager in them, because
+   the retry reproduced the same name and the original was kept. Hoping for
+   compliance is not a guarantee. This removes the name deterministically, so
+   the invariant holds whatever the model does.
+
+   The replacements are ordered from most graceful to most blunt: an appositive
+   is simply dropped, a name attached to a trade gives way to the trade, and
+   only a name with no surrounding context becomes a plain reference. */
+export function stripInventedNames(state, text) {
+  let result = String(text || "");
+  for (const name of unknownPersonNames(state, result)) {
+    const bare = name.replace(/[^A-Za-z]/g, "");
+    if (!bare) continue;
+    result = result
+      /* "the child, Elara, is seven" -> "the child is seven" */
+      .replace(new RegExp(`,\\s*${bare}\\s*,`, "g"), " ")
+      /* "Old Man Hemlock" -> "the old man" */
+      .replace(new RegExp(`\\b(?:Old\\s+)?(?:Man|Goodman)\\s+${bare}\\b`, "g"), "the old man")
+      .replace(new RegExp(`\\b(?:Old\\s+)?(?:Woman|Goodwife)\\s+${bare}\\b`, "g"), "the old woman")
+      /* "Elara the washerwoman" -> "the washerwoman" */
+      .replace(new RegExp(`\\b${bare}\\s+(the\\s+[a-z]+)`, "g"), "$1")
+      /* "Elara's household" -> "their household" */
+      .replace(new RegExp(`\\b${bare}'s\\b`, "g"), "their")
+      /* "young Agnes" -> "the young one" */
+      .replace(new RegExp(`\\byoung\\s+${bare}\\b`, "g"), "the young one")
+      .replace(new RegExp(`\\bold\\s+${bare}\\b`, "g"), "the old one")
+      /* "His eldest, Margery, is" has already lost the appositive above; what
+         remains is a name standing alone. */
+      .replace(new RegExp(`\\b${bare}\\b`, "g"), "someone");
+  }
+  return result
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/,\s*,/g, ",")
+    .trim();
 }
 
 function openThreadsForPrompt(visit, limit = 3) {
@@ -2378,6 +2559,9 @@ export class ParishAiClient extends EventTarget {
       town: state.town.name,
       date: state.calendar,
       location: visit.location,
+      /* The opening had no roster whatever, so the very first thing a villager
+         said was free to invent whoever it liked. */
+      peopleYouMayName: nameablePeople(state, person, visit),
       person: {
         name: person.name,
         age: person.age,
@@ -2404,6 +2588,7 @@ export class ParishAiClient extends EventTarget {
       "Write in first person. Never refer to the speaker by their own name. Address the priest naturally if appropriate.",
       "Refer to other villagers by first name when familiar, or by an appropriate title and surname for officials and masters. Avoid repeatedly using full names unless the priest asks for one or two people share a name.",
       "Name only people supplied in the context. This village has a fixed population and every inhabitant is already named. If you need to mention anyone else - a neighbour, another worker, an apprentice, a child - describe them by their role or relationship instead, such as 'my neighbour', 'the other two workers', or 'my sister's boy'. Never invent a personal name.",
+      "CONTEXT_JSON.peopleYouMayName is the complete list of people who exist and may be named. Nobody else exists. Each entry gives their sex, age and trade: never contradict those, and never state anyone's age.",
       "Use two to five varied sentences, usually 35 to 100 words. The visitor may hesitate, pause, begin indirectly, or reveal details in an emotionally believable order.",
       "Do not mechanically list every supplied fact. Choose the details this person would actually say first, while preserving all names, quantities, relationships, and events you do mention.",
       "Never turn a supplied fact into an unsupported rumor, uncertainty, or denial. If a permitted fact says the visitor committed or witnessed an act, the visitor must not claim ignorance or innocence.",
@@ -2555,7 +2740,7 @@ export class ParishAiClient extends EventTarget {
   }) {
     const guarded = visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed;
     const traits = (person.personality?.traits || []).slice(0, 4).join(", ");
-    const people = knownPeopleForPrompt(state, person, visit);
+    const people = nameablePeople(state, person, visit);
     const household = state.households.find((entry) => entry.id === person.householdId);
     /* A priest may ask his parishioners for help as well as give it. The
        visitor has to weigh that against what is actually in their house, so
@@ -2569,7 +2754,13 @@ export class ParishAiClient extends EventTarget {
       person.publicBackstory
         ? `About you: ${firstSentence(guarded ? person.publicBackstory : (person.backstory || person.publicBackstory), 200)}`
         : "",
-      people.length ? `People you know: ${people.join("; ")}.` : "",
+      people.length
+        ? [
+          "EVERY PERSON YOU MAY NAME — this is the whole of it, and there is nobody else:",
+          ...people.map((row) => `  ${row}`),
+          "Do not name any person who is not on that list. Not a neighbour, not a fellow worker, not an apprentice, not a child, not a healer, not an officer. If you must speak of someone who is not listed, describe them without a name: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'a woman at the market'. Never contradict a listed person's sex or age, and never state an age for anyone."
+        ].join("\n")
+        : "",
       "",
       "How you speak:",
       "- Answer what the priest just said before anything else. If he changes the subject, follow him; never restart your original problem.",
@@ -2634,6 +2825,14 @@ export class ParishAiClient extends EventTarget {
         .map((row) => `${row.label.toLowerCase()} [${row.key}], ${row.amount} ${row.unit} left`)
         .join("; ") || "nothing at present"}.`,
       `THE PRIEST JUST SAID: "${boundedString(playerText, 600)}"`,
+      /* Ground truth about anyone he named, so the visitor never has to guess
+         whether a person the priest mentions is real. */
+      (() => {
+        const named = peopleThePriestNamed(state, person, playerText);
+        return named.length
+          ? `THE PARISH RECORD, on the people he just named:\n${named.map((line) => `- ${line}`).join("\n")}`
+          : "";
+      })(),
       stagedGifts.length
         ? `AS HE SPEAKS HE IS HANDING YOU: ${stagedGifts.map((gift) => {
           const row = churchResourceRows(state.churchResources).find((entry) => entry.key === gift.resource);
@@ -2733,7 +2932,11 @@ export class ParishAiClient extends EventTarget {
        will repeat it back, ask after them, and send the watch to find them. An
        invented debt is worse still, because the priest will set about relieving
        it. Ask once for the line again, grounded in what is true. */
-    const invented = unknownPersonNames(state, reply);
+    const invented = unknownPersonNames(state, reply)
+      /* A name the priest has just used is not the visitor's invention. They
+         are entitled to repeat what was said to them, even where the priest
+         himself was mistaken, and correcting the priest is his own business. */
+      .filter((name) => !new RegExp(`\\b${name}\\b`).test(String(playerText || "")));
     const falseDebts = unsupportedDebtClaims(state, person, visit, reply);
     const wrongTitles = misappliedTitles(state, reply);
     const rewritten = contradictedIdentities(state, reply);
@@ -2781,6 +2984,11 @@ export class ParishAiClient extends EventTarget {
         ) {
           raw = retry;
           reply = retryReply;
+        } else if (retryReply
+          && unknownPersonNames(state, retryReply).length < unknownPersonNames(state, reply).length) {
+          /* Not perfect, but nearer the truth than what it replaced. */
+          raw = retry;
+          reply = retryReply;
         }
       } catch (retryError) {
         transformations.push({
@@ -2788,6 +2996,20 @@ export class ParishAiClient extends EventTarget {
           detail: retryError.message,
           code: "naturalConversation:ungroundedDetail"
         });
+      }
+      /* Whatever the model did or failed to do, no invented villager reaches
+         the player. */
+      const stubborn = unknownPersonNames(state, reply);
+      if (stubborn.length) {
+        const cleaned = stripInventedNames(state, reply);
+        if (cleaned && cleaned !== reply) {
+          transformations.push({
+            type: "invented_villager_stripped",
+            detail: `removed ${stubborn.join(", ")} after the retry kept them`,
+            code: "naturalConversation:ungroundedDetail"
+          });
+          reply = cleaned;
+        }
       }
     }
 

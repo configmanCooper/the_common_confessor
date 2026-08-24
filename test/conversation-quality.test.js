@@ -88,13 +88,23 @@ test("a follow-up about the visitor's own previous sentence is answered, not res
 
 test("a correction is delivered to the model instead of being pattern-matched away", async () => {
   const scene = groundedDecisionState("semantic-correction");
-  recordExchange(scene.state, "Speak to Thomas.", { reply: "I will speak to Thomas then.", memory: "m" });
+  /* Both names must belong to real villagers. An invented one is stripped
+     before it reaches the player, which is the point of the grounding guard,
+     and a fixture that leans on a phantom is testing a conversation that could
+     never happen. */
+  const [first, second] = scene.state.residents
+    .filter((person) => person.alive !== false && person.id !== scene.person.id)
+    .slice(0, 2);
+  recordExchange(scene.state, `Speak to ${first.firstName}.`, {
+    reply: `I will speak to ${first.firstName} then.`,
+    memory: "m"
+  });
   let parsed = null;
   const client = naturalClient((entry) => {
     parsed = entry;
     return {
-      understoodPlayerAs: "The priest did not mean Thomas; he meant Hemlock.",
-      reply: "Forgive me, I misheard. You mean Hemlock. I will go to him instead.",
+      understoodPlayerAs: `The priest did not mean ${first.firstName}; he meant ${second.firstName}.`,
+      reply: `Forgive me, I misheard. You mean ${second.firstName}. I will go to him instead.`,
       npcIntent: "Accept the correction.",
       proposedActions: []
     };
@@ -105,8 +115,11 @@ test("a correction is delivered to the model instead of being pattern-matched aw
     "No, that is not what I meant. I meant the other man."
   );
   assert.equal(parsed.playerText, "No, that is not what I meant. I meant the other man.");
-  assert.match(response.reply, /You mean Hemlock/);
-  assert.equal(response.promptTrace.understoodPlayerAs, "The priest did not mean Thomas; he meant Hemlock.");
+  assert.match(response.reply, new RegExp(`You mean ${second.firstName}`));
+  assert.equal(
+    response.promptTrace.understoodPlayerAs,
+    `The priest did not mean ${first.firstName}; he meant ${second.firstName}.`
+  );
 });
 
 test("an indirect question without a question mark still reaches the model intact", async () => {

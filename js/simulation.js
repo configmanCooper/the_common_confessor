@@ -246,12 +246,20 @@ function createResidents(seed, rng) {
     "teacher", "scribe", "clerk", "herbalist", "midwife", "tailor",
     "spinner", "candlemaker", "beekeeper", "innkeeper", "sexton", "sacristan"
   ];
-  const occupationForAge = (age) => {
+  const occupationForAge = (age, sex) => {
     if (age < 5) return "infant";
     if (age < 14) return "child laborer";
-    if (age >= 70) return rng.next() < 0.9 ? "retired" : rng.pick(lightWork);
-    if (age >= 60) return rng.next() < 0.65 ? "retired" : rng.pick(lightWork);
-    return rng.pick(OCCUPATIONS.filter((occupation) => !["infant", "retired"].includes(occupation)));
+    const suitable = (pool) => pool.filter((occupation) => tradeSuitsPerson(occupation, sex, age));
+    if (age >= 70) {
+      const light = suitable(lightWork);
+      return rng.next() < 0.9 || !light.length ? "retired" : rng.pick(light);
+    }
+    if (age >= 60) {
+      const light = suitable(lightWork);
+      return rng.next() < 0.65 || !light.length ? "retired" : rng.pick(light);
+    }
+    const open = suitable(OCCUPATIONS.filter((occupation) => !["infant", "retired"].includes(occupation)));
+    return open.length ? rng.pick(open) : "laborer";
   };
   while (residentIndex < 200) {
     const householdSize = Math.min(rng.int(1, 6), 200 - residentIndex);
@@ -307,10 +315,14 @@ function createResidents(seed, rng) {
   ];
   for (const occupation of requiredVillageRoles) {
     if (residents.some((resident) => resident.occupation === occupation)) continue;
+    /* The parish must have a midwife and a reeve, but not a boy of fourteen
+       serving as either. Whoever is pressed into the office has to be able to
+       hold it. */
     const candidate = residents.find((resident) => (
       resident.age >= ADULT_AGE
       && resident.age < 60
       && !requiredVillageRoles.includes(resident.occupation)
+      && tradeSuitsPerson(occupation, resident.sex, resident.age)
     ));
     if (candidate) candidate.occupation = occupation;
   }
@@ -675,6 +687,34 @@ function castForRole(state, person, test, rng, excludeIds) {
     .filter(fits)
     .sort((left, right) => left.id.localeCompare(right.id));
   return anyone.length ? rng.pick(anyone) : null;
+}
+
+/* Work a person could actually hold.
+ *
+ * Occupations were handed out by age band alone, which produced a man working
+ * as the village washerwoman, a boy of fourteen serving as the parish midwife,
+ * and another of fourteen as its healer. Nobody noticed until the cast list was
+ * put in front of the model, at which point the village stopped being
+ * believable in a single glance.
+ *
+ * The restrictions are the ones the period actually imposed: the trades named
+ * for women were women's work, the offices of the manor and the watch were held
+ * by men, and skilled or sworn work needed years behind it.
+ */
+const WOMEN_ONLY_TRADES = new Set(["washerwoman", "midwife", "spinner"]);
+const MEN_ONLY_TRADES = new Set(["reeve", "bailiff", "watchman", "soldier", "gravedigger", "ferryman"]);
+const TRADE_MINIMUM_AGE = {
+  midwife: 30, healer: 26, reeve: 30, bailiff: 28, clerk: 20, scribe: 20,
+  teacher: 22, sexton: 20, sacristan: 18, watchman: 18, soldier: 18,
+  blacksmith: 18, merchant: 22, innkeeper: 22, miller: 20, brewer: 18,
+  mason: 18, carpenter: 18, tanner: 18, butcher: 18, herbalist: 20,
+  candlemaker: 18, cooper: 18, dyer: 18, potter: 18, thatcher: 18
+};
+
+function tradeSuitsPerson(occupation, sex, age) {
+  if (WOMEN_ONLY_TRADES.has(occupation) && sex !== "female") return false;
+  if (MEN_ONLY_TRADES.has(occupation) && sex !== "male") return false;
+  return age >= (TRADE_MINIMUM_AGE[occupation] || 0);
 }
 
 function activeResidents(state) {

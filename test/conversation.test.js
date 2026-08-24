@@ -50,6 +50,10 @@ test("priest speech intent drives mechanics while AI deltas are ignored", () => 
 test("disclosure thresholds reveal hidden concerns organically", () => {
   const state = createGame("disclosure-threshold-seed");
   const visit = beginVisit(state);
+  /* Only a guarded matter has anything left to disclose. Most scenarios put
+     their concern in the opening words, and this test is about the other kind,
+     so the guard is set deliberately rather than hoped for from the seed. */
+  visit.hiddenConcernDisclosed = false;
   visit.intent.disclosureThreshold = 20;
   recordExchange(state, "I hear you and understand. Tell me the truth.", fallbackConversation(state, "I hear you and understand. Tell me the truth."));
   assert.equal(visit.hiddenConcernDisclosed, true);
