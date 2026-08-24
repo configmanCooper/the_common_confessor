@@ -457,10 +457,16 @@ async function main() {
         response = { ...fallbackConversation(state, priestText), source: "fallback", voiceError: error.message };
       }
       recordExchange(state, priestText, response);
+      /* What the parish actually recorded, not what the model first said. The
+         two differ - stutters and stray markup are cleaned on the way in - and
+         a transcript that shows the raw output is a transcript of a
+         conversation that never happened. */
+      const spokenReply = [...state.currentVisit.history].reverse()
+        .find((entry) => entry.speaker === "visitor")?.text ?? response.reply;
       const exchange = {
         priest: priestText,
         priestReason: decision.reason,
-        visitor: response.reply,
+        visitor: spokenReply,
         source: response.promptTrace?.responseSource || response.source || "unknown",
         transformations: (response.promptTrace?.transformations || []).map((entry) => entry.type),
         churchGift: response.churchAidApplied || null,
@@ -470,7 +476,7 @@ async function main() {
       visitLog.exchanges.push(exchange);
       recent.push(`Told ${visitor?.firstName}: ${priestText.slice(0, 70)}`);
       console.log(`   YOU: ${priestText.slice(0, 100)}`);
-      console.log(`   ${visitor?.firstName}: ${String(response.reply).slice(0, 100)}`);
+      console.log(`   ${visitor?.firstName}: ${String(spokenReply).slice(0, 100)}`);
       if (exchange.churchGift) {
         console.log(`   * gave ${exchange.churchGift.amount} ${exchange.churchGift.amount === 1
           ? String(exchange.churchGift.unit).replace(/ies$/, "y").replace(/ves$/, "f").replace(/s$/, "")
