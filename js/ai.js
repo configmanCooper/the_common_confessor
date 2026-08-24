@@ -16,6 +16,7 @@ import {
   churchDonationCapacity,
   churchResourceRows,
   mentionsChurchResource,
+  namesChurchResource,
   parseChurchTransferIntent,
   readDonationRequest
 } from "./church.js";
@@ -2425,6 +2426,14 @@ export class ParishAiClient extends EventTarget {
        conversation about letters. Nothing leaves the stores unless the priest
        actually offered something in the words he just spoke. */
     const priestOffered = mentionsGiving(playerText) || stagedGifts.length > 0;
+    /* Offering one thing is not offering everything. Staging firewood licensed
+       the visitor's account of a loaf of bread, because the gate asked only
+       whether *something* had been offered. Each thing that leaves the stores
+       has to have been offered in its own right. */
+    const offeredResource = (key) => (
+      stagedGifts.some((gift) => gift.resource === key)
+      || (mentionsGiving(playerText) && namesChurchResource(playerText, key))
+    );
     if (requestedGifts.length && !priestOffered) {
       transformations.push({
         type: "gift_rejected",
@@ -2450,6 +2459,14 @@ export class ParishAiClient extends EventTarget {
           type: "gift_rejected",
           detail: `unknown church resource "${requested?.resource}"`,
           code: "naturalConversation:churchGift"
+        });
+        continue;
+      }
+      if (!offeredResource(row.key)) {
+        transformations.push({
+          type: "gift_rejected",
+          detail: `the priest offered no ${row.label.toLowerCase()} in this turn`,
+          code: "naturalConversation:resourceNotOffered"
         });
         continue;
       }

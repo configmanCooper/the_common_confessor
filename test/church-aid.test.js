@@ -348,23 +348,38 @@ test("ordinary speech containing a giving word opens nothing", async () => {
 });
 
 test("a real offer still opens the stores however it is phrased", async () => {
+  /* Each line offers one particular thing, and that is the thing that must
+     move. Offering herbs does not license a loaf. */
   const offers = [
-    "Take two loaves from the church stores.",
-    "I shall send medicinal herbs for the child.",
-    "Here are four silver pennies.",
-    "The parish can spare a sack of grain."
+    ["Take two loaves from the church stores.", "bread"],
+    ["I shall send medicinal herbs for the child.", "medicine"],
+    ["Here are four silver pennies.", "coin"],
+    ["The parish can spare a sack of grain.", "grain"]
   ];
-  for (const [index, line] of offers.entries()) {
+  for (const [index, [line, resource]] of offers.entries()) {
     const { state, person } = scene(`gift-real-offer-${index}`);
     const before = { ...state.churchResources };
     const client = naturalClient({
       understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n", proposedActions: [],
-      priestGivesFromChurch: [{ resource: "bread", amount: 1 }]
+      priestGivesFromChurch: [{ resource, amount: 1 }]
     });
     const response = await client.conversation(state, person, line);
     recordExchange(state, line, response);
-    assert.equal(state.churchResources.bread, before.bread - 1, `"${line}" gave nothing`);
+    assert.equal(state.churchResources[resource], before[resource] - 1, `"${line}" gave nothing`);
   }
+});
+
+test("offering one thing does not license another", async () => {
+  const { state, person } = scene("gift-cross-resource");
+  const before = { ...state.churchResources };
+  const line = "I shall send medicinal herbs for the child.";
+  const client = naturalClient({
+    understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n", proposedActions: [],
+    priestGivesFromChurch: [{ resource: "bread", amount: 1 }]
+  });
+  const response = await client.conversation(state, person, line);
+  recordExchange(state, line, response);
+  assert.equal(state.churchResources.bread, before.bread, "herbs were offered, not bread");
 });
 
 test("the priest can hand something over without saying so", async () => {
