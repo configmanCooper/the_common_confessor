@@ -38,7 +38,8 @@ import {
   validateAgentChoice
 } from "../js/agent.js";
 import { copilotComplete } from "./copilot-provider.mjs";
-import { personaById, personaIds } from "../js/priest_personas.js";
+import { personaById, personaIds, PLAYTESTER_MANNERS } from "../js/priest_personas.js";
+import { challengeFor, verifyAgainstRecord } from "../js/parish_record.js";
 import { WEEK_DAYS } from "../js/data.js";
 
 function dayLabel(day, week) {
@@ -68,6 +69,13 @@ const VOICE_ENDPOINT = option("voice", "http://127.0.0.1:8095");
 
 const log = [];
 const snapshots = [];
+/* The playtesting priest audits every answer against the parish record. These
+   carry the findings from one turn into the next turn's instructions, and
+   accumulate the whole run's contradictions for the report. */
+const AUDIT_RECORD = PERSONA_ID === "playtester";
+const recordAudit = [];
+let challenges = [];
+let mannerIndex = 0;
 let agentCalls = 0;
 let agentFailures = 0;
 let refusedMoves = 0;
@@ -251,6 +259,9 @@ function writeTranscript(state) {
       lines.push(`PRIEST: ${exchange.priest ?? "(said nothing)"}`);
       if (exchange.priestReason) lines.push(`        [why: ${exchange.priestReason}]`);
       lines.push(`${entry.visitor}: ${exchange.visitor ?? "(said nothing)"}`);
+      for (const finding of exchange.recordFindings || []) {
+        lines.push(`        !! the record disagrees — ${finding.claim}; ${finding.truth}`);
+      }
       if (exchange.churchGift) {
         lines.push(`        >>> gave ${exchange.churchGift.amount} ${exchange.churchGift.unit} of ${exchange.churchGift.label.toLowerCase()} from the church stores`);
       }
@@ -275,6 +286,15 @@ function flush(state, { final = false } = {}) {
       agentCalls,
       agentFailures,
       refusedMoves,
+      /* Every place the parish contradicted itself, with what was said and
+         what the record actually holds. */
+      recordAudit: AUDIT_RECORD ? recordAudit : undefined,
+      recordAuditSummary: AUDIT_RECORD
+        ? recordAudit.reduce((tally, entry) => {
+          tally[entry.kind] = (tally[entry.kind] || 0) + 1;
+          return tally;
+        }, {})
+        : undefined,
       turns: log.reduce((total, entry) => total + (entry.exchanges?.length || 0), 0),
       finalBoard: describeBoard(state),
       trackedPeople: [...trackedPeople.values()].map((entry) => ({
@@ -303,7 +323,23 @@ async function askAgent(prompt) {
 
 /** Ask for a move, and give the model one chance to correct an illegal one. */
 async function chooseMove(state, moves, recent) {
-  let prompt = buildAgentPrompt(state, moves, { steer: STEER, recent, persona: PERSONA });
+  /* The playtester is handed the exact discrepancy the record found in the
+     last answer, so his challenge is grounded in state rather than in a hunch,
+     and he rotates his manner so one run exercises the whole cast of priests. */
+  let steer = STEER;
+  if (AUDIT_RECORD) {
+    const extra = [];
+    if (challenges.length) {
+      extra.push(
+        "THE PARISH RECORD DISAGREES WITH WHAT THIS PERSON JUST SAID. Put this to them directly, in your own words, before anything else:",
+        ...challenges.map((line) => `  - ${line}`)
+      );
+    }
+    const manner = personaById(PLAYTESTER_MANNERS[mannerIndex % PLAYTESTER_MANNERS.length]);
+    if (manner) extra.push(`For this visit, counsel in this manner: ${manner.description}`);
+    steer = [STEER, ...extra].filter(Boolean).join("\n");
+  }
+  let prompt = buildAgentPrompt(state, moves, { steer, recent, persona: PERSONA });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let raw;
     try {
@@ -413,6 +449,33 @@ async function main() {
       trackPerson(state, subjectId, "involved in the matter discussed");
     }
     console.log(`[${dayLabel(dayBefore, state.calendar.week)}] ${visitor?.name} (${visitor?.occupation}) — ${visit.issue.kind} in the ${visit.location}`);
+    /* A fresh visitor, so nothing is outstanding to challenge yet, and the
+       playtester moves on to the next priest's manner. */
+    if (AUDIT_RECORD) {
+      challenges = [];
+      mannerIndex += 1;
+      const manner = PLAYTESTER_MANNERS[mannerIndex % PLAYTESTER_MANNERS.length];
+      console.log(`   (playtesting in the manner of the ${manner} priest)`);
+      /* The opening line is state too, and worth checking before a word is
+         exchanged. */
+      const openingFindings = verifyAgainstRecord(state, visit.history[0]?.text || "", {
+        person: visitor,
+        visit
+      });
+      for (const finding of openingFindings) {
+        recordAudit.push({
+          day: state.calendar.absoluteDay,
+          visitor: visitor?.name || null,
+          said: String(visit.history[0]?.text || "").slice(0, 200),
+          whenSaid: "opening",
+          ...finding
+        });
+      }
+      if (openingFindings.length) {
+        challenges = openingFindings.map(challengeFor);
+        console.log(`   ! record disagrees with the opening: ${openingFindings.map((entry) => entry.kind).join(", ")}`);
+      }
+    }
     const visitLog = {
       kind: "visit",
       day: dayBefore,
@@ -499,6 +562,31 @@ async function main() {
         churchGifts: response.churchAidsApplied || [],
         understoodAs: response.promptTrace?.understoodPlayerAs || ""
       };
+      /* The playtesting priest checks every answer against the parish record
+         and is told, before his next turn, exactly where it failed to match.
+         The check is deterministic and reads only true state, so a finding is
+         a genuine contradiction rather than a second opinion from a model. */
+      if (AUDIT_RECORD) {
+        const findings = verifyAgainstRecord(state, spokenReply, {
+          person: visitorFor(state, state.currentVisit),
+          visit: state.currentVisit
+        });
+        if (findings.length) {
+          exchange.recordFindings = findings;
+          for (const finding of findings) {
+            recordAudit.push({
+              day: state.calendar.absoluteDay,
+              visitor: visitor?.name || null,
+              said: String(spokenReply).slice(0, 200),
+              ...finding
+            });
+          }
+          challenges = findings.map(challengeFor);
+          console.log(`   ! record disagrees: ${findings.map((entry) => entry.kind).join(", ")}`);
+        } else {
+          challenges = [];
+        }
+      }
       visitLog.exchanges.push(exchange);
       recent.push(`Told ${visitor?.firstName}: ${priestText.slice(0, 70)}`);
       console.log(`   YOU: ${priestText.slice(0, 100)}`);

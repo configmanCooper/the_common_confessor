@@ -1638,7 +1638,7 @@ export function contradictedIdentities(state, text) {
       if (Number.isFinite(claimed) && bearers.length
         && !bearers.some((person) => Math.abs(person.age - claimed) <= 2)) {
         problems.set(
-          `${name} is not ${claimed}`,
+          `${name} is ${claimed}`,
           `${name} is ${bearers.map((person) => person.age).join(" or ")}`
         );
       }
@@ -1658,7 +1658,7 @@ export function contradictedIdentities(state, text) {
     if (bearers.length && !bearers.some((person) => LIFE_STAGE_WORDS[stage](person))) {
       const person = bearers[0];
       problems.set(
-        `${name} is not a ${stage}`,
+        `${name} is a ${stage}`,
         `${name} is ${person.sex === "female" ? "a female" : "a male"} aged ${person.age}`
       );
     }
