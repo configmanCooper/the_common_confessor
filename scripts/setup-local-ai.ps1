@@ -7,10 +7,11 @@
   fetches one and the runtime that serves it, and puts both inside this
   project's own folder, where start.cmd will find them.
 
-  Two large downloads, done once:
+  Two downloads, done once:
 
-    llama.cpp   about  90 MB   the server that runs the model
-    Gemma 3n    about 4.5 GB   the model itself
+    llama.cpp   about 640 MB   the server that runs the model, with CUDA
+                               (about 18 MB for the CPU-only build)
+    Gemma 3n    about 4.0 GB   the model itself
 
   Both are resumable. If the download is interrupted, run this again and it
   picks up where it stopped rather than starting over.
@@ -56,10 +57,12 @@ $serverExe = Join-Path $runtimeBin "llama-server.exe"
 $release = "b10182"
 $modelUrl = "https://huggingface.co/bartowski/google_gemma-3n-E4B-it-GGUF/resolve/main/$modelFile" + "?download=true"
 
-# The model is about 4.5 GB. Anything much smaller than this is a truncated
-# download or an error page saved under the wrong name, and llama.cpp's failure
-# in that case is obscure enough to be worth catching here instead.
-$modelMinimumBytes = 4GB
+# The model is a little under four gigabytes. Anything far short of that is a
+# truncated download or an error page saved under the wrong name, and
+# llama.cpp's failure in that case is obscure enough to be worth catching here
+# instead. The bar is deliberately below the true size rather than at it, so a
+# good file is never mistaken for a broken one and deleted.
+$modelMinimumBytes = 3.5GB
 
 function Write-Step($text) { Write-Host "" ; Write-Host $text -ForegroundColor Cyan }
 function Write-Note($text) { Write-Host "  $text" -ForegroundColor DarkGray }
@@ -116,6 +119,24 @@ if ($useCuda) {
 
 New-Item -ItemType Directory -Force $runtimeBin, $modelRoot | Out-Null
 
+# An install already usable by this game, possibly the shared one beside a
+# sibling project. Worth checking before spending four gigabytes on
+# a second copy of a file the machine already has.
+$existingModel = Get-ModelPath
+$existingServer = Get-ServerExePath
+
+if (-not $Force -and $existingModel -and $existingServer) {
+  Write-Host ""
+  Write-Host "Already installed." -ForegroundColor Green
+  Write-Note "runtime: $existingServer"
+  Write-Note "model:   $existingModel ($(Get-FileSizeText $existingModel))"
+  Write-Host ""
+  Write-Host "  Start the game with:  .\start.cmd"
+  Write-Host "  Re-download anyway:   .\scripts\setup-local-ai.ps1 -Force"
+  Write-Host ""
+  return
+}
+
 # ---------------------------------------------------------------- runtime ----
 Write-Step "1 of 2  The runtime that serves the model"
 
@@ -141,7 +162,7 @@ if ((Test-Path $serverExe) -and -not $Force) {
 }
 
 # ------------------------------------------------------------------ model ----
-Write-Step "2 of 2  The model itself (Gemma 3n E4B, about 4.5 GB)"
+Write-Step "2 of 2  The model itself (Gemma 3n E4B, about 4 GB)"
 
 $modelReady = (Test-Path $modelPath) -and ((Get-Item $modelPath).Length -ge $modelMinimumBytes)
 

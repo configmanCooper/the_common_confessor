@@ -55,7 +55,7 @@ if (-not $serverExe -or -not $modelPath) {
   throw @"
 The local model is not installed yet.
 
-Run this once to fetch it (about 4.5 GB, and it can be resumed):
+Run this once to fetch it (about 4 GB, and it can be resumed):
 
     .\scripts\setup-local-ai.ps1
 

@@ -56,8 +56,8 @@ That last step downloads two things into the project folder and nothing else:
 
 | | size | what it is |
 |---|---|---|
-| llama.cpp | ~90 MB | the server that runs the model |
-| Gemma 3n E4B (Q4_K_M) | ~4.5 GB | the model that speaks for the villagers |
+| llama.cpp | ~640 MB | the server that runs the model (~18 MB for the CPU-only build) |
+| Gemma 3n E4B (Q4_K_M) | ~4.0 GB | the model that speaks for the villagers |
 
 Neither is in this repository — a four-gigabyte model has no business in version control — and both are ignored by git once installed. The download is resumable: if it is interrupted, run the script again and it continues from where it stopped rather than starting over. It finishes by loading the model once to prove it works.
 

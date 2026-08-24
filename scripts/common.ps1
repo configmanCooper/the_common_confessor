@@ -21,7 +21,7 @@ function Get-ModelFileName { return $script:ModelFileName }
 # repository gets from scripts\setup-local-ai.ps1. It was originally written to
 # borrow them from a sibling project on this machine, so that location is still
 # accepted: an existing install should not have to be downloaded twice, and the
-# download is four and a half gigabytes.
+# download is four gigabytes.
 function Get-AiRoots {
   $roots = @($script:ConfessorRoot)
   if (Test-Path $script:CommonCrownRoot) { $roots += $script:CommonCrownRoot }
