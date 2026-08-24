@@ -1510,6 +1510,76 @@ export function unsupportedDebtClaims(state, person, visit, text) {
   return [...new Set(claims)];
 }
 
+/* Offices and trades a villager is given that they do not hold.
+
+   In a watched run the priest addressed "Bailiff Greymoor", who is a
+   schoolteacher. The man was real, so the phantom-name check passed him, but
+   the office was invented - and office is not decoration here. The priest can
+   summon the bailiff, call the watch and petition the reeve, so a teacher
+   wearing a bailiff's title is an authority that does not exist and counsel
+   built on it cannot be carried out. */
+const TITLE_OFFICES = {
+  bailiff: ["bailiff"],
+  reeve: ["reeve"],
+  watchman: ["watchman"],
+  constable: ["watchman", "bailiff"],
+  magistrate: ["magistrate"],
+  sheriff: ["bailiff", "reeve"],
+  steward: ["steward"],
+  clerk: ["clerk", "scribe"],
+  sexton: ["sexton", "sacristan"],
+  midwife: ["midwife"],
+  healer: ["healer", "herbalist"],
+  miller: ["miller"],
+  smith: ["blacksmith"],
+  blacksmith: ["blacksmith"],
+  baker: ["baker"],
+  brewer: ["brewer"],
+  innkeeper: ["innkeeper"],
+  merchant: ["merchant", "peddler"],
+  mason: ["mason"],
+  carpenter: ["carpenter"],
+  tanner: ["tanner"],
+  butcher: ["butcher"],
+  shepherd: ["shepherd", "goatherd"],
+  weaver: ["weaver"],
+  tailor: ["tailor"],
+  cobbler: ["cobbler"],
+  potter: ["potter"],
+  cooper: ["cooper"],
+  teacher: ["teacher"],
+  scribe: ["scribe", "clerk"],
+  gravedigger: ["gravedigger"],
+  ferryman: ["ferryman"],
+  forester: ["forester"],
+  hunter: ["hunter"]
+};
+
+export function misappliedTitles(state, text) {
+  const speech = String(text || "");
+  if (!speech.trim()) return [];
+  const found = new Map();
+  const titles = Object.keys(TITLE_OFFICES).join("|");
+  const pattern = new RegExp(`\\b(${titles})\\s+([A-Z][a-z]{2,})\\b`, "gi");
+  let match = pattern.exec(speech);
+  while (match !== null) {
+    const title = match[1].toLowerCase();
+    const named = match[2];
+    const allowed = TITLE_OFFICES[title] || [];
+    /* Several people may share a surname, so the title is honest if anybody of
+       that name holds the office. */
+    const bearers = (state.residents || []).filter((person) => (
+      person.alive !== false
+      && (person.surname === named || person.firstName === named)
+    ));
+    if (bearers.length && !bearers.some((person) => allowed.includes(person.occupation))) {
+      found.set(`${match[1]} ${named}`, bearers[0].occupation);
+    }
+    match = pattern.exec(speech);
+  }
+  return [...found].map(([phrase, occupation]) => `${phrase} (who is a ${occupation})`);
+}
+
 function openThreadsForPrompt(visit, limit = 3) {
   const rows = [];
   for (const obligation of (visit.continuity?.obligationStack || [])) {
@@ -2424,6 +2494,7 @@ export class ParishAiClient extends EventTarget {
       "- Only name people you know or who were already named. Never invent an official, expert, place, or institution; say plainly if no one suitable exists.",
       "- This also means ordinary villagers. Every soul in this parish is already named, and the names above are the only ones you have. Never make up a personal name for a neighbour, a fellow worker, an apprentice, a sick man, or a child. Speak of them by role or relation instead: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'my sister's boy'. An invented name becomes a person who does not exist, and the priest will go looking for them.",
       "- Never invent money. Do not name a sum you owe, a sum owed to you, a loan, a creditor, or a price, unless it was given to you above. If your household owes nothing, do not hint that it does. The priest acts on what you tell him, and he will set about relieving a debt that was never real.",
+      "- Never give anyone an office or trade they do not hold. The people listed above are shown with their actual work; use it or use their plain name. Do not call a man Bailiff, Reeve, Watchman or Master of anything unless that is truly his office, because the priest can send for these people and will act on the authority you name.",
       "- The same holds for families and households. Surnames in this village are the ones listed above and no others: never speak of \"the Blackwood family\" or any house you have not been told exists. If you mean a household, name someone in it, or say \"the family up the lane\" without giving them a surname.",
       "- The priest does not leave his church. He cannot call on you at home, walk anywhere with you, or go to anyone himself. He can send for people to come to him, or send the watch. If he says he will come to you, you may gently say that you will come to him instead, or ask him to send someone.",
       "- Leave the priest something to take hold of: what you want, what you refuse, what would have to change, or a question he must answer.",
@@ -2575,10 +2646,12 @@ export class ParishAiClient extends EventTarget {
        it. Ask once for the line again, grounded in what is true. */
     const invented = unknownPersonNames(state, reply);
     const falseDebts = unsupportedDebtClaims(state, person, visit, reply);
-    if (invented.length || falseDebts.length) {
+    const wrongTitles = misappliedTitles(state, reply);
+    if (invented.length || falseDebts.length || wrongTitles.length) {
       const complaint = [
         invented.length ? `named nobody who exists: ${invented.join(", ")}` : "",
-        falseDebts.length ? `claimed a debt not in the ledger: ${falseDebts.join(", ")}` : ""
+        falseDebts.length ? `claimed a debt not in the ledger: ${falseDebts.join(", ")}` : "",
+        wrongTitles.length ? `gave an office nobody holds: ${wrongTitles.join(", ")}` : ""
       ].filter(Boolean).join("; ");
       transformations.push({
         type: "ungrounded_detail_regeneration",
@@ -2592,6 +2665,9 @@ export class ParishAiClient extends EventTarget {
             : "",
           falseDebts.length
             ? `- You spoke of owing ${falseDebts.join(" and ")}, but your household owes nothing. Do not invent a debt or a sum of money. Say what is actually true of your situation instead.`
+            : "",
+          wrongTitles.length
+            ? `- You called ${wrongTitles.join(" and ")}. Do not give anyone an office they do not hold. Use their plain name, or name the person who really holds that office.`
             : ""
         ].filter(Boolean).join("\n");
         const retryPrompt = buildPrompt(notes);
@@ -2610,6 +2686,7 @@ export class ParishAiClient extends EventTarget {
           retryReply
           && unknownPersonNames(state, retryReply).length === 0
           && unsupportedDebtClaims(state, person, visit, retryReply).length === 0
+          && misappliedTitles(state, retryReply).length === 0
         ) {
           raw = retry;
           reply = retryReply;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createGame, beginVisit, finishVisit } from "../js/simulation.js";
 import { advancePopulationDay } from "../js/population.js";
-import { unsupportedDebtClaims } from "../js/ai.js";
+import { misappliedTitles, unsupportedDebtClaims } from "../js/ai.js";
 
 /* Things the priest acts upon must be true.
 
@@ -126,8 +126,7 @@ test("nobody is mourned who is still alive", () => {
 /* The visitor confesses to hiding a fever and to having shared tools and meals,
    and the whole matter turns on whether it spreads - but the engine left them
    perfectly well, so they could not infect anyone, be treated, or worsen. */
-test("a confessed fever is a real fever in the simulation", () => {
-  let confessed = 0;
+test("a confessed fever is a real fever in the simulation", () => {  let confessed = 0;
   let notActuallyIll = 0;
   for (let seed = 0; seed < 30; seed += 1) {
     const state = villageWithHistory(`fever-${seed}`, 45);
@@ -156,5 +155,51 @@ test("a confessed fever is a real fever in the simulation", () => {
     notActuallyIll,
     0,
     `${notActuallyIll} of ${confessed} visitors confessed a fever they did not have`
+  );
+});
+
+/* Office is not decoration. The priest can summon the bailiff, call the watch
+   and petition the reeve, so a man wearing a title he does not hold is an
+   authority that does not exist, and counsel built on it cannot be carried out.
+
+   The subtlety is that surnames are shared. A watched run appeared to show the
+   priest inventing "Bailiff Greymoor" for a schoolteacher of that name - but
+   Eline Greymoor, of the same household, really is the bailiff, so the title
+   was honest. The check must look at everyone of the name, not the first
+   person it happens to find. */
+test("a title is honest when anybody of that name holds the office", () => {
+  const state = createGame("titles-shared-surname");
+  const officer = state.residents.find((person) => person.alive !== false && person.occupation === "bailiff");
+  if (!officer) return;
+  assert.deepEqual(
+    misappliedTitles(state, `I will speak to Bailiff ${officer.surname} about it.`),
+    [],
+    "a real bailiff was accused of holding an invented office"
+  );
+});
+
+test("an office nobody of that name holds is caught", () => {
+  const state = createGame("titles-invented");
+  const officeless = state.residents.find((person) => {
+    if (person.alive === false) return false;
+    const sharing = state.residents.filter((other) => (
+      other.alive !== false && other.surname === person.surname
+    ));
+    return sharing.every((other) => !["bailiff", "reeve", "watchman"].includes(other.occupation));
+  });
+  assert.ok(officeless, "every family in the parish holds an office, so nothing could be proved");
+  const found = misappliedTitles(state, `I fear Bailiff ${officeless.surname} will hear of it.`);
+  assert.ok(
+    found.length > 0,
+    `an invented office went unnoticed for the ${officeless.surname} family`
+  );
+});
+
+test("a name belonging to nobody is left to the phantom-name check", () => {
+  const state = createGame("titles-unknown");
+  assert.deepEqual(
+    misappliedTitles(state, "I fear Bailiff Nobodyhere will hear of it."),
+    [],
+    "an unknown name should not be reported as a wrong office"
   );
 });
