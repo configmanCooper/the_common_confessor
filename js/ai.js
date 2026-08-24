@@ -1612,6 +1612,9 @@ const TRANSFER_VERBS = /\b(?:give|gives|giving|gave|given|offer|offers|offered|s
 const HANDING_OVER = /\b(?:take|here|you may have|you shall have|you to have|let me|i have .{0,20}for you|carry .{0,20}(?:home|with you))\b/;
 /* The priest asking after someone else's means is the opposite of a gift. */
 const ASKS_ABOUT_THEIRS = /\b(?:do you|did you|have you|has he|has she|do they|is there|are there|what work|how much do you|any .{0,12}(?:missing|left|taken|stolen))\b/;
+/* Sending word is sending a message, not sending goods. "Send word that the
+   flour must not be delayed" mentions flour and sends nothing. */
+const SENDS_A_MESSAGE = /\bsend(?:s|ing)? (?:word|for|to|someone|him|her|them|a message|a letter)\b/;
 
 function givingClauses(text) {
   return String(text || "")
@@ -1634,6 +1637,7 @@ export function mentionsGiving(text) {
   for (const clause of givingClauses(speech)) {
     if (!mentionsChurchResource(clause)) continue;
     if (ASKS_ABOUT_THEIRS.test(clause)) continue;
+    if (SENDS_A_MESSAGE.test(clause) && !TRANSFER_VERBS.test(clause.replace(SENDS_A_MESSAGE, ""))) continue;
     if (TRANSFER_VERBS.test(clause) || HANDING_OVER.test(clause)) return true;
   }
   return false;

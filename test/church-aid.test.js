@@ -537,3 +537,26 @@ test("a real offer is still recognised, however it is phrased", () => {
 test("a gift buried in a sentence of questioning still counts", () => {
   assert.equal(mentionsGiving("Tell me what you did at the mill, and take this bread home with you."), true);
 });
+
+/* Every one of these is a real line from a watched run of the austere priest,
+   and every one of them opened the church stores. He is stern and gave nothing
+   away; the transcript recorded twelve gifts he never made. */
+test("the twelve spurious gifts from the austere run all stay shut", () => {
+  for (const line of [
+    "Fear does not excuse silence while Amold bears your guilt. Tell me plainly how your negligence caused the fire.",
+    "Take the moment, but use it to master fear, not to devise concealment. Name first what you took from the mill.",
+    "Good. You did not spread the tale, so you owe no public confession for it. Bring Berith and Thomas here tomorrow.",
+    "Then this is hearsay passed through four mouths, not testimony of sickness. You will tell Erora nothing further.",
+    "Pay the three pennies lawfully assessed, and bring the assessment and receipt here before market day.",
+    "Then begin with what cannot wait: send word to Milstan at once that the flour must not be delayed.",
+    "I do not leave this church; if sickness prevents you, send word and I shall require you to come when you are able."
+  ]) {
+    assert.equal(mentionsGiving(line), false, `still opens the stores: ${line}`);
+  }
+});
+
+test("sending word about a thing is not sending the thing", () => {
+  assert.equal(mentionsGiving("Send word to the miller that the flour must not be delayed."), false);
+  assert.equal(mentionsGiving("Send for the bailiff before the bread is shared out."), false);
+  assert.equal(mentionsGiving("I shall send bread to your household."), true);
+});
