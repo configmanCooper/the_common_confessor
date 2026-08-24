@@ -257,6 +257,9 @@ function seedPersonalHistories(state) {
     if (worst && (worst.resentment || 0) >= 26) {
       const other = findPerson(worst.targetId);
       if (other) {
+        /* The parish knows whether a neighbour is a man or a woman, so their
+           grievances should say so rather than reaching for a bare "them". */
+        const hisHer = other.sex === "female" ? "her" : "his";
         remember({
           type: "grievance",
           subjectId: other.id,
@@ -264,7 +267,7 @@ function seedPersonalHistories(state) {
             `${other.firstName} shorted me over a debt and has never owned it.`,
             `${other.firstName} spoke against me where the whole lane could hear.`,
             `${other.firstName} took work that was promised to me.`,
-            `${other.firstName} let their beasts into my ground and denied it after.`,
+            `${other.firstName} let ${hisHer} beasts into my ground and denied it after.`,
             `${other.firstName} carried a tale about my household that was not true.`
           ]),
           emotion: "resentment",
@@ -279,6 +282,7 @@ function seedPersonalHistories(state) {
     if (best && (best.affection || 0) >= 52) {
       const other = findPerson(best.targetId);
       if (other) {
+        const himHer = other.sex === "female" ? "her" : "him";
         remember({
           type: "kindness",
           subjectId: other.id,
@@ -286,7 +290,7 @@ function seedPersonalHistories(state) {
             `${other.firstName} sat with us through a bad winter and asked nothing for it.`,
             `${other.firstName} lent us grain when the larder was bare.`,
             `${other.firstName} worked my ground for me when I could not stand.`,
-            `${other.firstName} has never once repeated what I told them.`
+            `${other.firstName} has never once repeated what I told ${himHer}.`
           ]),
           emotion: "gratitude",
           day: -rng.int(30, 1200)
