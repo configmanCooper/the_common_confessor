@@ -71,11 +71,19 @@ export function verifyAgainstRecord(state, text, { person = null, visit = null, 
   const add = (kind, claim, truth) => findings.push({ kind, claim, truth });
 
   for (const name of unknownPersonNames(state, speech)) {
-    /* Two ways a name in the visitor's mouth is not their invention. The
-       priest may have introduced it - a villager is entitled to repeat, and
-       to deny, what was said to them - and the sentence may be a denial that
-       such a person exists, which is precisely the answer the record wants. */
-    if (new RegExp(`\\b${name}\\b`).test(String(priestText || ""))) continue;
+    const word = new RegExp(`\\b${name}\\b`, "g");
+    /* A name the priest introduced is not the visitor's invention - unless the
+       visitor put it in his mouth first, in which case exempting it would let
+       a phantom become permanent the moment the priest repeated it once. */
+    const priestUsed = new RegExp(`\\b${name}\\b`).test(String(priestText || ""));
+    const visitorUsedEarlier = (visit?.history || [])
+      .filter((line) => line.speaker === "visitor")
+      .some((line) => new RegExp(`\\b${name}\\b`).test(String(line.text || "")));
+    /* Denying that such a person exists is the answer the record wants. But a
+       denial followed by using the name anyway - "There is no Elara. I found
+       Elara's body" - is not a denial, it is cover, so the exemption only
+       stands where the name is used once. */
+    const uses = (speech.match(word) || []).length;
     const denial = new RegExp(
       `\\b(?:know|knew)\\s+(?:of\\s+)?(?:no|none|nobody|no one|no-one)\\b[^.!?]*\\b${name}\\b`
       + `|\\b(?:do|did)\\s+not\\s+know\\b[^.!?]*\\b${name}\\b`
@@ -83,7 +91,19 @@ export function verifyAgainstRecord(state, text, { person = null, visit = null, 
       + `|\\bno\\s+(?:such\\s+)?(?:person|man|woman|one)\\b[^.!?]*\\b${name}\\b`,
       "i"
     );
-    if (denial.test(speech)) continue;
+    if (uses === 1 && denial.test(speech)) continue;
+    if (uses > 1 && denial.test(speech)) {
+      /* Denying a person and then speaking of them in the same breath is not
+         an invention so much as an incoherence, and it is worth naming as
+         itself: "There is no Elara. I found Elara's body in the east field." */
+      add(
+        "self_contradiction",
+        `denied that ${name} exists and then spoke of ${name} anyway`,
+        "the same answer says both"
+      );
+      continue;
+    }
+    if (priestUsed && !visitorUsedEarlier) continue;
     add("invented_person", `spoke of ${name}`, `no one called ${name} lives in this parish`);
   }
   for (const entry of misappliedTitles(state, speech)) {
@@ -167,6 +187,8 @@ export function challengeFor(finding) {
       return `You ${finding.claim}. I buried no such person. ${finding.truth}. What do you mean by it?`;
     case "false_illness":
       return `You ${finding.claim}, but ${finding.truth}. Why do you say so?`;
+    case "self_contradiction":
+      return `You ${finding.claim}. Both cannot be true. Which is it?`;
     default:
       return `You said ${finding.claim}, and ${finding.truth}.`;
   }

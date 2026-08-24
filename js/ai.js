@@ -2945,11 +2945,19 @@ export class ParishAiClient extends EventTarget {
        will repeat it back, ask after them, and send the watch to find them. An
        invented debt is worse still, because the priest will set about relieving
        it. Ask once for the line again, grounded in what is true. */
-    const invented = unknownPersonNames(state, reply)
-      /* A name the priest has just used is not the visitor's invention. They
-         are entitled to repeat what was said to them, even where the priest
-         himself was mistaken, and correcting the priest is his own business. */
-      .filter((name) => !new RegExp(`\\b${name}\\b`).test(String(playerText || "")));
+    const priestSaid = String(playerText || "");
+    /* Everything this visitor has already said in the visit. A name the priest
+       uses is normally not the visitor's invention - but if the visitor put it
+       in his mouth in the first place, it is, and exempting it would let a
+       phantom become permanent the moment the priest repeated it once. */
+    const visitorSaidEarlier = (visit.history || [])
+      .filter((line) => line.speaker === "visitor")
+      .map((line) => line.text)
+      .join(" ");
+    const invented = unknownPersonNames(state, reply).filter((name) => {
+      const word = new RegExp(`\\b${name}\\b`);
+      return !word.test(priestSaid) || word.test(visitorSaidEarlier);
+    });
     const falseDebts = unsupportedDebtClaims(state, person, visit, reply);
     const wrongTitles = misappliedTitles(state, reply);
     const rewritten = contradictedIdentities(state, reply);
