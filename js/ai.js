@@ -1593,13 +1593,50 @@ const churchGiftProperty = {
    to establish that something was offered before the stores are opened. A
    model listing the parish's whole stock back as a gift is the failure this
    prevents. */
-function mentionsGiving(text) {
-  const speech = String(text || "").toLowerCase();
-  const givingVerb = /\b(?:give|gives|giving|gave|given|take|takes|have|has|keep|keeps|accept|receive|send|sends|sending|bring|brings|brought|offer|offers|spare|spares|share|shares|provide|provides|lend|lends|fetch|deliver|supply|supplies|grant|grants|distribute|allot|set aside|draw on|draw from|here)\b/.test(speech);
-  /* A giving word on its own means nothing: "take care", "have faith" and
-     "bring him to me" are ordinary speech. Something the church actually
-     keeps must be named as well before the stores are opened. */
-  return givingVerb && mentionsChurchResource(speech);
+/* Is the priest, in these words, actually handing something over?
+
+   This used to ask whether a giving-ish word and a church-ish word both
+   appeared somewhere in the sentence, which is not the same question at all.
+   "What work have you lately done at the mill, and do you know of any flour
+   missing?" contains "have" and "flour", and duly opened the stores and gave a
+   man a loaf in the middle of an interrogation.
+
+   The question is structural, so it is asked structurally. A gift lives in one
+   clause: the thing given and the act of giving are in the same breath. A
+   question is never a gift, however it is worded. And the giving has to be the
+   priest's own - him handing over, not him asking what someone else has. */
+
+const TRANSFER_VERBS = /\b(?:give|gives|giving|gave|given|offer|offers|offered|spare|spares|spared|share|shares|shared|provide|provides|lend|lends|grant|grants|granted|supply|supplies|deliver|delivers|distribute|allot|fetch|send|sends|sending|sent|bring|brings|brought|set aside|draw on|draw from)\b/;
+/* Handing something across without naming the act: "take this bread", "here,
+   two loaves for the children". */
+const HANDING_OVER = /\b(?:take|here|you may have|you shall have|you to have|let me|i have .{0,20}for you|carry .{0,20}(?:home|with you))\b/;
+/* The priest asking after someone else's means is the opposite of a gift. */
+const ASKS_ABOUT_THEIRS = /\b(?:do you|did you|have you|has he|has she|do they|is there|are there|what work|how much do you|any .{0,12}(?:missing|left|taken|stolen))\b/;
+
+function givingClauses(text) {
+  return String(text || "")
+    .toLowerCase()
+    /* Sentences first, then only the joins that genuinely start a new thought.
+       Commas are left alone: "here, two loaves for your children" is one act,
+       and splitting it would separate the giving from the thing given. */
+    .split(/[.!?;:]+/)
+    .flatMap((sentence) => (
+      /\?/.test(sentence) ? [] : sentence.split(/\band\b|\bbut\b|\bwhile\b/)
+    ))
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+export function mentionsGiving(text) {
+  const speech = String(text || "");
+  /* A question mark anywhere in a sentence makes the whole sentence an enquiry,
+     and the clause splitter above has already dropped those. */
+  for (const clause of givingClauses(speech)) {
+    if (!mentionsChurchResource(clause)) continue;
+    if (ASKS_ABOUT_THEIRS.test(clause)) continue;
+    if (TRANSFER_VERBS.test(clause) || HANDING_OVER.test(clause)) return true;
+  }
+  return false;
 }
 
 const naturalConversationSchema = {

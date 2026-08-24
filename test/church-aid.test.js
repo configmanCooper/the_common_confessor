@@ -10,6 +10,7 @@ import {
 } from "../js/simulation.js";
 import { compactReplayHistory, deserializeState, serializeState } from "../js/state.js";
 import { naturalClient } from "./semantic-test-client.js";
+import { mentionsGiving } from "../js/ai.js";
 
 /* Giving from the church stores must work from ordinary speech.
    The wording below is taken from a real save in which "Take these 4 silver
@@ -484,4 +485,55 @@ test("food does far more for a household that is genuinely short", async () => {
   const hungryGain = await gain(hungry, hungryHouse);
   const fullGain = await gain(comfortable, fullHouse);
   assert.ok(hungryGain > fullGain, "the same grain helped a full household as much as a starving one");
+});
+
+/* A watched run gave a man a loaf in the middle of an interrogation about a
+   theft, because the guard asked whether a giving-ish word and a church-ish
+   word both appeared somewhere in the sentence. They did: "what work HAVE you
+   done at the mill" and "any FLOUR missing". */
+test("an interrogation is not a gift, however many pantry words it contains", () => {
+  assert.equal(mentionsGiving(
+    "You were summoned because a grave matter may touch your name. Tell me plainly: "
+    + "what work have you lately done at the mill, and do you know of any flour missing "
+    + "or damage done there? Conceal nothing, even to shield another."
+  ), false);
+});
+
+test("asking after what somebody has is the opposite of giving it to them", () => {
+  for (const line of [
+    "Have you had bread today?",
+    "Do you have any grain left in the house?",
+    "Is there any flour missing from the stores?",
+    "Tell me what work you have done at the mill."
+  ]) {
+    assert.equal(mentionsGiving(line), false, `treated as a gift: ${line}`);
+  }
+});
+
+test("ordinary speech that happens to name food opens nothing", () => {
+  for (const line of [
+    "The bailiff says a sack of grain was taken from the mill.",
+    "You have my word, and I will not repeat it.",
+    "Bring him to me and we will settle it over bread and prayer."
+  ]) {
+    assert.equal(mentionsGiving(line), false, `treated as a gift: ${line}`);
+  }
+});
+
+test("a real offer is still recognised, however it is phrased", () => {
+  for (const line of [
+    "Take these two loaves for your children.",
+    "I will give you a sack of grain from the church stores.",
+    "I can spare you some medicine for the fever.",
+    "Here is a bundle of firewood; the nights are cold.",
+    "I shall provide bread for your household this week.",
+    "Let me give you medicine for the child.",
+    "You may have two loaves and a measure of beans."
+  ]) {
+    assert.equal(mentionsGiving(line), true, `a genuine offer was refused: ${line}`);
+  }
+});
+
+test("a gift buried in a sentence of questioning still counts", () => {
+  assert.equal(mentionsGiving("Tell me what you did at the mill, and take this bread home with you."), true);
 });
