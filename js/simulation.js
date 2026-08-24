@@ -4173,7 +4173,14 @@ function acceptedProposalRootSteps(state, visit, person) {
       actorId: person.id,
       targetId: actionType === "visit" ? relatedId : null,
       actionType,
-      intensity: Math.min(3, maximumIntensityForLicense(visit.eventLicense)),
+      /* Improvising is deliberately capped lower than named acts, because it
+         is the vaguest thing a person can resolve on. Asking for more than the
+         cap allows had every improvised step rejected on submission, wasting
+         one of the visitor's three resolutions every time. */
+      intensity: Math.min(
+        actionType === "improvise" ? 2 : 3,
+        maximumIntensityForLicense(visit.eventLicense)
+      ),
       title: proposal.rawText.slice(0, 100),
       description: `${person.name} acts on this accepted proposal: ${proposal.rawText}`,
       detail: actionType === "improvise" ? proposal.rawText.slice(0, 120) : ""

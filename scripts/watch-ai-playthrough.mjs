@@ -18,6 +18,7 @@ import {
   beginVisit,
   buyAtMarket,
   createGame,
+  departureCandidates,
   fallbackConversation,
   fallbackDeparturePlan,
   fallbackSermonOutcome,
@@ -486,7 +487,30 @@ async function main() {
       if (state.currentVisit.turnsUsed >= state.currentVisit.maxTurns) break;
     }
 
-    finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
+    /* What the visitor decides to do about what was just said to them. This is
+       the whole point of the conversation, so it must be read from the
+       conversation rather than settled by rule: the model chooses, the engine
+       validates every step, and the parish rules answer only when the model
+       cannot. */
+    let plan;
+    try {
+      plan = { ...(await voice.departure(state, departureCandidates(state))), source: "ai" };
+    } catch (error) {
+      plan = error.rejectedProposal
+        ? { ...error.rejectedProposal, source: "ai" }
+        : { ...fallbackDeparturePlan(state), source: "fallback" };
+      visitLog.departureError = error.message;
+    }
+    visitLog.departure = {
+      source: plan.source,
+      summary: plan.summary,
+      steps: (plan.steps || []).map((step) => ({
+        actorId: step.actorId,
+        targetId: step.targetId,
+        actionType: step.actionType
+      }))
+    };
+    finishVisit(state, plan);
     compactReplayHistory(state);
     log.push(visitLog);
     snapshot(state, `after ${visitor?.name || "visit"}`);
