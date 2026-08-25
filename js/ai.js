@@ -2892,8 +2892,19 @@ export class ParishAiClient extends EventTarget {
       `Play it exactly this hot, and no hotter: ${conversationIntensity(visit)}`,
       `What you came for: ${visit.intent.primaryMatter}. You want ${visit.intent.desiredOutcome}.`,
       softGuidance ? `Right now: ${softGuidance}` : "",
-      guarded ? "You have NOT yet told the priest your real secret. Do not blurt it out and do not invent one." : "",
-      !guarded && visit.intent.hiddenConcern
+      /* A conversational objective must not outlive the facts that supported
+         it. A reeve who came fearing to name a thief established, under
+         questioning, that he did not know who the thief was - and then went on
+         saying "I have no knowledge of who took it. I fear to speak of the
+         thief" for the rest of the visit, because nothing had retired the fear
+         when its subject disappeared. */
+      visit.intent.retiredConcern
+        ? `You have already told the priest, plainly, that you do not have this knowledge: ${visit.intent.retiredConcern} That matter is settled and you are no longer holding anything back about it. Do not return to fearing to reveal it, and do not hint that you know more than you have said.`
+        : "",
+      guarded && !visit.intent.retiredConcern
+        ? "You have NOT yet told the priest your real secret. Do not blurt it out and do not invent one."
+        : "",
+      !guarded && visit.intent.hiddenConcern && !visit.intent.retiredConcern
         ? `You have already told the priest this, and may speak of it freely: ${visit.intent.hiddenConcern}`
         : "",
       knowledgeLines.length

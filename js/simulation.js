@@ -1848,6 +1848,72 @@ function initializeVisitObligations(visit) {
   return visit;
 }
 
+/* An objective must not outlive the facts that supported it.
+ *
+ * A reeve arrived guarding the name of a thief. Questioned, he established
+ * that he had no idea who the thief was - and then went on saying "I have no
+ * knowledge of who took it. I fear to speak of the thief" for the rest of the
+ * visit, because the fear was part of his opening intent and nothing ever
+ * retired it. The result reads as madness rather than reticence.
+ *
+ * This looks for the visitor disclaiming, in their own words, the knowledge
+ * their secret presumes. Where they do, the secret is retired: they keep what
+ * they actually said, and stop guarding something they have admitted not to
+ * have.
+ */
+const KNOWLEDGE_SECRET = /\b(?:knows?|knew)\s+(?:who|which|what\s+(?:really|actually)|the\s+(?:thief|culprit|truth|name|identity))\b|\bthe\s+true\s+(?:thief|culprit|father|author)\b/i;
+/* A fact that already says nobody knows is not a secret being kept. The
+   framework's own uncertainty and constraint facts read very like one - "I
+   still do not know whether every accused person will admit the claim" - and
+   retiring those would quote gibberish back to the visitor as their settled
+   position. */
+const FACT_ALREADY_DENIES = /\b(?:do(?:es)?\s+not\s+know|did\s+not\s+know|never\s+knew|unknown|not\s+yet\s+known|cannot\s+say)\b/i;
+const FRAMEWORK_FACT_CATEGORIES = new Set([
+  "uncertainty", "mechanical_constraint", "mechanical_hypothesis", "authority"
+]);
+const DISCLAIMS_KNOWLEDGE = new RegExp(
+  "\\bI\\s+(?:have|had)\\s+no\\s+(?:knowledge|idea|notion)\\b"
+  + "|\\bI\\s+(?:do|did)\\s+not\\s+know\\s+(?:who|which|what|the\\s+name)"
+  + "|\\bI\\s+(?:cannot|can\\s+not|could\\s+not)\\s+say\\s+who\\b"
+  + "|\\bI\\s+know\\s+(?:nothing|no\\s+more|not)\\s+(?:of|about|who)\\b"
+  + "|\\bI\\s+have\\s+no\\s+further\\s+knowledge\\b"
+  + "|\\bno\\s+one\\s+saw\\b"
+  + "|\\bI\\s+never\\s+knew\\s+who\\b",
+  "i"
+);
+
+function reconcileVisitObjectives(visit, person, spokenReply) {
+  if (!visit?.intent) return;
+  if (!DISCLAIMS_KNOWLEDGE.test(String(spokenReply || ""))) return;
+  const names = [person?.firstName, person?.name, person?.surname]
+    .filter(Boolean)
+    .map((value) => String(value));
+  /* Only a claim about this speaker's own knowledge can be retired by this
+     speaker disclaiming it. A fact that someone else knows the thief stands. */
+  const aboutSpeaker = (text) => (
+    /\b(?:I|my)\b/.test(text) || names.some((name) => new RegExp(`\\b${name}\\b`).test(text))
+  );
+  const retired = [];
+  for (const fact of visit.scenarioFacts || []) {
+    const text = String(fact.text || "");
+    if (fact.retired) continue;
+    if (FRAMEWORK_FACT_CATEGORIES.has(fact.category)) continue;
+    if (FACT_ALREADY_DENIES.test(text)) continue;
+    if (!KNOWLEDGE_SECRET.test(text) || !aboutSpeaker(text)) continue;
+    fact.retired = true;
+    fact.speakable = false;
+    retired.push(text);
+  }
+  const secret = String(visit.intent.hiddenConcern || "");
+  if (secret && KNOWLEDGE_SECRET.test(secret) && !FACT_ALREADY_DENIES.test(secret) && aboutSpeaker(secret)) {
+    retired.push(secret);
+  }
+  if (!retired.length || visit.intent.retiredConcern) return;
+  visit.intent.retiredConcern = retired[0];
+  /* Once they have said they do not know, they are no longer withholding it. */
+  visit.hiddenConcernDisclosed = true;
+}
+
 export function beginVisit(state, { record = true } = {}) {
   if (!state.priest.alive) throw new Error("The priest is dead; no further appointments can begin");
   if (state.calendar.dayIndex === 6) {
@@ -2681,6 +2747,9 @@ export function recordExchange(state, playerText, response, { record = true } = 
   visit.turnsUsed += 1;
   visit.history.push({ speaker: "priest", text: cleanText });
   visit.history.push({ speaker: "visitor", text: reply });
+  /* Retire any objective the visitor has just talked themselves out of, before
+     the next turn is built from it. */
+  reconcileVisitObjectives(visit, person, reply);
   visit.lastVisitorReplies.push(reply);
   visit.lastVisitorReplies = visit.lastVisitorReplies.slice(-8);
   visit.stagnationCount = Math.max(0, Number(response.stagnationCount) || 0);
