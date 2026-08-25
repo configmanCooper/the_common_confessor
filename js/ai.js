@@ -96,19 +96,49 @@ function naturalReference(state, resident) {
     magistrate: "Magistrate",
     clerk: "Clerk"
   }[resident.occupation];
-  return title ? `${title} ${resident.surname}` : resident.firstName;
+  /* "Reeve Woodvale" is only a safe way to name a man if he is the only
+     Woodvale. In one parish a widow's late husband and the living reeve shared
+     a surname, and she told the priest that Reeve Woodvale was her dead
+     husband. Where the surname is shared, his full name is used instead - and
+     without the office in front of it, because the substitution that rewrites
+     names in dialogue would otherwise stack the title on each pass and produce
+     "Reeve Reeve Reeve Edric Marshbank". */
+  if (!title) return resident.firstName;
+  const sharedSurname = state.residents.some((candidate) => (
+    candidate.id !== resident.id
+    && candidate.surname === resident.surname
+    && (candidate.alive !== false || Boolean(candidate.deceased))
+  ));
+  return sharedSurname ? `the ${title.toLowerCase()}, ${resident.name}` : `${title} ${resident.surname}`;
 }
 
 function naturalizeDialogueNames(state, speaker, text) {
   let result = String(text || "");
+  let substituted = false;
   for (const resident of state.residents) {
     if (resident.id === speaker?.id || !result.toLowerCase().includes(resident.name.toLowerCase())) continue;
+    const reference = naturalReference(state, resident);
+    /* Where the reference still contains the full name - which happens when an
+       office holder shares a surname and must be named in full - replacing the
+       name with it would stack the office on every pass and give "Reeve Reeve
+       Reeve Edric Marshbank". Skip once the text already reads correctly. */
+    if (reference.includes(resident.name) && result.includes(reference)) continue;
+    const before = result;
     result = result.replace(
       new RegExp(`\\b${resident.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
-      naturalReference(state, resident)
+      reference
     );
+    if (result !== before) substituted = true;
   }
-  return result;
+  /* A substitution that begins with an article can land at the start of a
+     sentence, leaving "the reeve, Edric Marshbank can organize the inquiry"
+     opening in lower case. Only tidy where something was actually replaced, so
+     that an untouched line is not recorded as having been repaired. */
+  if (!substituted) return result;
+  return result.replace(
+    /(^|[.!?]\s+)([a-z])/g,
+    (whole, lead, letter) => `${lead}${letter.toUpperCase()}`
+  );
 }
 
 function spokenScenarioFact(text, state, person) {
@@ -2883,10 +2913,25 @@ export class ParishAiClient extends EventTarget {
       lastOwnLine
         ? `You ALREADY said: "${firstSentence(lastOwnLine, 160)}" — say something different from that, and answer what was actually just asked.`
         : "",
+      /* What the church can help with, without its books.
+         A villager pressed for exact numbers once recited the church's entire
+         inventory as her own household's - twenty-three pennies, fourteen
+         sacks of grain, sixteen bundles of onions - because those were the
+         only precise figures anywhere in her context. She has no way of
+         knowing what the church holds, and the engine already refuses a gift
+         the stores cannot cover, so the quantities were never needed. */
       `What the church has in store, if the priest offers you any of it: ${churchResourceRows(state.churchResources)
         .filter((row) => row.amount > 0)
-        .map((row) => `${row.label.toLowerCase()} [${row.key}], ${row.amount} ${row.unit} left`)
-        .join("; ") || "nothing at present"}.`,
+        .map((row) => `${row.label.toLowerCase()} [${row.key}]`)
+        .join("; ") || "nothing at present"}. You do not know how much of any of it the church holds, and must never state a quantity from its stores.`,
+      /* Their own stores, so that a question about their household has a
+         truthful answer to reach for. */
+      household
+        ? `What is in your own house, roughly: ${Math.max(0, Math.round(household.wealth / 4))} pennies, `
+          + `${Math.max(0, Math.round(household.food / 6))} measures of food in the larder, `
+          + `${Math.max(0, Math.round((household.fuel || 0) / 3))} bundles of firewood. `
+          + "You keep no written account, so give these as a countryman would - about, near enough, no more than - and say plainly when you do not know an exact number."
+        : "",
       `THE PRIEST JUST SAID: "${boundedString(playerText, 600)}"`,
       /* Ground truth about anyone he named, so the visitor never has to guess
          whether a person the priest mentions is real. */

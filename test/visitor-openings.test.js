@@ -156,6 +156,10 @@ test("ordinary dialogue uses first names while full-name questions remain explic
   oswyn.firstName = "Oswyn";
   oswyn.surname = "Page";
   oswyn.name = "Oswyn Page";
+  /* An office holder is referred to by his office - "Bailiff Page" - which is
+     correct but is not what this test is about. It is about ordinary
+     villagers, so make sure he is one. */
+  oswyn.occupation = "weaver";
   for (const resident of state.residents) {
     if (resident.id !== oswyn.id && resident.firstName === "Oswyn") {
       resident.firstName = `Other${resident.id}`;

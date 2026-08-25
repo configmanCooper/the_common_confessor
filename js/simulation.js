@@ -462,8 +462,10 @@ function addTheDeparted(residents, rng, surnames, { femaleNames, maleNames }) {
       /* Death ends the marriage, exactly as the engine's own death handler
          does: the departed keep no spouseId, or referential integrity breaks
          because the survivor does not point back at a grave. The bond is
-         carried by the survivor instead. */
+         carried by the survivor instead, whose standing must say so - a widow
+         recorded as single will speak of herself as never married. */
       widowCandidate.widowedFromId = departed.id;
+      widowCandidate.maritalStatus = "widowed";
       departed.survivingSpouseId = widowCandidate.id;
       bind(widowCandidate);
     } else if (role === "child") {
@@ -1751,8 +1753,33 @@ function escalateAuthority(state, actionType, actor, sourceEventId) {
 function createExternalVisitor(state, queued) {
   const definition = EXTERNAL_ROLES[queued.role];
   if (!definition) throw new Error(`Unknown external role: ${queued.role}`);
-  const rng = new SeededRng(`${state.seed}:external:${queued.id}:${queued.role}`);
-  const chosenName = queued.payload?.priestName || rng.pick(definition.names);
+  const chosenName = queued.payload?.priestName
+    || (queued.role === "steward" && state.town?.stewardName)
+    || (queued.role === "lord" && state.town?.lordName)
+    || new SeededRng(`${state.seed}:external-name:${queued.role}`).pick(definition.names);
+
+  /* An office is held by one man. This used to mint a fresh person on every
+     summons, seeded by the queue entry, so the manor steward called on Tuesday
+     was fifty-four and the one called on Wednesday was thirty-six - the same
+     name, the same office, two different people. Whoever already holds the
+     office is reused, and nothing about who they are is regenerated: only the
+     errand they have come about changes. */
+  const existing = (state.externalActors || []).find((actor) => (
+    actor.role === queued.role && actor.name === chosenName
+  ));
+  if (existing) {
+    existing.active = true;
+    existing.backstory = `${definition.title} visiting because ${queued.reason}.`;
+    existing.privatePressure = queued.reason;
+    if (queued.sourcePersonId && !existing.relationshipIds.includes(queued.sourcePersonId)) {
+      existing.relationshipIds.push(queued.sourcePersonId);
+    }
+    return { person: existing, definition };
+  }
+
+  /* Seeded by the office rather than the summons, so the man who holds it is
+     the same man every time he is sent for, even across a reload. */
+  const rng = new SeededRng(`${state.seed}:external:${queued.role}:${chosenName}`);
   const person = {
     id: `external-${String(state.nextExternalSequence++).padStart(4, "0")}`,
     name: chosenName,

@@ -51,9 +51,13 @@ test("the board only carries facts the priest has actually learned", () => {
   const board = describeBoard(state);
   const spoken = board.visitor.transcript.map((line) => line.said).join(" ").toLowerCase();
   const rest = JSON.stringify({ ...board, visitor: { ...board.visitor, transcript: [] } }).toLowerCase();
-  // The visitor's own name, trade and background are printed on screen.
+  // The visitor's own name, trade and background are printed on screen, and so
+  // is the description of the parish itself, which is flavour the priest reads
+  // before anyone walks in. A common noun such as "punishment" appearing in
+  // both that description and a private fact is a collision, not a leak.
   const onScreen = [
-    person.name, person.firstName, person.surname, person.occupation, board.visitor.background
+    person.name, person.firstName, person.surname, person.occupation, board.visitor.background,
+    state.town?.description, state.town?.name
   ].filter(Boolean).join(" ").toLowerCase();
   const unrevealed = (visit.scenarioFacts || []).filter((fact) => !visit.revealedFactIds.includes(fact.id));
   assert.ok(unrevealed.length, "the scenario revealed everything up front");

@@ -141,25 +141,50 @@ function titleCase(value) {
 }
 
 export function buildFirstNameBank(sex) {
-  const bank = new Set(sex === "female" ? HISTORICAL_FEMALE : HISTORICAL_MALE);
+  const historical = sex === "female" ? HISTORICAL_FEMALE : HISTORICAL_MALE;
+  const bank = new Set(historical);
   const suffixes = sex === "female" ? FEMALE_SUFFIXES : MALE_SUFFIXES;
+  const generated = new Set();
   for (const prefix of NAME_PREFIXES) {
     for (const suffix of suffixes) {
-      bank.add(titleCase(`${prefix}${suffix}`));
+      generated.add(titleCase(`${prefix}${suffix}`));
       /* The elided form exists to stop two vowels colliding — Odo and "ard"
          should be able to give Odord. It must only be used when the prefix
          actually ends in a vowel: dropping the vowel after a consonant welds
          the two halves into something no one could say, which is where Idrd,
-         Edld and Branrd came from. */
-      if (/[aeiou]$/i.test(prefix) && /^[aeiou]/i.test(suffix)) {
-        bank.add(titleCase(`${prefix}${suffix.slice(1)}`));
+         Edld and Branrd came from.
+
+         A one-letter suffix must never be elided either, because removing its
+         only letter leaves the bare prefix — which is how a midwife came to
+         be christened "The". */
+      if (suffix.length > 1 && /[aeiou]$/i.test(prefix) && /^[aeiou]/i.test(suffix)) {
+        generated.add(titleCase(`${prefix}${suffix.slice(1)}`));
       }
     }
+  }
+  /* Historical names are kept whatever their length - Guy is a real name - but
+     an assembled one must be long enough to read as a name and must not be an
+     ordinary English word. A midwife christened "The" breaks the parish at a
+     glance. */
+  for (const name of generated) {
+    if (name.length < 4) continue;
+    if (NOT_A_NAME.has(name.toLowerCase())) continue;
+    bank.add(name);
   }
   /* A prefix ending in the letter its suffix begins with would otherwise give
      Dannne three n's in a row. No English name has that. */
   return [...bank].map((name) => name.replace(/([a-z])\1{2,}/gi, "$1$1"));
 }
+
+/* Words the syllable generator can stumble into that no one is called. */
+const NOT_A_NAME = new Set([
+  "the", "and", "but", "for", "not", "all", "any", "one", "two", "was", "are",
+  "her", "his", "you", "who", "how", "why", "now", "yet", "its", "out", "off",
+  "old", "new", "this", "that", "them", "then", "than", "with", "from", "have",
+  "will", "shall", "must", "been", "were", "does", "done", "over", "some",
+  "such", "very", "when", "what", "where", "here", "there", "into", "onto",
+  "your", "mine", "ours", "they", "thee", "thou", "unto", "upon", "none"
+]);
 
 export function buildSurnameBank() {
   const bank = new Set(HISTORICAL_SURNAMES);
