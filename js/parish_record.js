@@ -15,6 +15,7 @@
 
 import {
   contradictedIdentities,
+  contradictedKinship,
   misappliedTitles,
   unknownPersonNames,
   unsupportedDebtClaims
@@ -116,6 +117,12 @@ export function verifyAgainstRecord(state, text, { person = null, visit = null, 
     const parts = String(entry).match(/^(.*?)\s*\((.*)\)$/);
     add("identity", parts ? parts[1] : entry, parts ? parts[2] : "the parish record says otherwise");
   }
+  /* Kinship is not decoration: the priest decides whom to summon, whom to
+     believe and where a duty lies on the strength of it. */
+  for (const entry of contradictedKinship(state, person, speech)) {
+    const parts = String(entry).match(/^(.*?)\s*\((.*)\)$/);
+    add("kinship", parts ? parts[1] : entry, parts ? parts[2] : "the parish record says otherwise");
+  }
   if (person) {
     for (const entry of unsupportedDebtClaims(state, person, visit, speech)) {
       const household = (state.households || []).find((home) => home.id === person.householdId);
@@ -181,6 +188,8 @@ export function challengeFor(finding) {
       return `You said ${finding.claim}. That is not his office. Name the man you actually mean.`;
     case "identity":
       return `You spoke as though ${finding.claim}. That is not so — ${finding.truth}. Tell me again, plainly.`;
+    case "kinship":
+      return `You said ${finding.claim}. That is not so — ${finding.truth}. Which do you mean?`;
     case "invented_debt":
       return `You ${finding.claim}, yet ${finding.truth}. Explain that to me.`;
     case "false_death":

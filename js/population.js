@@ -939,6 +939,11 @@ function processHealthAndAging(state, day, events) {
       const spouse = state.residents.find((candidate) => candidate.id === person.spouseId);
       if (spouse?.alive) {
         spouse.maritalStatus = "widowed";
+        /* Who they were widowed from, so the survivor can still name their own
+           husband. Clearing spouseId alone left the link on the dead side only,
+           and the roster then told a widow that her buried husband was merely
+           somebody of her household. */
+        spouse.widowedFromId = person.id;
         spouse.spouseId = null;
         spouse.marriageDay = null;
       }
@@ -1125,6 +1130,7 @@ function processViolence(state, day, events) {
       const spouse = state.residents.find((entry) => entry.id === target.spouseId);
       if (spouse?.alive) {
         spouse.maritalStatus = "widowed";
+        spouse.widowedFromId = target.id;
         spouse.spouseId = null;
         spouse.marriageDay = null;
       }

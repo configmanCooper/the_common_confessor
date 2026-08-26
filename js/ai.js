@@ -1504,24 +1504,108 @@ function householdTruthLine(state, person) {
   return `THE TRUTH OF YOUR HOUSEHOLD: ${parts.join(" ")}`;
 }
 
+/* What one villager is to another, derived from the parish record.
+ *
+ * The reviewer's point: identities, ages, kinship and trades should come from
+ * state and never from free generation. This is that, for kinship. A woman was
+ * asked what kin a neighbour was to her and answered "she is my neighbour" -
+ * when the record had the woman down as her mother, in the same household.
+ * The roster knew, but it labelled her "the person this matter concerns" and
+ * the kinship was never mentioned, because the first label won.
+ *
+ * So the relation is computed rather than assigned, and it travels with the
+ * name every time the name appears.
+ */
+export function kinshipTo(state, person, other) {
+  if (!person || !other || person.id === other.id) return null;
+  const female = other.sex === "female";
+  const mineParents = new Set(person.parentIds || []);
+  const mineChildren = new Set([...(person.childrenIds || []), ...(person.lostChildIds || [])]);
+  /* Several kin links are stored on one side only, and it is rarely the side
+     of the living villager doing the speaking: a buried parent keeps
+     childrenIds while the surviving child's parentIds is never updated, and a
+     villager widowed during play has spouseId cleared. Reading only the
+     speaker's own fields had the roster assert that a widow's buried husband
+     was merely "of your household" - and then reject her when she called him
+     her husband. Both directions are consulted. */
+  const otherParents = new Set(other.parentIds || []);
+  const otherChildren = new Set([...(other.childrenIds || []), ...(other.lostChildIds || [])]);
+
+  if (person.spouseId === other.id || other.spouseId === person.id) {
+    return female ? "your wife" : "your husband";
+  }
+  if (person.widowedFromId === other.id || other.survivingSpouseId === person.id) {
+    return female ? "your late wife" : "your late husband";
+  }
+  if (mineParents.has(other.id) || otherChildren.has(person.id)) {
+    return female ? "your mother" : "your father";
+  }
+  if (mineChildren.has(other.id) || otherParents.has(person.id)) {
+    return other.alive === false
+      ? (female ? "your daughter, who died" : "your son, who died")
+      : (female ? "your daughter" : "your son");
+  }
+  /* Sharing a parent makes them siblings, which the record never states
+     directly but always implies. */
+  if (mineParents.size && [...otherParents].some((id) => mineParents.has(id))) {
+    return female ? "your sister" : "your brother";
+  }
+  /* A grandparent is a parent of a parent, and worth naming because a villager
+     would never call one a neighbour. */
+  const byId = (id) => (state.residents || []).find((resident) => resident.id === id);
+  for (const parentId of mineParents) {
+    const parent = byId(parentId);
+    if (parent && parent.id !== person.id
+      && ((parent.parentIds || []).includes(other.id) || otherChildren.has(parent.id))) {
+      return female ? "your grandmother" : "your grandfather";
+    }
+  }
+  for (const childId of mineChildren) {
+    const child = byId(childId);
+    if (child && child.id !== person.id
+      && ([...(child.childrenIds || []), ...(child.lostChildIds || [])].includes(other.id)
+        || otherParents.has(child.id))) {
+      return female ? "your granddaughter" : "your grandson";
+    }
+  }
+  /* Only the living share a household. A grave keeps the householdId of the
+     family it was buried out of, which is not the same thing: a departed
+     neighbour would otherwise read as kin. */
+  if (other.alive !== false && person.householdId && other.householdId === person.householdId) {
+    return "of your household";
+  }
+  if ((person.relationshipIds || []).includes(other.id)) {
+    return other.alive === false ? "known to you, now dead" : "known to you";
+  }
+  return "not known to you personally";
+}
+
+/* Everything the record settles about a person, in one line.
+   Sex, age, trade, whether they are alive, and what they are to the speaker -
+   the fields the reviewer asked to be canonical rather than generated. */
+export function identityLine(state, person, other, role = "") {
+  const sex = other.sex === "female" ? "woman" : "man";
+  const kind = other.age < 2 ? "infant"
+    : other.age < 14 ? (other.sex === "female" ? "girl" : "boy")
+      : sex;
+  const kin = kinshipTo(state, person, other);
+  const buried = other.alive === false
+    ? `, buried${other.causeOfDeath ? ` (${other.causeOfDeath})` : ""}`
+    : "";
+  /* The matter-role and the kinship are both stated. One used to replace the
+     other, which is how a mother came to be described as a neighbour. */
+  const standing = [kin, role].filter(Boolean).join("; ");
+  return `${other.name} — ${kind}, aged ${other.age}, ${other.occupation}${standing ? `, ${standing}` : ""}${buried}`;
+}
+
 export function nameablePeople(state, person, visit, limit = 22) {
   const seen = new Set([person.id]);
   const rows = [];
-  const describe = (resident, standing) => {
-    const sex = resident.sex === "female" ? "woman" : "man";
-    const kind = resident.age < 2 ? "infant"
-      : resident.age < 14 ? (resident.sex === "female" ? "girl" : "boy")
-        : sex;
-    const buried = resident.alive === false
-      ? `, buried${resident.causeOfDeath ? ` (${resident.causeOfDeath})` : ""}`
-      : "";
-    return `${resident.name} — ${kind}, aged ${resident.age}, ${resident.occupation}${standing ? `, ${standing}` : ""}${buried}`;
-  };
-  const push = (resident, standing) => {
+  const push = (resident, role) => {
     if (!resident || seen.has(resident.id) || rows.length >= limit) return;
     if (resident.alive !== false && resident.active === false) return;
     seen.add(resident.id);
-    rows.push(describe(resident, standing));
+    rows.push(identityLine(state, person, resident, role));
   };
   const byId = (id) => state.residents.find((resident) => resident.id === id);
 
@@ -1531,21 +1615,20 @@ export function nameablePeople(state, person, visit, limit = 22) {
   const thread = state.issueThreads?.find((entry) => entry.id === visit?.issue?.threadId);
   for (const subjectId of thread?.subjectIds || []) push(byId(subjectId), "concerned in this matter");
 
-  /* Their own household and immediate family, living and buried. */
-  if (person.spouseId) push(byId(person.spouseId), person.sex === "female" ? "your husband" : "your wife");
-  if (person.widowedFromId) push(byId(person.widowedFromId), "your late spouse");
-  for (const parentId of person.parentIds || []) push(byId(parentId), "your parent");
-  for (const childId of person.childrenIds || []) push(byId(childId), "your child");
-  for (const lostId of person.lostChildIds || []) push(byId(lostId), "your child who died");
+  /* Their own household and immediate family, living and buried. The relation
+     is no longer written out here: identityLine derives it from the record, so
+     it is stated the same way wherever the person happens to appear. */
+  if (person.spouseId) push(byId(person.spouseId));
+  if (person.widowedFromId) push(byId(person.widowedFromId));
+  for (const parentId of person.parentIds || []) push(byId(parentId));
+  for (const childId of person.childrenIds || []) push(byId(childId));
+  for (const lostId of person.lostChildIds || []) push(byId(lostId));
   for (const resident of state.residents) {
-    if (resident.householdId === person.householdId) push(resident, "of your household");
+    if (resident.householdId === person.householdId) push(resident);
   }
 
   /* Everyone else they actually know, including the graves they carry. */
-  for (const relatedId of person.relationshipIds || []) {
-    const resident = byId(relatedId);
-    push(resident, resident?.alive === false ? "known to you, now dead" : "known to you");
-  }
+  for (const relatedId of person.relationshipIds || []) push(byId(relatedId));
 
   /* The officers, because counsel so often turns on sending for one. */
   for (const resident of state.residents) {
@@ -1620,15 +1703,91 @@ export function peopleThePriestNamed(state, person, playerText) {
       const standing = resident.alive === false
         ? `is dead — buried${resident.causeOfDeath ? `, of ${resident.causeOfDeath}` : ""}`
         : `is ${stage}, aged ${resident.age}, and works as ${resident.occupation}`;
-      const acquaintance = resident.alive === false
-        ? ""
-        : knownToThem.has(resident.id)
+      /* What they are to this villager comes from the record too, so a priest
+         asking what kin somebody is gets the answer the parish holds rather
+         than one the model has to guess at. */
+      const kin = kinshipTo(state, person, resident);
+      const acquaintance = kin === "not known to you personally"
+        ? " You do not know them personally, though you may have heard the name."
+        : kin === "known to you"
           ? " You know them."
-          : " You do not know them personally, though you may have heard the name.";
+          : ` They are ${kin}.`;
       rows.push(`${resident.name} ${standing}.${acquaintance}`);
     }
   }
   return rows.slice(0, 8);
+}
+
+/* Kinship the record contradicts.
+ *
+ * A woman told the priest that a neighbour had claimed sanctuary, when the
+ * record had that woman down as her own mother, in the same household. Kinship
+ * is not decoration: the priest decides whom to summon, whom to believe and
+ * where a duty lies on the strength of it. */
+const KIN_WORDS = {
+  mother: (kin) => kin === "your mother",
+  father: (kin) => kin === "your father",
+  wife: (kin) => kin === "your wife" || kin === "your late wife",
+  husband: (kin) => kin === "your husband" || kin === "your late husband",
+  son: (kin) => String(kin).startsWith("your son"),
+  daughter: (kin) => String(kin).startsWith("your daughter"),
+  brother: (kin) => kin === "your brother",
+  sister: (kin) => kin === "your sister",
+  neighbour: (kin) => ["known to you", "known to you, now dead", "not known to you personally"].includes(kin),
+  neighbor: (kin) => ["known to you", "known to you, now dead", "not known to you personally"].includes(kin),
+  stranger: (kin) => kin === "not known to you personally"
+};
+
+export function contradictedKinship(state, person, text) {
+  const speech = String(text || "");
+  if (!speech.trim() || !person) return [];
+  const found = new Map();
+  const words = Object.keys(KIN_WORDS).join("|");
+  /* "Anwyn is my mother", "my mother, Anwyn" - both orders. The kin word must
+     end there: "Janton is my mother's sister" is an in-law relation the record
+     cannot express, and reading it as a claim about the mother would have the
+     priest interrogate a truthful villager. */
+  const patterns = [
+    new RegExp(`\\b([A-Z][a-z]{2,})\\s+is\\s+my\\s+(${words})\\b(?!['\u2019]?s\\b)`, "g"),
+    new RegExp(`\\bmy\\s+(${words})\\b(?!['\u2019]?s\\b)\\s*,\\s*([A-Z][a-z]{2,})\\b`, "g")
+  ];
+  for (const [index, pattern] of patterns.entries()) {
+    let match = pattern.exec(speech);
+    while (match !== null) {
+      const name = index === 0 ? match[1] : match[2];
+      const claimed = String(index === 0 ? match[2] : match[1]).toLowerCase();
+      /* Somebody else's assertion, or a hypothetical, is not this villager
+         claiming anything. */
+      const lead = speech.slice(Math.max(0, match.index - 60), match.index);
+      if (/\b(?:said|says|swore|told|tells|claimed|claims|insisted|if|whether|suppose|unless)\b[^.!?]*$/i.test(lead)) {
+        match = pattern.exec(speech);
+        continue;
+      }
+      /* First names are not unique in this parish, so a claim is only wrong
+         when nobody of that name fits it - the same rule every other check in
+         this file uses. Judging the first match would accuse a man of lying
+         about his own brother because a stranger shares the name. */
+      const bearers = (state.residents || []).filter((resident) => (
+        resident.name === name || resident.firstName === name || resident.surname === name
+      ));
+      const test = KIN_WORDS[claimed];
+      if (bearers.length && test && !bearers.some((other) => {
+        const kin = kinshipTo(state, person, other);
+        return kin && test(kin);
+      })) {
+        const other = bearers[0];
+        /* Stated as what they said, not as its negation: the challenge and the
+           retry note both quote this back, and quoting the opposite of what a
+           villager said is no way to get them to correct it. */
+        found.set(
+          `${other.name} is your ${claimed}`,
+          `${other.name} is ${kinshipTo(state, person, other)}`
+        );
+      }
+      match = pattern.exec(speech);
+    }
+  }
+  return [...found].map(([claim, truth]) => `${claim} (${truth})`);
 }
 
 export function unknownPersonNames(state, text) {
@@ -2884,6 +3043,7 @@ export class ParishAiClient extends EventTarget {
       "- Your worry may turn out to be nothing. The matter that brought you here is what you believed when you set out, not a proven fact. If the priest's questions show that you were mistaken, that you feared more than the case warranted, that you misheard, or that no real harm was done at all, then say so and let it go. Do not hunt for a hidden wrong to justify having come. An honest 'I think I was wrong to fear it' is a good end to a visit.",
       "- Never give anyone an office or trade they do not hold. The people listed above are shown with their actual work; use it or use their plain name. Do not call a man Bailiff, Reeve, Watchman or Master of anything unless that is truly his office, because the priest can send for these people and will act on the authority you name.",
       "- The people above are listed with their sex and their age in years. Never contradict either. Do not call a woman he, do not speak of a child as a grown man or a suitor, do not give anyone an age, and do not describe an infant as able to work, court, marry or speak for themselves.",
+      "- Each of them is also listed with what they are to you: your mother, your son, your husband, of your household, known to you, not known to you personally. That is the truth of it. Never call your own kin a neighbour or a stranger, and never claim a kinship the list does not give you.",
       "- The same holds for families and households. Surnames in this village are the ones listed above and no others: never speak of \"the Blackwood family\" or any house you have not been told exists. If you mean a household, name someone in it, or say \"the family up the lane\" without giving them a surname.",
       "- The priest does not leave his church. He cannot call on you at home, walk anywhere with you, or go to anyone himself. He can send for people to come to him, or send the watch. If he says he will come to you, you may gently say that you will come to him instead, or ask him to send someone.",
       "- Leave the priest something to take hold of: what you want, what you refuse, what would have to change, or a question he must answer.",
@@ -3086,12 +3246,14 @@ export class ParishAiClient extends EventTarget {
     const falseDebts = unsupportedDebtClaims(state, person, visit, reply);
     const wrongTitles = misappliedTitles(state, reply);
     const rewritten = contradictedIdentities(state, reply);
-    if (invented.length || falseDebts.length || wrongTitles.length || rewritten.length) {
+    const wrongKin = contradictedKinship(state, person, reply);
+    if (invented.length || falseDebts.length || wrongTitles.length || rewritten.length || wrongKin.length) {
       const complaint = [
         invented.length ? `named nobody who exists: ${invented.join(", ")}` : "",
         falseDebts.length ? `claimed a debt not in the ledger: ${falseDebts.join(", ")}` : "",
         wrongTitles.length ? `gave an office nobody holds: ${wrongTitles.join(", ")}` : "",
-        rewritten.length ? `contradicted the parish record: ${rewritten.join(", ")}` : ""
+        rewritten.length ? `contradicted the parish record: ${rewritten.join(", ")}` : "",
+        wrongKin.length ? `mistook their own kin: ${wrongKin.join(", ")}` : ""
       ].filter(Boolean).join("; ");
       transformations.push({
         type: "ungrounded_detail_regeneration",
@@ -3108,7 +3270,10 @@ export class ParishAiClient extends EventTarget {
             : "",
           wrongTitles.length
             ? `- You called ${wrongTitles.join(" and ")}. Do not give anyone an office they do not hold. Use their plain name, or name the person who really holds that office.`
-            : ""
+            : "",
+        wrongKin.length
+          ? `- You said ${wrongKin.join(" and ")}. The list of people you may name says what each of them is to you. Use that, and never call your own kin a neighbour.`
+          : ""
         ].filter(Boolean).join("\n");
         const retryPrompt = buildPrompt(notes);
         prompt = retryPrompt.user;
@@ -3127,6 +3292,7 @@ export class ParishAiClient extends EventTarget {
           && unknownPersonNames(state, retryReply).length === 0
           && unsupportedDebtClaims(state, person, visit, retryReply).length === 0
           && misappliedTitles(state, retryReply).length === 0
+        && contradictedKinship(state, person, retryReply).length === 0
         ) {
           raw = retry;
           reply = retryReply;
