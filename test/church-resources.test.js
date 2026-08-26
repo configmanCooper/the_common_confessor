@@ -27,8 +27,32 @@ test("new parishes begin with named church stores", () => {
   });
 });
 
-test("promised church aid transfers real stores to the visitor's household", () => {
+test("church aid the priest hands over transfers real stores to the household", () => {
+  /* This used to pass the priest's words alone and expect bread to move. It
+     no longer does: a gift is an act, and what reaches the household is what
+     was actually handed over. Everything after that is unchanged. */
   const state = createGame("church-resource-aid");
+  const visit = beginVisit(state);
+  const person = materializeResident(state, visit.personId, true);
+  const household = state.households.find((entry) => entry.id === person.householdId);
+  const breadBefore = state.churchResources.bread;
+  const foodBefore = household.food;
+  recordExchange(state, "The church will give you 3 loaves of bread.", {
+    reply: "Thank you, Father. That will feed us tonight.",
+    memory: "The church promised bread.",
+    churchGifts: [{ resource: "bread", amount: 3 }]
+  });
+  assert.equal(state.churchResources.bread, breadBefore - 3);
+  /* Bread is worth two to a household, and doubles again when that household
+     is genuinely short, so assert the rule rather than a fixed number. */
+  const hungry = foodBefore < 55;
+  assert.equal(household.food, Math.min(100, foodBefore + 3 * 2 * (hungry ? 2 : 1)));
+  const replayed = replayGame(state.seed, state.commandLog, state.replayBase);
+  assert.equal(replayed.churchResources.bread, state.churchResources.bread);
+});
+
+test("the same words with nothing handed over move nothing", () => {
+  const state = createGame("church-resource-aid-words-only");
   const visit = beginVisit(state);
   const person = materializeResident(state, visit.personId, true);
   const household = state.households.find((entry) => entry.id === person.householdId);
@@ -38,13 +62,8 @@ test("promised church aid transfers real stores to the visitor's household", () 
     reply: "Thank you, Father. That will feed us tonight.",
     memory: "The church promised bread."
   });
-  assert.equal(state.churchResources.bread, breadBefore - 3);
-  /* Bread is worth two to a household, and doubles again when that household
-     is genuinely short, so assert the rule rather than a fixed number. */
-  const hungry = foodBefore < 55;
-  assert.equal(household.food, Math.min(100, foodBefore + 3 * 2 * (hungry ? 2 : 1)));
-  const replayed = replayGame(state.seed, state.commandLog, state.replayBase);
-  assert.equal(replayed.churchResources.bread, state.churchResources.bread);
+  assert.equal(state.churchResources.bread, breadBefore, "speech alone opened the stores");
+  assert.equal(household.food, foodBefore);
 });
 
 test("visitors can donate specific resources to the church after counsel", () => {

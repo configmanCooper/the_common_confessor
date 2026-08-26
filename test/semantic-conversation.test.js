@@ -84,6 +84,42 @@ test("the prompt sends recent turns and a summary rather than the whole transcri
   assert.ok(parsed.prompt.length < 4000, `turn prompt was ${parsed.prompt.length} characters`);
 });
 
+test("the prompt budget holds across parishes, not just one", async () => {
+  /* The budget was being sampled on a single seed, and passing by luck. When
+     the hour of a matter was added to every turn it sat at 4015 on the pinned
+     seed and would have failed - but on other seeds the same addition left
+     zero or negative margin while the pinned one still passed. A budget that
+     only one parish has to meet is not a budget. */
+  const lengths = [];
+  for (const seed of ["budget-a", "budget-b", "budget-c", "budget-d", "budget-e", "budget-f"]) {
+    const { state, person } = scene(seed);
+    for (let index = 0; index < 6; index += 1) {
+      recordExchange(state, `Priest line number ${index} about the matter.`, {
+        reply: `Visitor answer number ${index} about the matter.`,
+        memory: "m"
+      });
+    }
+    let length = 0;
+    const client = naturalClient((entry) => {
+      length = entry.prompt.length;
+      return {
+        understoodPlayerAs: "u",
+        reply: "I will answer something new, Father.",
+        npcIntent: "n",
+        proposedActions: []
+      };
+    });
+    await client.conversation(state, person, "And what will you do now?");
+    lengths.push({ seed, length });
+  }
+  const over = lengths.filter((entry) => entry.length >= 4000);
+  assert.deepEqual(
+    over.map((entry) => `${entry.seed}: ${entry.length}`),
+    [],
+    "these parishes exceeded the turn prompt budget"
+  );
+});
+
 test("the newest player text is presented last and verbatim", async () => {
   const { state, person } = scene("natural-newest-priority");
   let prompt = "";

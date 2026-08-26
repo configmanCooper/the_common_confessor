@@ -12,11 +12,28 @@ import { compactReplayHistory, deserializeState, serializeState } from "../js/st
 import { naturalClient } from "./semantic-test-client.js";
 import { mentionsGiving } from "../js/ai.js";
 
-/* Giving from the church stores must work from ordinary speech.
-   The wording below is taken from a real save in which "Take these 4 silver
-   pennies" deducted nothing, because the old parser only recognised phrases
-   like "I will give" or "from the church". The model now reports the gift and
-   the engine decides whether it is possible. */
+/* Giving from the church stores.
+
+   This file used to assert the opposite of what it asserts now. A gift was
+   recognised from the priest's ordinary speech: the visitor's model reported
+   what it believed had been handed over, and the engine honoured it whenever
+   his words looked like an offer.
+
+   That reading was a regex over English, and English refuses in unbounded
+   ways. A priest who said "I do not think I may give alms today" lost a dose
+   of medicine; "I will give no parish food until you name which households are
+   hungry" lost a loaf; "I will give you neither comfort nor God's alms" lost a
+   penny. Three rounds of narrowing bought three phrasings and the next run
+   found more.
+
+   So a gift is now an act rather than a turn of phrase. It leaves the stores
+   because the priest handed it over - the give button beside each resource, or
+   the validated "gives" field the watching model fills in - and for no other
+   reason. Everything downstream of that is unchanged, and is what these tests
+   still cover: the deduction, the household receiving it, the ledger, the
+   record, and what medicine does for somebody genuinely ill.
+
+   See gifts-are-acts.test.js for the rule itself. */
 
 function scene(seed) {
   const state = createGame(seed);
@@ -25,14 +42,26 @@ function scene(seed) {
   return { state, visit, person };
 }
 
+/* A priest who hands something over as he speaks.
+   The visitor's model still reports the gift, because it still has to react to
+   being handed something - but the report is no longer what moves it. The same
+   gift is staged, which is the act that does. */
 function givingClient(gift, reply = "Thank you, Father. It is a kindness.") {
-  return naturalClient((parsed) => ({
+  const client = naturalClient((parsed) => ({
     understoodPlayerAs: `The priest said: ${parsed.playerText}`,
     reply,
     npcIntent: "Accept what the priest is handing me.",
     priestGivesFromChurch: gift ? [gift] : [],
     proposedActions: []
   }));
+  const spoken = client.conversation.bind(client);
+  client.conversation = (state, person, playerText, options = {}) => spoken(
+    state,
+    person,
+    playerText,
+    { ...options, stagedGifts: options.stagedGifts || (gift ? [gift] : []) }
+  );
+  return client;
 }
 
 test("the church stores are offered to the model so a gift can be recognised", async () => {
@@ -136,14 +165,19 @@ test("merely discussing or promising aid transfers nothing", async () => {
   assert.equal(state.churchResources.coin, before);
 });
 
-test("the older phrase parser still works when the model reports no gift", async () => {
+test("the priest's own words no longer open the stores by themselves", async () => {
+  /* This test used to assert the opposite: that an engine-side parse of the
+     priest's typed words handed over bread when the visitor reported nothing.
+     It was the second of the two ways prose could spend the parish's stores,
+     and it survived the first attempt at closing them, because recordExchange
+     fell back to it whenever no gift came out of the exchange. */
   const { state, person } = scene("gift-legacy-parser");
   const before = state.churchResources.bread;
   const client = givingClient(null, "Thank you, Father.");
   const line = "The church will give you 2 loaves of bread.";
   const response = await client.conversation(state, person, line);
   recordExchange(state, line, response);
-  assert.equal(state.churchResources.bread, before - 2);
+  assert.equal(state.churchResources.bread, before, "speech alone opened the stores");
 });
 
 test("a priest who names several things in one breath gives all of them", async () => {
@@ -161,7 +195,13 @@ test("a priest who names several things in one breath gives all of them", async 
     ]
   }));
   const line = "Take two sacks of grain, four loaves, and a bundle of firewood.";
-  const response = await client.conversation(state, person, line);
+  const response = await client.conversation(state, person, line, {
+    stagedGifts: [
+      { resource: "grain", amount: 2 },
+      { resource: "bread", amount: 4 },
+      { resource: "firewood", amount: 1 }
+    ]
+  });
   assert.equal(response.churchGifts.length, 3);
   recordExchange(state, line, response);
   assert.equal(state.churchResources.grain, before.grain - 2);
@@ -187,7 +227,12 @@ test("one impossible item does not prevent the possible ones", async () => {
     ]
   });
   const line = "Take medicine and three loaves.";
-  const response = await client.conversation(state, person, line);
+  const response = await client.conversation(state, person, line, {
+    stagedGifts: [
+      { resource: "medicine", amount: 2 },
+      { resource: "bread", amount: 3 }
+    ]
+  });
   assert.equal(response.churchGifts.length, 1);
   assert.equal(response.churchGifts[0].resource, "bread");
   recordExchange(state, line, response);
@@ -195,7 +240,7 @@ test("one impossible item does not prevent the possible ones", async () => {
   assert.equal(state.churchResources.medicine, 0);
 });
 
-test("nothing leaves the stores when the priest offered nothing", async () => {
+test("nothing leaves the stores when the priest handed nothing over", async () => {
   const { state, person } = scene("gift-no-offer");
   const before = { ...state.churchResources };
   const client = naturalClient({
@@ -212,14 +257,14 @@ test("nothing leaves the stores when the priest offered nothing", async () => {
   const response = await client.conversation(state, person, line);
   assert.equal(response.churchGifts.length, 0);
   assert.ok(response.promptTrace.transformations.some((entry) => (
-    entry.code === "naturalConversation:noOfferMade"
+    entry.code === "naturalConversation:notHandedOver"
   )));
   recordExchange(state, line, response);
   assert.equal(state.churchResources.firewood, before.firewood);
   assert.equal(state.churchResources.beans, before.beans);
 });
 
-test("a gift the priest really offered is recorded and survives compaction", async () => {
+test("a gift the priest really handed over is recorded and survives compaction", async () => {
   const { state, person } = scene("gift-survives-compaction");
   const before = state.churchResources.medicine;
   const client = naturalClient({
@@ -230,7 +275,9 @@ test("a gift the priest really offered is recorded and survives compaction", asy
     priestGivesFromChurch: [{ resource: "medicine", amount: 2 }]
   });
   const line = "I shall send medicinal herbs from the church stores for the child.";
-  const response = await client.conversation(state, person, line);
+  const response = await client.conversation(state, person, line, {
+    stagedGifts: [{ resource: "medicine", amount: 2 }]
+  });
   recordExchange(state, line, response);
   assert.equal(state.churchResources.medicine, before - 2);
   finishVisit(state, { ...fallbackDeparturePlan(state), source: "fallback" });
@@ -293,10 +340,11 @@ test("confirming aid already promised does not give it twice", async () => {
     priestGivesFromChurch: [{ resource: "bread", amount: 2 }]
   });
   const offer = "Take two loaves from the church stores.";
-  recordExchange(state, offer, await client.conversation(state, person, offer));
+  const staged = { stagedGifts: [{ resource: "bread", amount: 2 }] };
+  recordExchange(state, offer, await client.conversation(state, person, offer, staged));
   assert.equal(state.churchResources.bread, before - 2);
   const restated = "I shall have the two loaves brought to your door.";
-  const second = await client.conversation(state, person, restated);
+  const second = await client.conversation(state, person, restated, staged);
   assert.equal(second.churchGifts.length, 0);
   assert.ok(second.promptTrace.transformations.some((entry) => entry.type === "gift_already_made"));
   recordExchange(state, restated, second);
@@ -313,13 +361,17 @@ test("raising an earlier offer gives only the difference", async () => {
     priestGivesFromChurch: [{ resource: "bread", amount: 2 }]
   });
   const first = "Take two loaves.";
-  recordExchange(state, first, await two.conversation(state, person, first));
+  recordExchange(state, first, await two.conversation(state, person, first, {
+    stagedGifts: [{ resource: "bread", amount: 2 }]
+  }));
   const four = naturalClient({
     understoodPlayerAs: "u", reply: "Bless you.", npcIntent: "n", proposedActions: [],
     priestGivesFromChurch: [{ resource: "bread", amount: 4 }]
   });
   const second = "Take four loaves in all, then.";
-  const response = await four.conversation(state, person, second);
+  const response = await four.conversation(state, person, second, {
+    stagedGifts: [{ resource: "bread", amount: 4 }]
+  });
   assert.equal(response.churchGifts[0].amount, 2, "the top-up should be the difference only");
   recordExchange(state, second, response);
   assert.equal(state.churchResources.bread, before - 4);
@@ -347,9 +399,9 @@ test("ordinary speech containing a giving word opens nothing", async () => {
   }
 });
 
-test("a real offer still opens the stores however it is phrased", async () => {
-  /* Each line offers one particular thing, and that is the thing that must
-     move. Offering herbs does not license a loaf. */
+test("what leaves the stores is what was handed over, whatever was said", async () => {
+  /* The wording used to decide this, and that is precisely the fault. Each
+     line now carries the same act, and the act is what moves. */
   const offers = [
     ["Take two loaves from the church stores.", "bread"],
     ["I shall send medicinal herbs for the child.", "medicine"],
@@ -363,9 +415,36 @@ test("a real offer still opens the stores however it is phrased", async () => {
       understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n", proposedActions: [],
       priestGivesFromChurch: [{ resource, amount: 1 }]
     });
-    const response = await client.conversation(state, person, line);
+    const response = await client.conversation(state, person, line, {
+      stagedGifts: [{ resource, amount: 1 }]
+    });
     recordExchange(state, line, response);
     assert.equal(state.churchResources[resource], before[resource] - 1, `"${line}" gave nothing`);
+  }
+});
+
+test("saying it without doing it moves nothing at all", async () => {
+  /* The same four lines, every one of them a plain offer in ordinary English,
+     with nothing handed over. This is the bug that kept coming back: a priest
+     who had explicitly refused alms still lost medicine, because his sentence
+     read like an offer to a regex. */
+  const said = [
+    "Take two loaves from the church stores.",
+    "I shall send medicinal herbs for the child.",
+    "Here are four silver pennies.",
+    "The parish can spare a sack of grain."
+  ];
+  for (const [index, line] of said.entries()) {
+    const { state, person } = scene(`gift-said-only-${index}`);
+    const before = { ...state.churchResources };
+    const client = naturalClient({
+      understoodPlayerAs: "u", reply: "Thank you, Father.", npcIntent: "n", proposedActions: [],
+      priestGivesFromChurch: [{ resource: "bread", amount: 2 }, { resource: "medicine", amount: 1 }]
+    });
+    const response = await client.conversation(state, person, line);
+    assert.deepEqual(response.churchGifts, [], `"${line}" moved something`);
+    recordExchange(state, line, response);
+    assert.deepEqual({ ...state.churchResources }, before, `"${line}" changed the stores`);
   }
 });
 
@@ -455,7 +534,9 @@ test("medicine given to someone genuinely ill treats the illness", async () => {
     priestGivesFromChurch: [{ resource: "medicine", amount: 3 }]
   });
   const line = "Take medicinal herbs from the church stores for the fever.";
-  recordExchange(state, line, await client.conversation(state, person, line, {}));
+  recordExchange(state, line, await client.conversation(state, person, line, {
+    stagedGifts: [{ resource: "medicine", amount: 3 }]
+  }));
   assert.equal(person.illness, null, "the fever was not treated");
   assert.ok(person.health > 40);
   if (thread) assert.ok(thread.pressure < pressureBefore, "relevant charity did not ease the matter");
@@ -494,7 +575,9 @@ test("food does far more for a household that is genuinely short", async () => {
       priestGivesFromChurch: [{ resource: "grain", amount: 2 }]
     });
     const line = "Take two sacks of grain from the church stores.";
-    recordExchange(setup.state, line, await client.conversation(setup.state, setup.person, line, {}));
+    recordExchange(setup.state, line, await client.conversation(setup.state, setup.person, line, {
+      stagedGifts: [{ resource: "grain", amount: 2 }]
+    }));
     return household.food - before;
   };
   const hungryGain = await gain(hungry, hungryHouse);

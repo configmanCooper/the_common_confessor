@@ -116,26 +116,44 @@ function naturalReference(state, resident) {
   return sharedSurname ? `the ${title.toLowerCase()}, ${resident.name}` : `${title} ${resident.surname}`;
 }
 
-function naturalizeDialogueNames(state, speaker, text) {
-  let result = String(text || "");
-  let substituted = false;
-  for (const resident of state.residents) {
-    if (resident.id === speaker?.id || !result.toLowerCase().includes(resident.name.toLowerCase())) continue;
-    const reference = naturalReference(state, resident);
-    /* Where the reference still contains the full name - which happens when an
-       office holder shares a surname and must be named in full - replacing the
-       name with it would stack the office on every pass and give "Reeve Reeve
-       Reeve Edric Marshbank". Skip once the text already reads correctly.
+/* The priest asking somebody for another person's other name.
+ *
+ * Shortening a full name to a first name is right in ordinary talk - a man
+ * says "Aelicia", not "Aelicia Fairworth". But it is wrong when the surname is
+ * the very thing that was asked for. A priest pressing "give Danger's and
+ * Wilina's surnames" was answered "Danger is my son, Danger", six times over:
+ * the villager supplied "Danger Rowanwright" exactly as the roster gives him,
+ * and the naturalizer took the surname off again on the way out. The villager
+ * looked evasive, the priest kept asking, and neither could ever get past it.
+ */
+const ASKS_FOR_A_FULL_NAME = new RegExp(
+  "\\b(?:full\\s+names?|surnames?|family\\s+names?|last\\s+names?|other\\s+names?"
+  + "|names?\\s+in\\s+full|whole\\s+names?|by\\s+what\\s+name)\\b",
+  "i"
+);
 
-       The model may also have written the office itself, which is how "Reeve
-       Lamlas Fairvale" became "Reeve the reeve, Lamlas Fairvale". */
-    if (reference.includes(resident.name) && result.includes(reference)) continue;
-    const before = result;
-    result = result.replace(
-      new RegExp(`\\b${resident.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
-      reference
-    );
-    if (result !== before) substituted = true;
+function naturalizeDialogueNames(state, speaker, text, { keepSurnames = false } = {}) {
+  let result = String(text || "");
+  let substituted = keepSurnames;
+  if (!keepSurnames) {
+    for (const resident of state.residents) {
+      if (resident.id === speaker?.id || !result.toLowerCase().includes(resident.name.toLowerCase())) continue;
+      const reference = naturalReference(state, resident);
+      /* Where the reference still contains the full name - which happens when an
+         office holder shares a surname and must be named in full - replacing the
+         name with it would stack the office on every pass and give "Reeve Reeve
+         Reeve Edric Marshbank". Skip once the text already reads correctly.
+
+         The model may also have written the office itself, which is how "Reeve
+         Lamlas Fairvale" became "Reeve the reeve, Lamlas Fairvale". */
+      if (reference.includes(resident.name) && result.includes(reference)) continue;
+      const before = result;
+      result = result.replace(
+        new RegExp(`\\b${resident.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+        reference
+      );
+      if (result !== before) substituted = true;
+    }
   }
   /* A substitution that begins with an article can land at the start of a
      sentence, leaving "the reeve, Edric Marshbank can organize the inquiry"
@@ -2069,7 +2087,159 @@ export function unknownPersonNames(state, text) {
     }
     match = pattern.exec(speech);
   }
+  /* A name is a pair, not two words that each happen to be known.
+  
+     Every part of "Valric Redstead" passed: there is a Valric Valebury and
+     there is an Idard Redstead, so both halves were familiar and the man was
+     waved through. He does not exist. The priest then sent for him, and the
+     invented father of an invented account became a fixture of the visit.
+     
+     Only a pair whose halves are both real name-parts is worth reporting - two
+     ordinary capitalised words are somebody else's problem, handled above -
+     and only where that exact person is nobody in the parish, living, buried,
+     or beyond it. */
+  const realFullNames = new Set();
+  const firstNames = new Set();
+  const surnames = new Set();
+  for (const resident of state.residents || []) {
+    if (resident.name) realFullNames.add(resident.name.toLowerCase());
+    if (resident.firstName) firstNames.add(resident.firstName.toLowerCase());
+    if (resident.surname) surnames.add(resident.surname.toLowerCase());
+  }
+  for (const actor of state.externalActors || []) {
+    if (actor.name) realFullNames.add(String(actor.name).toLowerCase());
+  }
+  if (state.priest?.name) realFullNames.add(String(state.priest.name).toLowerCase());
+  for (const parish of state.neighboringParishes || []) {
+    if (parish.priestName) realFullNames.add(String(parish.priestName).toLowerCase());
+  }
+  const pairPattern = /\b([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})\b/g;
+  let pair = pairPattern.exec(speech);
+  while (pair !== null) {
+    const [whole, first, second] = pair;
+    const lowerWhole = whole.toLowerCase();
+    if (
+      !realFullNames.has(lowerWhole)
+      && firstNames.has(first.toLowerCase())
+      && surnames.has(second.toLowerCase())
+      && !NON_NAME_CAPITALS.has(first)
+      && !NON_NAME_CAPITALS.has(second)
+      && !SAINTS_AND_FEASTS.has(first)
+      && !SAINTS_AND_FEASTS.has(second)
+    ) {
+      found.set(whole, (found.get(whole) || 0) + 1);
+    }
+    pair = pairPattern.exec(speech);
+  }
   return [...found.keys()];
+}
+
+/* Ages the record does not support.
+
+   A villager named an infant as his eyewitness and then, pressed for the
+   child's age, gave "a babe", "barely a few months old", "born three weeks
+   ago" and "just shy of four months" in the same conversation - and named two
+   different fathers for him. The roster hands the model every person's age in
+   years, so none of this was for want of knowing.
+
+   Two things are checkable and nothing else is. An age in years that differs
+   from the record is a plain contradiction. And an interval since birth
+   implies an age of nought, so claiming one for somebody the parish has down
+   as four years old is the same contradiction wearing different clothes. What
+   is deliberately not checked is vagueness: "a babe", "getting on", "past
+   sixty" are how people actually speak, and a guard that punished them would
+   make every villager sound like a clerk reading a roll.
+*/
+export function unsupportedAgeClaims(state, person, text) {
+  const speech = String(text || "");
+  if (!speech.trim()) return [];
+  const findings = new Map();
+  /* Villagers write numbers as words - "he is eleven years old", "born three
+     weeks ago" - and a check that only read digits saw none of it. */
+  const NUMBER_WORDS = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
+    nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
+    fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+    twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70,
+    eighty: 80, ninety: 90
+  };
+  const NUMBER = `(?:\\d{1,2}|${Object.keys(NUMBER_WORDS).join("|")})`;
+  const toNumber = (value) => {
+    const word = String(value || "").toLowerCase();
+    return /^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word] ?? null;
+  };
+  const bearersOf = (name) => (state.residents || []).filter((resident) => (
+    resident.name === name || resident.firstName === name || resident.surname === name
+  ));
+  /* The speaker may say their own age freely; it is their own. */
+  const isSelf = (name) => Boolean(person) && (
+    person.name === name || person.firstName === name || person.surname === name
+  );
+
+  /* "Danger is my son. He is eleven years old." The age hangs on a pronoun,
+     and the person it belongs to was named in the sentence before - which is
+     how people talk, and how the fabrication actually reached the priest. The
+     nearest preceding name is written back in so the check can see whose age
+     is being given. Only "he" and "she" opening a sentence, because anything
+     looser starts guessing. */
+  let resolved = "";
+  let antecedent = "";
+  for (const sentence of speech.split(/(?<=[.!?])\s+/)) {
+    const named = [...sentence.matchAll(/\b([A-Z][a-z]{2,})\b/g)]
+      .map((hit) => hit[1])
+      .filter((word) => bearersOf(word).length);
+    const rewritten = antecedent
+      ? sentence.replace(/^(He|She)\b/, antecedent)
+      : sentence;
+    resolved += `${rewritten} `;
+    if (named.length) antecedent = named[named.length - 1];
+  }
+  const readable = resolved.trim() || speech;
+
+  const stated = new RegExp(
+    `\\b([A-Z][a-z]{2,}(?:\\s+[A-Z][a-z]{2,})?)\\b[^.!?]{0,40}?\\b(?:is|was|being)\\b[^.!?]{0,20}?`
+    + `\\b(${NUMBER})\\s*(?:years?\\s+old|winters?)\\b`,
+    "g"
+  );
+  let match = stated.exec(readable);
+  while (match !== null) {
+    const [, name, spoken] = match;
+    const years = toNumber(spoken);
+    if (years !== null && !isSelf(name)) {
+      const bearers = bearersOf(name);
+      /* Only where every person of that name is excluded, the same rule the
+         kinship check uses: a first name is not unique in this parish. */
+      if (bearers.length && bearers.every((resident) => Number(resident.age) !== years)) {
+        const truth = bearers.length === 1
+          ? `${bearers[0].name} is ${bearers[0].age}`
+          : `no one of that name is ${years}`;
+        findings.set(`${name} is ${years} years old`, `${name} is ${years} years old (${truth})`);
+      }
+    }
+    match = stated.exec(readable);
+  }
+
+  const born = new RegExp(
+    `\\b([A-Z][a-z]{2,}(?:\\s+[A-Z][a-z]{2,})?)\\b[^.!?]{0,40}?\\bborn\\b[^.!?]{0,20}?`
+    + `\\b(?:${NUMBER}|a|a\\s+few|several)\\s*(?:days?|weeks?|months?)\\s+ago\\b`,
+    "g"
+  );
+  match = born.exec(readable);
+  while (match !== null) {
+    const [, name] = match;
+    if (!isSelf(name)) {
+      const bearers = bearersOf(name);
+      /* An interval in days, weeks or months puts them under a year old. */
+      if (bearers.length && bearers.every((resident) => Number(resident.age) >= 1)) {
+        const truth = bearers.length === 1
+          ? `${bearers[0].name} is ${bearers[0].age}`
+          : "no one of that name is under a year old";
+        findings.set(`${name} was born within the year`, `${name} was born within the year (${truth})`);
+      }
+    }
+    match = born.exec(readable);
+  }
+  return [...findings.values()];
 }
 
 /* Debts the ledger does not carry.
@@ -3287,6 +3457,12 @@ export class ParishAiClient extends EventTarget {
       "- Only name people you know or who were already named. Never invent an official, expert, place, or institution; say plainly if no one suitable exists.",
       "- This also means ordinary villagers. Every soul in this parish is already named, and the names above are the only ones you have. Never make up a personal name for a neighbour, a fellow worker, an apprentice, a sick man, or a child. Speak of them by role or relation instead: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'my sister's boy'. An invented name becomes a person who does not exist, and the priest will go looking for them.",
       "- Never invent money. Do not name a sum you owe, a sum owed to you, a loan, a creditor, or a price, unless it was given to you above. If your household owes nothing, do not hint that it does. The priest acts on what you tell him, and he will set about relieving a debt that was never real.",
+      /* One man called the same meeting "this morning", then "past the hour the
+         sun is highest", then "about midday", and the priest spent four turns
+         of a ten-turn hour chasing a contradiction the engine had handed him.
+         The hour is on file with the place; it is not the villager's to move. */
+      "- Never move the matter in time. When it happened is given to you above, and that is when it happened. Say it that way, or say you cannot recall - never an hour of your own, and never two different ones.",
+      "- Do not reckon spans of days aloud unless the number was given to you. Saying a thing ran 'from the first of the harvest moon to the end of the third' and also that it lasted twelve days is arithmetic you have no business inventing. Say plainly that you did not count.",
       "- When the priest asks who somebody is and you have not been told, say plainly that you do not know: 'I never learned her name', 'I could not tell you', 'I only know him by sight'. Do not answer with a placeholder such as 'someone' or 'a person', which is not an answer, and do not reach for a name to fill the gap. Not knowing is an honest answer and the priest can work with it.",
       "- Your worry may turn out to be nothing. The matter that brought you here is what you believed when you set out, not a proven fact. If the priest's questions show that you were mistaken, that you feared more than the case warranted, that you misheard, or that no real harm was done at all, then say so and let it go. Do not hunt for a hidden wrong to justify having come. An honest 'I think I was wrong to fear it' is a good end to a visit.",
       "- Never give anyone an office or trade they do not hold. The people listed above are shown with their actual work; use it or use their plain name. Do not call a man Bailiff, Reeve, Watchman or Master of anything unless that is truly his office, because the priest can send for these people and will act on the authority you name.",
@@ -3315,6 +3491,18 @@ export class ParishAiClient extends EventTarget {
       `How you feel right now: ${emotionalStateWords(visit).join(", ")}.`,
       `Play it exactly this hot, and no hotter: ${conversationIntensity(visit)}`,
       `What you came for: ${visit.intent.primaryMatter}. You want ${visit.intent.desiredOutcome}.`,
+      /* The hour is not a secret and is not disclosed by degrees the way the
+         substance of a matter is. It was reaching the villager only once the
+         time fact happened to be revealed, and only if it survived the last-two
+         cut - so for most of a visit he had nothing to hold to and invented an
+         hour afresh each turn. One man called the same meeting "this morning",
+         then "past the hour the sun is highest", then "about midday", and the
+         priest spent four turns of ten chasing a contradiction the engine had
+         handed him. It stands in front of the villager the whole way through
+         now, like the truth of his own household. */
+      visit.issue.openingContext?.timing
+        ? `When this happened: ${visit.issue.openingContext.timing}.`
+        : "",
       softGuidance ? `Right now: ${softGuidance}` : "",
       /* A conversational objective must not outlive the facts that supported
          it. A reeve who came fearing to name a thief established, under
@@ -3327,6 +3515,14 @@ export class ParishAiClient extends EventTarget {
         : "",
       visit.intent.premiseDispelled
         ? "You have already admitted that the worry which brought you here was mistaken. That is settled. Do not go looking for some other hidden wrong to put in its place; speak plainly about what is actually left to do, or accept the priest's counsel and be at peace."
+        : "",
+      /* A goal that outlives its justification is the oldest fault here. This
+         one is countermanded from outside rather than undermined from within:
+         a man who had withdrawn every fact behind his accusation went on
+         promising to go and retract it to two children, while the priest told
+         him again and again not to go near either. */
+      (visit.intent.forbiddenPlans || []).length
+        ? `The priest has forbidden this, and you have accepted it: ${visit.intent.forbiddenPlans.slice(-2).join(" ")} Do not offer to do it again, do not promise it in other words, and do not ask leave for it. Speak about what you may still properly do.`
         : "",
       guarded && !visit.intent.retiredConcern
         ? `You have NOT yet told the priest your real secret. Do not blurt it out and do not invent one.${withheldDomain(visit)}`
@@ -3495,13 +3691,16 @@ export class ParishAiClient extends EventTarget {
     const wrongTitles = misappliedTitles(state, reply);
     const rewritten = contradictedIdentities(state, reply);
     const wrongKin = contradictedKinship(state, person, reply);
-    if (invented.length || falseDebts.length || wrongTitles.length || rewritten.length || wrongKin.length) {
+    const wrongAges = unsupportedAgeClaims(state, person, reply);
+    if (invented.length || falseDebts.length || wrongTitles.length || rewritten.length
+      || wrongKin.length || wrongAges.length) {
       const complaint = [
         invented.length ? `named nobody who exists: ${invented.join(", ")}` : "",
         falseDebts.length ? `claimed a debt not in the ledger: ${falseDebts.join(", ")}` : "",
         wrongTitles.length ? `gave an office nobody holds: ${wrongTitles.join(", ")}` : "",
         rewritten.length ? `contradicted the parish record: ${rewritten.join(", ")}` : "",
-        wrongKin.length ? `mistook their own kin: ${wrongKin.join(", ")}` : ""
+        wrongKin.length ? `mistook their own kin: ${wrongKin.join(", ")}` : "",
+        wrongAges.length ? `gave an age the parish does not record: ${wrongAges.join(", ")}` : ""
       ].filter(Boolean).join("; ");
       transformations.push({
         type: "ungrounded_detail_regeneration",
@@ -3541,6 +3740,7 @@ export class ParishAiClient extends EventTarget {
           && unsupportedDebtClaims(state, person, visit, retryReply).length === 0
           && misappliedTitles(state, retryReply).length === 0
         && contradictedKinship(state, person, retryReply).length === 0
+        && unsupportedAgeClaims(state, person, retryReply).length === 0
         ) {
           raw = retry;
           reply = retryReply;
@@ -3601,7 +3801,9 @@ export class ParishAiClient extends EventTarget {
       transformations.push({ type: "sentence_repaired", detail: "referred to a village elder that does not exist", code: "groundedInstitutionReply" });
     }
 
-    const namedReply = naturalizeDialogueNames(state, person, reply);
+    const namedReply = naturalizeDialogueNames(state, person, reply, {
+      keepSurnames: ASKS_FOR_A_FULL_NAME.test(playerText)
+    });
     if (namedReply !== reply) {
       transformations.push({ type: "names_naturalized", detail: "full names shortened to natural address", code: "naturalizeDialogueNames" });
       reply = namedReply;
@@ -3617,53 +3819,52 @@ export class ParishAiClient extends EventTarget {
       proposedActions.push({ action: boundedString(action.action, 80), targetId: resolved.id, targetName: resolved.name });
     }
 
-    // The model may notice that the priest handed something over, but the
-    // engine decides whether the church can actually spare it. A priest who
-    // offers grain, bread and firewood in one breath is giving three things.
+    // The engine decides what leaves the stores, and it decides it from what
+    // the priest actually did, never from what anybody said about it.
     const churchGifts = [];
     const reportedGifts = Array.isArray(raw.priestGivesFromChurch)
       ? raw.priestGivesFromChurch
       : (raw.priestGivesFromChurch ? [raw.priestGivesFromChurch] : []);
-    /* Gifts can arrive two ways: the priest says he is giving something, or he
-       hands it over explicitly through the interface. They are merged by
-       taking the larger of the two rather than adding them together, so
-       pressing "give two loaves" and then also saying "take two loaves" hands
-       over two loaves and not four. */
-    const mergedGifts = new Map();
-    for (const gift of [...reportedGifts, ...stagedGifts]) {
+    /* Nothing is inferred from prose any more.
+       
+       The model used to report what it believed the priest had handed over,
+       and the engine honoured it if the priest's words looked like an offer.
+       That gate was a regex over English, and English refuses in unbounded
+       ways: three separate roundsofnarrowing still let "I will give no parish
+       food until you name which households are hungry" hand over a loaf, and
+       "I will give you neither comfort nor God's alms" hand over a penny. A
+       priest who explicitly refused alms was emptying his own stores. Each
+       fix bought one phrasing and the next run found another.
+       
+       So the reading is gone rather than narrowed. A gift is an act, and the
+       priest has an act for it: the give button beside each resource, and the
+       validated "gives" field the watching model fills in. Both are checked
+       against the stores before anything moves. What the visitor's model
+       believes it was handed no longer has any bearing on what it was handed.
+       
+       The mismatch is still worth recording, because a visitor thanking the
+       priest for bread he never gave is a fault in the prose, and the audit
+       should be able to see it. */
+    const stagedByResource = new Map();
+    for (const gift of stagedGifts) {
       const key = gift?.resource;
       if (!key) continue;
       const amount = Math.max(0, Math.min(100, Math.floor(Number(gift.amount) || 0)));
-      mergedGifts.set(key, Math.max(mergedGifts.get(key) || 0, amount));
+      stagedByResource.set(key, Math.max(stagedByResource.get(key) || 0, amount));
     }
-    const requestedGifts = [...mergedGifts].map(([resource, amount]) => ({ resource, amount }));
+    const requestedGifts = [...stagedByResource].map(([resource, amount]) => ({ resource, amount }));
+    for (const reported of reportedGifts) {
+      const key = reported?.resource;
+      if (!key || stagedByResource.has(key)) continue;
+      transformations.push({
+        type: "gift_rejected",
+        detail: `the visitor spoke of receiving ${key} the priest never handed over`,
+        code: "naturalConversation:notHandedOver"
+      });
+    }
     const remaining = Object.fromEntries(
       churchResourceRows(state.churchResources).map((row) => [row.key, row.amount])
     );
-    /* The stores are listed in the prompt so the visitor cannot accept what the
-       parish does not hold. A model will sometimes read that list straight back
-       as a gift — handing over the whole stock of firewood during a
-       conversation about letters. Nothing leaves the stores unless the priest
-       actually offered something in the words he just spoke. */
-    const givingClauses = givingClausesIn(playerText);
-    const priestOffered = givingClauses.length > 0 || stagedGifts.length > 0;
-    /* Offering one thing is not offering everything. Staging firewood licensed
-       the visitor's account of a loaf of bread, because the gate asked only
-       whether *something* had been offered. Each thing that leaves the stores
-       has to have been offered in its own right, which means naming it in the
-       clause that offered it: "I cannot give you medicine, but I will give you
-       bread" hands over bread only. */
-    const offeredResource = (key) => (
-      stagedGifts.some((gift) => gift.resource === key)
-      || givingClauses.some((clause) => namesChurchResource(clause, key))
-    );
-    if (requestedGifts.length && !priestOffered) {
-      transformations.push({
-        type: "gift_rejected",
-        detail: "the priest offered nothing in this turn",
-        code: "naturalConversation:noOfferMade"
-      });
-    }
     /* A priest confirming aid he has already promised is not giving it twice.
        Without this, "take two loaves" followed by "I shall have the two loaves
        brought to your house" emptied the bread twice over. Only the amount by
@@ -3673,7 +3874,7 @@ export class ParishAiClient extends EventTarget {
        is actually granted. Mutating it here as well would count every gift
        twice and desynchronise a replay. */
     const ledger = { ...(visit.giftLedger || {}) };
-    for (const requested of (priestOffered ? requestedGifts : []).slice(0, 4)) {
+    for (const requested of requestedGifts.slice(0, 4)) {
       const row = churchResourceRows(state.churchResources)
         .find((entry) => entry.key === requested?.resource);
       const amount = Math.max(0, Math.min(100, Math.floor(Number(requested?.amount) || 0)));
@@ -3682,14 +3883,6 @@ export class ParishAiClient extends EventTarget {
           type: "gift_rejected",
           detail: `unknown church resource "${requested?.resource}"`,
           code: "naturalConversation:churchGift"
-        });
-        continue;
-      }
-      if (!offeredResource(row.key)) {
-        transformations.push({
-          type: "gift_rejected",
-          detail: `the priest offered no ${row.label.toLowerCase()} in this turn`,
-          code: "naturalConversation:resourceNotOffered"
         });
         continue;
       }

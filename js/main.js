@@ -732,13 +732,12 @@ async function submitCounsel(event) {
   conversationInFlight = true;
   elements["hour-state"].textContent = `${person.firstName} considers your words...`;
   let response;
+  const staged = [...stagedGifts].map(([resource, amount]) => ({ resource, amount }));
   try {
     const usedAi = aiReady && state.settings.aiEnabled;
     response = usedAi
       ? {
-        ...(await ai.conversation(requestState, person, text, {
-          stagedGifts: [...stagedGifts].map(([resource, amount]) => ({ resource, amount }))
-        })),
+        ...(await ai.conversation(requestState, person, text, { stagedGifts: staged })),
         source: "ai"
       }
       : { ...fallbackConversation(requestState, text), source: "fallback" };
@@ -749,6 +748,15 @@ async function submitCounsel(event) {
     showToast(`Gemma did not answer; the visitor continued locally. ${error.message}`);
   }
   if (generation !== stateGeneration || state !== requestState) return;
+  /* A gift is the one thing here the player did deliberately, and it must not
+     depend on the model answering. Only the AI path returns churchGifts, so
+     with the model switched off - or when it fails and the visitor continues
+     locally - the priest pressed "give", typed his words, and the loaves
+     quietly evaporated with nothing said. The engine still validates every one
+     of them against the stores before anything moves. */
+  if (staged.length && !Array.isArray(response.churchGifts)) {
+    response.churchGifts = staged;
+  }
   conversationInFlight = false;
   stagedGifts.clear();
   recordConversationTelemetry(text, response);

@@ -62,8 +62,8 @@ import {
 } from "./parish.js";
 import { buildGeneratedScenarioArchetypes } from "./scenario_catalog.js";
 import {
-  applyChurchAid,
   applyChurchDonation,
+  REFUSES_TO_GIVE,
   churchDonationCapacity,
   collectSundayOffering,
   giftAddressesMatter,
@@ -907,6 +907,18 @@ function issueFromThread(thread, person) {
     relatedName: null,
     scenarioId: thread.scenarioId,
     scenarioFacts: JSON.parse(JSON.stringify(thread.facts)),
+    /* A matter revisited over several hours is the likeliest place for the
+       hour to wander, and it was the one case the anchor did not cover: an
+       issue rebuilt from a thread carried no openingContext, so the line that
+       holds the villager to a single hour was simply dropped. The hour itself
+       survives in the thread's own facts, so it is read back from there. */
+    openingContext: thread.openingContext || {
+      timing: String(
+        (thread.facts || []).find((fact) => fact.id === "time")?.text || ""
+      ).replace(/^The matter came about\s*/i, "").replace(/\.\s*$/, "") || null,
+      place: null,
+      witness: null
+    },
     openingDisclosesHidden: !stillGuarded,
     threadId: thread.id,
     returningIssue: true
@@ -989,8 +1001,25 @@ function expandScenarioFactWeb(state, issue, person) {
       category: "mechanical_timing",
       speakable: false,
       text: issue.hasExplicitDeadline
-        ? `The matter was noticed ${timing}. A formal answer is required within ${deadlineDays} days.`
-        : `The matter was noticed ${timing}. No formal deadline is known, though delay may worsen the harm.`
+        ? `A formal answer is required within ${deadlineDays} days.`
+        : "No formal deadline is known, though delay may worsen the harm."
+    },
+    /* When it happened, in the villager's own mouth.
+    
+       The place has always been speakable - "the relevant place is beside the
+       mill road" - and places stayed put across a whole visit. The time was
+       buried in the mechanical deadline fact, which the villager may not say,
+       so he had nothing to hold to and invented an hour afresh every turn. One
+       man called the same meeting "this morning", then "past the hour the sun
+       is highest", then "about midday", and the priest spent four turns of a
+       ten-turn hour chasing a contradiction the engine had created. He may be
+       evasive about what happened; the hour it happened at is not his to
+       move. */
+    {
+      id: "time",
+      category: "time",
+      speakable: true,
+      text: `The matter came about ${timing}.`
     },
     {
       id: "place",
@@ -1141,6 +1170,11 @@ function attachIssueThread(state, issue, person) {
     subjectIds: [...subjectIds].slice(0, 8),
     relatedPersonId: issue.relatedPersonId || null,
     location: issue.location,
+    /* The hour, the place and the whispering travel with the matter, so a
+       villager coming back about it months later is held to the same account
+       he gave the first time. Without this a returning visit rebuilt its issue
+       with no openingContext and the hour was free to wander again. */
+    openingContext: issue.openingContext || null,
     visibility: factVisibility,
     facts: JSON.parse(JSON.stringify(issue.scenarioFacts || [])),
     pressure: clamp(36 + issue.gravity * 7, 0, 100),
@@ -1974,8 +2008,68 @@ const ADMITS_A_DEED = new RegExp(
   "i"
 );
 
-function reconcileVisitObjectives(visit, person, spokenReply) {
+/* An intention the priest has forbidden.
+
+   A villager who had already withdrawn every fact behind his accusation - he
+   had not seen the receipts, did not know the claimants, the name "just came
+   to mind", he had not made the promise he claimed - went on saying "I will
+   retract the charge to both Similda and Edold and ask Edold's pardon" for the
+   rest of the hour, while the priest repeatedly told him not to go near either
+   child, because doing so would spread an accusation neither had heard.
+
+   It is the same shape as the reeve who kept fearing to name a thief he had
+   just said he could not name: a goal that outlives the thing that justified
+   it. The difference is that this one is countermanded from outside rather
+   than undermined from within, so the priest's own words have to retire it.
+   Forbidding is deliberately narrow - a plain instruction not to do a thing,
+   in the priest's mouth - because mistaking counsel for a prohibition would
+   silence a villager's honest intention to make amends. */
+const PRIEST_FORBIDS = new RegExp(
+  "\\b(?:do\\s+not|don't|never|you\\s+must\\s+not|you\\s+shall\\s+not|you\\s+are\\s+not\\s+to"
+  + "|i\\s+forbid\\s+you\\s+to|on\\s+no\\s+account)\\s+"
+  + "(?:go\\s+|speak\\s+|say\\s+|tell\\s+|approach\\s+|seek\\s+|call\\s+|write\\s+|send\\s+|carry\\s+|repeat\\s+)",
+  "i"
+);
+
+function retireForbiddenIntentions(visit, priestText) {
+  const said = String(priestText || "");
+  if (!PRIEST_FORBIDS.test(said)) return;
+  const forbidden = said
+    .split(/[.!?]+/)
+    .filter((sentence) => PRIEST_FORBIDS.test(sentence))
+    .join(" ")
+    .toLowerCase();
+  if (!forbidden.trim()) return;
+  /* Who the priest has put out of bounds. A villager's plan that turns on
+     going to one of them is the plan that has to go. */
+  const barred = [...new Set(forbidden.match(/\b[a-z]{3,}\b/g) || [])]
+    .filter((word) => !/^(?:the|and|not|you|must|shall|never|are|too|for|with|that|this|them|their|any|nor|but|his|her|our|its|who|whom|because|would|will|about|from|into|upon|near|neither|either|both)$/.test(word));
+  if (!barred.length) return;
+
+  const stillWanted = (text) => {
+    const words = new Set(String(text || "").toLowerCase().match(/\b[a-z]{3,}\b/g) || []);
+    /* Two words in common is a coincidence; four is the same errand. */
+    return barred.filter((word) => words.has(word)).length >= 4;
+  };
+
+  const semantic = visit.continuity?.semantic;
+  for (const list of [semantic?.commitments, semantic?.decisions, semantic?.topics]) {
+    for (const entry of list || []) {
+      if (entry.status === "retired" || entry.status === "closed") continue;
+      if (!stillWanted(entry.text)) continue;
+      entry.status = "retired";
+      entry.retiredBecause = "the priest forbade it";
+    }
+  }
+  for (const obligation of visit.conversationObligation ? [visit.conversationObligation] : []) {
+    if (obligation && stillWanted(obligation.text)) obligation.status = "retired";
+  }
+  (visit.intent.forbiddenPlans ||= []).push(forbidden.slice(0, 200));
+}
+
+function reconcileVisitObjectives(visit, person, spokenReply, priestText) {
   if (!visit?.intent) return;
+  retireForbiddenIntentions(visit, priestText);
   const reply = String(spokenReply || "");
   /* A worry the visitor has just abandoned stops driving the visit - but only
      where they are withdrawing a fear rather than admitting a deed, and only
@@ -2635,7 +2729,7 @@ function authoritativeReactionReply(person, reaction) {
   }[reaction] || `"I hear you, Father."`;
 }
 
-function recordNeighborParishDecision(state, person, visit, text) {
+function recordNeighborParishDecision(state, person, visit, text, handedOver = []) {
   if (person.role !== "neighbor_priest" || !visit.issue.neighborParishId) return null;
   const parish = state.neighboringParishes.find((entry) => entry.id === visit.issue.neighborParishId);
   const thread = state.narrativeThreads.find((entry) => entry.id === visit.issue.narrativeThreadId);
@@ -2666,30 +2760,66 @@ function recordNeighborParishDecision(state, person, visit, text) {
     thread.causeEventIds.push(event.id);
     return { type: "declined", eventId: event.id };
   }
-  const transfer = parseChurchTransferIntent(text);
+  /* Aid to a neighbouring parish used to be read out of the priest's words and
+     taken straight from the stores, which is the same fault that let a priest
+     who had refused alms lose a dose of medicine - only aimed at a parish
+     rather than at the man in front of him. What he actually handed over is
+     what goes.
+
+     It is debited here rather than above because the visitor is always a
+     neighbouring priest, who has no household in this village: the ordinary
+     grant declines for want of one and takes nothing from the stores. Words
+     alone still send a delegation, because promising to look into a
+     neighbour's need costs the parish nothing until something is carried
+     there. */
   const acceptsHelp = /\b(?:yes|we will help|i will help|we can help|send aid|send someone|inspect the need)\b/.test(speech);
-  if (!transfer && !acceptsHelp) return null;
+  const offered = (handedOver || []).filter((gift) => (
+    gift && Number(gift.amount) > 0 && state.churchResources[gift.resource] != null
+  ));
+  if (!offered.length && !acceptsHelp) return null;
   const existingCommitment = state.commitments.find((entry) => (
     entry.targetId === parish.id && entry.status === "open"
   ));
-  if (existingCommitment) return existingCommitment;
+  /* Words alone, when something is already promised, add nothing. But goods
+     must never be swallowed by that: a bare "yes" on an earlier turn opened an
+     assessment, and the four sacks the priest then actually handed over
+     vanished - no debit, no payload, no record anywhere - because this
+     returned before reaching the dispatch. An open assessment is upgraded when
+     goods truly arrive. */
+  if (existingCommitment && !offered.length) return existingCommitment;
+
   let type = "neighbor_relief_assessment";
   let payload = { neighborParishId: parish.id };
-  if (transfer?.direction === "outgoing") {
-    const resource = transfer.resource;
-    const amount = Math.min(transfer.amount, state.churchResources[resource] || 0);
-    if (amount <= 0) return null;
-    state.churchResources[resource] -= amount;
+  const carried = [];
+  /* Every sack, not merely the first: handing over grain and medicine together
+     dispatched the grain and silently dropped the medicine. */
+  for (const gift of offered) {
+    const amount = Math.min(
+      Math.floor(Number(gift.amount)),
+      state.churchResources[gift.resource] || 0
+    );
+    if (amount <= 0) continue;
+    state.churchResources[gift.resource] -= amount;
+    carried.push({ resource: gift.resource, amount });
+  }
+  if (carried.length) {
     type = "neighbor_relief_resource";
-    payload = { neighborParishId: parish.id, resource, amount };
-  } else if (acceptsHelp && visit.issue.requestedResource && visit.issue.requestedAmount) {
-    const resource = visit.issue.requestedResource;
-    const amount = Math.min(visit.issue.requestedAmount, state.churchResources[resource] || 0);
-    if (amount > 0) {
-      state.churchResources[resource] -= amount;
-      type = "neighbor_relief_resource";
-      payload = { neighborParishId: parish.id, resource, amount };
-    }
+    payload = {
+      neighborParishId: parish.id,
+      resource: carried[0].resource,
+      amount: carried[0].amount,
+      carried
+    };
+  } else if (existingCommitment) {
+    /* Nothing could actually be spared, so the earlier promise stands. */
+    return existingCommitment;
+  }
+  if (existingCommitment && carried.length) {
+    /* The delegation was already going; now it carries something. */
+    existingCommitment.type = "neighbor_relief_resource";
+    existingCommitment.payload = { ...existingCommitment.payload, ...payload };
+    parish.status = "aid_promised";
+    return existingCommitment;
   }
   const event = appendEvent(state, {
     type: "commitment_created",
@@ -2857,7 +2987,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
   visit.history.push({ speaker: "visitor", text: reply });
   /* Retire any objective the visitor has just talked themselves out of, before
      the next turn is built from it. */
-  reconcileVisitObjectives(visit, person, reply);
+  reconcileVisitObjectives(visit, person, reply, cleanText);
   visit.lastVisitorReplies.push(reply);
   visit.lastVisitorReplies = visit.lastVisitorReplies.slice(-8);
   visit.stagnationCount = Math.max(0, Number(response.stagnationCount) || 0);
@@ -3027,11 +3157,16 @@ export function recordExchange(state, playerText, response, { record = true } = 
   const requestedGifts = Array.isArray(response.churchGifts)
     ? response.churchGifts
     : (response.churchGift ? [response.churchGift] : []);
-  const churchAids = requestedGifts.length
-    ? requestedGifts
-      .map((gift) => grantChurchResource(state, person, gift.resource, gift.amount))
-      .filter(Boolean)
-    : [applyChurchAid(state, person, cleanText)].filter(Boolean);
+  /* The second way prose used to open the stores, and the one that survived
+     the first attempt at closing them. When no gift came back from the
+     exchange this fell through to reading the priest's own words for one - so
+     "Take two loaves from the church stores" emptied two loaves even after the
+     visitor's report had been stripped of any authority. There is nothing left
+     to fall back to: a gift is an act, and if none was handed over then none
+     was given, whatever anybody said. */
+  const churchAids = requestedGifts
+    .map((gift) => grantChurchResource(state, person, gift.resource, gift.amount))
+    .filter(Boolean);
   /* Remember what has actually been handed over during this visit, so a priest
      confirming aid he has already promised does not empty the stores twice. */
   if (churchAids.length) {
@@ -3108,7 +3243,7 @@ export function recordExchange(state, playerText, response, { record = true } = 
       unit: applied.unit
     });
   }
-  recordNeighborParishDecision(state, person, visit, cleanText);
+  recordNeighborParishDecision(state, person, visit, cleanText, requestedGifts);
   /* Sending for the watch, or beyond the village to the manor, happens as part
      of the exchange so that it travels in the command log and a save replays
      exactly. Both are validated by the engine before anything moves. */
@@ -5317,9 +5452,17 @@ export function fallbackDeparturePlan(state) {
     parseChurchTransferIntent(entry)?.direction === "incoming"
   ));
   const donationIntent = donationCounsel ? parseChurchTransferIntent(donationCounsel) : null;
-  const visitorAcceptedDonation = [...visit.history].reverse()
-    .find((entry) => entry.speaker === "visitor")?.text
-    .match(/\b(?:yes|i will|i can|gladly|bring|give|donate|contribute)\b/i);
+  /* "I cannot give anything to the church, Father" matched on "give" and was
+     read as consent, and the villager's own larder was then emptied into the
+     poor box. It is the same shape as the phantom alms - a negated sentence
+     read as agreement, spending goods - only pointed at the household rather
+     than at the parish. A refusal is checked for first, in the same words the
+     outgoing side already uses. */
+  const lastVisitorLine = [...visit.history].reverse()
+    .find((entry) => entry.speaker === "visitor")?.text || "";
+  const visitorAcceptedDonation = !REFUSES_TO_GIVE.test(lastVisitorLine)
+    && !/\b(?:cannot|can't|will not|won't|have nothing|nothing to (?:give|spare)|no|none)\b[^.!?]{0,30}\b(?:give|spare|donate|contribute|bring)\b/i.test(lastVisitorLine)
+    && lastVisitorLine.match(/\b(?:yes|i will|i can|gladly|bring|give|donate|contribute)\b/i);
   const latestCounsel = visit.counsel.at(-1)?.toLowerCase() || "";
   if (commitment) actionType = commitment.actionType;
   else if (donationIntent && visitorAcceptedDonation) actionType = "donate";

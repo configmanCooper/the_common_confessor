@@ -556,12 +556,19 @@ async function main() {
       turns += 1;
       const priestText = decision.text;
       let response;
+      const staged = decision.gives || [];
       try {
         response = await voice.conversation(state, visitorFor(state, state.currentVisit), priestText, {
-          stagedGifts: decision.gives || []
+          stagedGifts: staged
         });
       } catch (error) {
         response = { ...fallbackConversation(state, priestText), source: "fallback", voiceError: error.message };
+      }
+      /* The priest's deliberate act must survive the voice failing. Only the
+         model path returns churchGifts, so a validated gift was being dropped
+         whenever the visitor had to continue locally. */
+      if (staged.length && !Array.isArray(response.churchGifts)) {
+        response.churchGifts = staged;
       }
       recordExchange(state, priestText, response);
       /* What the parish actually recorded, not what the model first said. The

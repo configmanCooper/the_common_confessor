@@ -81,8 +81,17 @@ export const REFUSES_TO_GIVE = new RegExp(
   + "[^.!?]{0,40}?\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b"
   /* "I will give you no medicine" - the determiner "no" is the commonest way
      to refuse in English and was missed entirely. It only counts against an
-     actual good, so "no questions asked" and "no trouble" are left alone. */
-  + `|\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b[^.!?]{0,15}?\\bno\\s+${REFUSABLE_GOODS}\\b`
+     actual good, so "no questions asked" and "no trouble" are left alone.
+
+     A good is often qualified before it is named: "no parish food", "no more
+     bread", "no church coin". Allowing a word or two between the determiner
+     and the good is what separates those from "no matter what the reeve says,
+     I will give you grain", where nothing within reach of the "no" is a good
+     at all. */
+  + `|\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b[^.!?]{0,15}?\\b(?:no|neither)\\s+(?:[\\w']+\\s+){0,2}${REFUSABLE_GOODS}\\b`
+  /* "I will give you neither comfort nor God's alms." The refusal lands on the
+     second half of the pair, so the first half is often not a good at all. */
+  + `|\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b[^.!?]{0,40}?\\bnor\\s+(?:[\\w']+\\s+){0,2}${REFUSABLE_GOODS}\\b`
   + "|\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b[^.!?]{0,15}?\\b(?:nothing|none)\\b"
   + "|\\b(?:nothing|none)\\b[^.!?]{0,20}?\\bto\\s+(?:give|offer|spare|share)\\b"
   + `|\\bno\\s+${REFUSABLE_GOODS}\\b[^.!?]{0,25}?\\b(?:to\\s+|can\\s+|could\\s+|will\\s+|shall\\s+|may\\s+)?(?:give|offer|spare|share)\\b`
@@ -190,15 +199,17 @@ export function parseChurchDonationDetail(detail, fallbackAmount = 1) {
   };
 }
 
-export function applyChurchAid(state, person, text) {
-  const intent = parseChurchTransferIntent(text);
-  if (!intent || intent.direction !== "outgoing") return null;
-  return grantChurchResource(state, person, intent.resource, intent.amount);
-}
+/* There was an applyChurchAid here. It read the priest's typed words for an
+   offer and handed the goods over, and it was the second of the two ways prose
+   could spend the parish's stores - the one that survived the first attempt at
+   closing them, because recordExchange fell back to it whenever no gift came
+   out of an exchange. It is gone rather than merely unused: leaving a function
+   about that takes goods from a sentence is an invitation to wire it back in.
+   A gift is an act, and grantChurchResource below is reached only from one. */
 
 /* Move a validated amount of a church resource to a person's household.
-    Callers may reach this either from a parsed phrase or from a semantically
-    interpreted gift; the transfer rules are identical and live only here.
+    Callers reach this from a gift the priest actually handed over; the
+    transfer rules live only here.
 
     What is given matters. Medicine given to somebody who is actually ill
     treats the illness rather than merely cheering them up; food given to a

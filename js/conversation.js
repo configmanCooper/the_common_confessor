@@ -752,7 +752,10 @@ export function clarificationFacts(visit, text) {
     && /\b(?:whispers?|rumou?rs?|panic|hoarding|people acting|acting like this)\b/.test(speech)) {
     webIds.push("threat_status", "evidence", "witnesses", "mechanism");
   }
-  if (/\b(?:when|what time|how long ago|which day|deadline|how soon)\b/.test(speech)) webIds.push("timeline", "stakes");
+  /* "time" first: the hour of the matter used to ride inside "timeline", and
+     splitting it out left the one question this route exists to answer -
+     "when did this happen?" - returning the deadline instead. */
+  if (/\b(?:when|what time|how long ago|which day|deadline|how soon)\b/.test(speech)) webIds.push("time", "timeline", "stakes");
   if (/\b(?:who became sick|who fell ill|who is sick|who is ill|which households?|what households?)\b/.test(speech)) webIds.push("affected_people");
   if (/\b(?:at war|declared war|what soldiers|which soldiers|whose soldiers|what army|which army|where are they coming from|what direction)\b/.test(speech)) webIds.push("threat_status", "evidence", "unknowns");
   if (/\b(?:soldiers?.{0,40}plague|plague.{0,40}soldiers?)\b/.test(speech)) webIds.push("threat_status", "evidence", "unknowns");

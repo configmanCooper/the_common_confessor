@@ -15,6 +15,7 @@
 
 import { EXTERNAL_ROLES, SERMON_THEMES } from "./data.js";
 import { churchResourceRows, namesChurchResource } from "./church.js";
+import { givingClausesIn } from "./ai.js";
 import { availableOfficers, marketIsOpen, marketOffer } from "./simulation.js";
 import { completeGeneratedText } from "./text.js";
 
@@ -382,6 +383,44 @@ export function validateAgentChoice(moves, choice) {
           };
         }
         gives.push({ resource: row.key, amount });
+      }
+    }
+    /* And the other way about. Nothing leaves the stores now except through
+       "gives", so a priest who says "I give you two loaves" and fills in
+       nothing has promised bread that will never arrive - the visitor thanks
+       him for it, the transcript records it, and the larder is untouched.
+
+       The complaint must only ever ask him to reword. It first said "add it to
+       gives so it truly leaves the stores", and a model repairing a rejected
+       reply takes the smallest edit that satisfies the complaint - so a false
+       positive routed, in one retry, into a real transfer. "I would give you
+       bread if I could, but the stores are needed elsewhere" is a refusal, and
+       it was being answered by handing over bread. That is the original fault
+       rebuilt on this side, laundered through a retry. The remedy offered is
+       now rewording alone; a genuine gift has to come from the priest deciding
+       to hand it over, not from being told how to satisfy a validator. */
+    if (move.allowsGifts) {
+      const promised = new Map(move.stores.map((row) => [row.key, row]));
+      for (const clause of givingClausesIn(text)) {
+        /* A gift already made is not a gift being promised, and a gift that
+           could not be made is not one either: "I would give you bread if I
+           could, but the stores are needed elsewhere" is a refusal. */
+        if (/\b(?:have\s+given|had\s+given|gave)\b/.test(clause)) continue;
+        if (/\bwould\s+\w+\b[^.!?]{0,40}\bif\s+i\s+(?:could|had|were)\b/.test(clause)) continue;
+        if (/\bgive\s+(?:your|his|her|their)\s+name\b/.test(clause)) continue;
+        /* A general truth about charity is not an offer to the man in the
+           room: "bread is what the church gives to the hungry" names a class,
+           not a recipient. */
+        if (/\bgives?\b[^.!?]{0,20}\bto\s+(?:the\s+(?:hungry|poor|sick|needy|destitute|widowed)|those\s+who|whoever|any\s+who)\b/.test(clause)) continue;
+        for (const [key, row] of promised) {
+          if (gives.some((gift) => gift.resource === key)) continue;
+          if (!namesChurchResource(clause, key)) continue;
+          return {
+            ok: false,
+            error: `You spoke of giving ${row.label.toLowerCase()} but handed none over.`
+              + ` Say plainly that you are not giving it, or use a different form of words.`
+          };
+        }
       }
     }
     /* Cutting at a fixed length leaves the priest's speech ending mid-sentence

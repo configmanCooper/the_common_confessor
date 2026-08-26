@@ -80,7 +80,13 @@ test("promised grain is reserved, delivered once after travel, and changes the t
   const visit = beginVisit(state);
   const beforeGrain = state.churchResources.grain;
   const promise = "We will give your church four sacks of grain.";
-  recordExchange(state, promise, fallbackConversation(state, promise));
+  /* The words send a delegation; the grain goes because it was handed over.
+     Aid used to be read out of the priest's speech and taken straight from the
+     stores, which is how a priest who had refused alms lost a dose of medicine
+     to the man in front of him - the same fault, aimed at a parish. */
+  const response = fallbackConversation(state, promise);
+  response.churchGifts = [{ resource: "grain", amount: 4 }];
+  recordExchange(state, promise, response);
   const commitment = state.commitments.find((entry) => entry.targetId === parish.id && entry.status === "open");
   assert.ok(commitment);
   assert.equal(commitment.type, "neighbor_relief_resource");
@@ -114,4 +120,31 @@ test("the priest may refuse a neighboring appeal without creating travel or aid"
   assert.equal(state.commitments.some((entry) => entry.targetId === parish.id && entry.status === "open"), false);
   assert.equal(parish.status, "aid_declined");
   assert.equal(thread.stage, "resolved");
+});
+
+test("a promise to a neighbouring parish sends a delegation, not the grain", () => {
+  /* The same fault as the phantom alms, aimed at a parish instead of at the
+     man in front of the priest: aid was read out of his words and taken
+     straight from the stores. Words send someone to look; only what is handed
+     over is carried there. */
+  const state = createGame("neighbor-relief-words-only");
+  const { parish } = prepareReliefChoice(state);
+  advanceNarrativeDirector(state, state.events.at(-1).id);
+  const request = state.eventQueue.find((event) => event.role === "neighbor_priest");
+  state.calendar.absoluteDay = request.dueDay;
+  state.calendar.dayIndex = request.dueDay % 7;
+  state.calendar.week = Math.floor(request.dueDay / 7) + 1;
+  beginVisit(state);
+  const beforeGrain = state.churchResources.grain;
+  const promise = "We will give your church four sacks of grain.";
+  recordExchange(state, promise, fallbackConversation(state, promise));
+  assert.equal(state.churchResources.grain, beforeGrain, "speech alone emptied the stores");
+  const commitment = state.commitments.find((entry) => entry.targetId === parish.id && entry.status === "open");
+  if (commitment) {
+    assert.equal(
+      commitment.type,
+      "neighbor_relief_assessment",
+      "a promise alone should send a delegation, not goods"
+    );
+  }
 });
