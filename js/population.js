@@ -57,7 +57,13 @@ function defaultRelationship(state, actorId, targetId) {
     respect: rng.int(25, 70),
     resentment: rng.int(0, 35),
     obligation: rng.int(10, 60),
-    lastInteractionDay: -1
+    /* The day it began, not the beginning of time. A bond formed mid-game -
+       a newborn's with its parents, a newcomer's with a neighbour - was
+       otherwise eligible for drift the moment it existed, as though it had
+       been ignored since the parish was founded. */
+    lastInteractionDay: Number.isInteger(state?.calendar?.absoluteDay)
+      ? state.calendar.absoluteDay
+      : -1
   };
 }
 
@@ -437,6 +443,145 @@ export function upgradePopulationState(state) {
      the graves and the relationships seeded above. */
   if (shouldSeedFamilies) seedPersonalHistories(state);
   return state;
+}
+
+/* Feeling fades when nothing feeds it.
+ *
+ * Every bond in the parish was permanent. `lastInteractionDay` was written on
+ * each adjustment and validated on load, but nothing ever read it, so a grudge
+ * struck in the first month was exactly as sharp five years later. That is an
+ * ugly asymmetry when resentment has a murder threshold at the top of it: one
+ * bad week between two men could end, seasons later, in a killing that nothing
+ * in the intervening years had any power to prevent.
+ *
+ * Three things shape how this drifts.
+ *
+ * It only ever forgets. Every axis here is raised by things that happen and
+ * lowered by nothing at all - kindness adds affection, a beating adds fear and
+ * resentment, and no event in the engine subtracts from any of them. Drift is
+ * the only force for forgetting, so forgetting is all it may do. Made
+ * symmetrical it did real harm: a bond below its resting point was pulled *up*,
+ * and since nothing else can lower affection the lift was permanent. Bonds cold
+ * enough for violence - affection at thirty or under - fell from two hundred and
+ * ninety-two to two across a single year, quietly disabling the whole assault
+ * and murder subsystem this feature exists to moderate. A village does not warm
+ * to itself out of nothing. Coldness lifts when somebody is kind, and not
+ * before.
+ *
+ * It goes to the middle rather than to zero. The resting point of each axis is
+ * the centre of the range the parish generates for a bond with no particular
+ * history - so a village left alone settles back toward its own ordinary
+ * temperature, instead of draining to a population of strangers who feel
+ * nothing about anybody.
+ *
+ * Strong feeling lasts longer than mild feeling. This is the opposite of how
+ * decay usually works, and it is deliberate: a passing annoyance is forgotten
+ * within a season, while a hatred that has consumed a man is still there years
+ * on, fading so slowly he may die with it. So the pull weakens the further a
+ * bond sits from its resting point - full strength in the middle distance, a
+ * quarter of that at the extremes.
+ *
+ * And it only touches what has been left alone. This is what `lastInteractionDay`
+ * was always for. A feud that is still being fed every week does not cool; it
+ * is the forgotten grudge and the neglected friendship that drift.
+ */
+/* Which axes drift, and where each is headed.
+ *
+ * The resting point is the centre of the range the parish generates for a bond
+ * with no particular history, so a village left alone settles back toward its
+ * own ordinary temperature rather than draining to strangers who feel nothing.
+ *
+ * Because drift only ever forgets, and never steps past the resting point, one
+ * useful thing follows: a bond can never be carried *below* its axis's resting
+ * point by time alone. So a threshold that asks for more than some amount is
+ * safe from drift exactly when it sits below that axis's resting point, and
+ * every gate the engine reads clears that bar.
+ *
+ * Affection is the reason the rule is worth writing down. Its natural centre is
+ * forty-three and marriage asks for more than forty-five, so drift emptied the
+ * marriageable pool: forty-five percent of the parish fell to under one, and
+ * five and a half years produced no marriages where the same seeds had produced
+ * ten. Resting it at fifty instead of its seeded midpoint puts the gate safely
+ * underneath, so a fond bond can never be drifted out of reach of marriage,
+ * while a deep attachment - anything above fifty - still fades with neglect.
+ *
+ * Attraction is left out altogether, and by the same rule. Marriage asks for
+ * fifty-two of it and the parish only ever generates up to forty-five, so no
+ * resting point exists that would keep the gate safe. Where nothing can be
+ * made safe, nothing drifts. */
+const RELATIONSHIP_RESTING_POINTS = Object.freeze({
+  familiarity: 48,
+  trust: 49,
+  affection: 50,
+  fear: 15,
+  respect: 48,
+  resentment: 18,
+  obligation: 35
+});
+
+/* A week of neglect moves a middling feeling by one point. Crossing a village's
+   worth of ill-will takes a year and more of silence, which is about right for
+   something a priest is supposed to be able to work against but not undo. */
+const RELATIONSHIP_DECAY_STEP = 1;
+/* How much extremity slows it: at the far end of an axis a bond drifts at a
+   quarter speed. */
+const RELATIONSHIP_DECAY_BRAKE = 0.75;
+/* Silence, before anything begins to fade. */
+const RELATIONSHIP_DECAY_QUIET_DAYS = 7;
+/* The distance over which the pull eases off as a bond nears its resting point.
+ *
+ * A fixed step is a ratchet. Stepping a whole point every week however close
+ * you already are pins every bond to exactly the same number: four years of
+ * quiet took a village of thirteen hundred bonds - resentment spread from
+ * nothing to thirty-five - and left every one of them on the same value, two
+ * hundred people feeling identically about everybody they knew. Putting a dead
+ * band around the middle only moved the pile-up to the band's edge, where three
+ * bonds in five ended up sitting on one of two numbers.
+ *
+ * So the approach is asymptotic instead. Within this distance the step shrinks
+ * in proportion, so a bond slows as it settles and never quite arrives. No two
+ * bonds collapse onto the same value, the order between them is preserved, and
+ * there is no hard edge for a gameplay threshold to sit against. */
+const RELATIONSHIP_DECAY_SETTLING_DISTANCE = 10;
+
+/** Where one axis of one bond stands after a week of being left alone. */
+export function decayedRelationshipValue(field, value) {
+  const resting = RELATIONSHIP_RESTING_POINTS[field];
+  if (resting === undefined) return value;
+  const current = clamp(value);
+  const distance = current - resting;
+  /* Forgetting only. A bond already colder or poorer than the parish's ordinary
+     temperature is left exactly where it is, because lifting it would invent a
+     warmth nobody earned and no event could take back. */
+  if (distance <= 0) return current;
+  /* Extremity is measured against how far the axis could run in that
+     direction, so a resting point near the floor - resentment, fear - does not
+     make every grudge look extreme merely for being above nothing. */
+  const reach = 100 - resting;
+  const extremity = reach > 0 ? Math.min(1, distance / reach) : 0;
+  const settling = Math.min(1, distance / RELATIONSHIP_DECAY_SETTLING_DISTANCE);
+  const speed = RELATIONSHIP_DECAY_STEP * (1 - RELATIONSHIP_DECAY_BRAKE * extremity) * settling;
+  /* Never past the middle, whatever the arithmetic says. */
+  return clamp(current - Math.min(distance, speed));
+}
+
+function processRelationshipDecay(state, day) {
+  /* Weekly. A parish's own bonds are stamped with the day they were made, so
+     the earliest anything can drift is the second week - the first turn of the
+     week finds them exactly seven days old, which is not yet longer than the
+     week the gate below asks for. */
+  if (day < RELATIONSHIP_DECAY_QUIET_DAYS || day % 7 !== 0) return;
+  for (const bond of state.relationships || []) {
+    const quiet = day - (Number.isInteger(bond.lastInteractionDay) ? bond.lastInteractionDay : -1);
+    /* Strictly longer than the week, not merely as long as it. Two people who
+       fall out afresh every seventh day are in a live quarrel, and the pass
+       comes round on exactly that cadence - so counting a week of silence as
+       enough would have cooled a feud that was being fed the whole time. */
+    if (quiet <= RELATIONSHIP_DECAY_QUIET_DAYS) continue;
+    for (const field of Object.keys(RELATIONSHIP_RESTING_POINTS)) {
+      bond[field] = decayedRelationshipValue(field, bond[field]);
+    }
+  }
 }
 
 export function getRelationship(state, actorId, targetId, create = true) {
@@ -1158,8 +1303,13 @@ function processViolence(state, day, events) {
     inflictInjury(state, target, "beating", severity, events, actor.id);
     actor.reputation = clamp(actor.reputation - 18);
     target.stress = clamp(target.stress + 18);
-    bond.resentment = clamp(resentment + 8);
-    bond.fear = clamp((bond.fear ?? 0) + 20);
+    /* Through adjustRelationship, not by writing the fields, so the day is
+       recorded with the change. These were the only bond writes in the engine
+       that bypassed it, and they left the most consequential thing two people
+       can do to each other looking like neglect - so a beating on any day
+       divisible by seven had part of itself clawed back by the drift pass
+       running later the same tick. */
+    adjustRelationship(state, bond.actorId, bond.targetId, { resentment: 8, fear: 20 }, day);
     state.town.metrics.safety = clamp(state.town.metrics.safety - 2.5);
     state.town.metrics.harmony = clamp(state.town.metrics.harmony - 1.5);
     state.material.modifiers.crime = (state.material.modifiers.crime || 0) + 5;
@@ -1497,6 +1647,7 @@ export function advancePopulationDay(state) {
   processViolence(state, day, events);
   processFamilyAndWork(state, day, events);
   processMigration(state, day, events);
+  processRelationshipDecay(state, day);
   spreadRumors(state, day, events);
   const occupiedHouseholds = state.households.filter((household) => household.memberIds.some((id) => {
     const person = state.residents.find((resident) => resident.id === id);

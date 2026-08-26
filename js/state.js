@@ -21,7 +21,7 @@ import {
   PROMPT_TRACE_MAX_CHARS
 } from "./dialogue_planner.js";
 
-export const STATE_SCHEMA_VERSION = 21;
+export const STATE_SCHEMA_VERSION = 22;
 const COMMAND_TYPES = new Set([
   "begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon",
   "request_visits", "set_mode", "rewind_turn", "buy_at_market",
@@ -1102,8 +1102,15 @@ export function migrateState(rawState) {
      neighbouring parishes, found nothing, and marked the errand failed. Every
      summons the priest ever sent died that way. They now run, which changes
      what the same command log produces, so schema-20 history is snapshotted
-     alongside schema-19. */
-  if (detectedVersion === 19 || detectedVersion === 20) {
+     alongside schema-19.
+
+     Schema 22: feeling fades when nothing feeds it.
+     Bonds were permanent - a grudge struck in the first month was exactly as
+     sharp five years on, which is an ugly asymmetry when resentment carries a
+     murder threshold. They now drift weekly toward the parish's own ordinary
+     temperature when left alone, so the same command log reaches different
+     relationships and the history is snapshotted with the rest. */
+  if (detectedVersion === 19 || detectedVersion === 20 || detectedVersion === 21) {
     verifyIntegrity(state);
     upgradeDialoguePlannerState(state);
     upgradeRobustFrameworkState(state);
