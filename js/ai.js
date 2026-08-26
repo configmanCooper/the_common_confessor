@@ -1,4 +1,5 @@
 import { AI_ALLOWED_ACTIONS } from "./data.js";
+import { responseDomainsForFamily } from "./scenario_catalog.js";
 import {
   BOUNDARY_TYPES,
   clarificationFacts,
@@ -151,6 +152,79 @@ function naturalizeDialogueNames(state, speaker, text) {
       /(^|[.!?]\s+)([a-z])/g,
       (whole, lead, letter) => `${lead}${letter.toUpperCase()}`
     );
+}
+
+/* What kind of trouble the visitor is holding back, without saying what it is.
+ *
+ * A reticent penitent opens with "Something I did after market closed, beside
+ * the mill road, may cause another person to suffer" - the hour, the place,
+ * the whispering, and nothing whatever about the matter, because the matter is
+ * the secret and the model must not be told it until the visitor discloses it.
+ * But a model that has to produce a first line will supply the missing subject
+ * itself, and it has no reason to supply the one on file. In a watched run a
+ * confession recorded as a hidden fever was spoken as the theft of wood from a
+ * cart, and from that line onward the visit, its consequences, its follow-ups
+ * and every audit of it hung on a thread whose own summary was a lie.
+ *
+ * It is also where the premise inertia came from: a villager seeded with a
+ * deed he was never told will hunt for one however long the priest reasons
+ * with him, because nothing he can establish is ever the thing he came about.
+ *
+ * The domains are the scenario's own abstract tags - "medical", "isolation",
+ * "market measure" - so they bound the kind of matter without disclosing the
+ * deed, which stays withheld until disclosure exactly as before.
+ *
+ * They are never taken from the scenario's own name. The older hand-written
+ * scenarios are named after the deed - hidden_illness, secret_pregnancy,
+ * corrupt_measure - so humanising the id would hand the model a serviceable
+ * one-line confession in the same breath as telling it to say nothing. Each is
+ * mapped instead to the catalogue family that covers the same ground, whose
+ * tags are abstract. A scenario with no family behind it is left alone: no
+ * bound at all is better than a bound that gives the secret away.
+ */
+const HAND_WRITTEN_FAMILIES = Object.freeze({
+  hidden_illness: "hidden_contagion",
+  secret_pregnancy: "secret_pregnancy",
+  corrupt_measure: "false_weights",
+  inheritance_document: "forged_inheritance",
+  marriage_coercion: "coerced_marriage",
+  missing_relic: "stolen_relic",
+  poaching_hunger: "poaching_for_hunger",
+  stolen_food_false_accusation: "embezzled_grain",
+  trade_displacement: "market_monopoly",
+  withheld_wages: "withheld_wages",
+  unsafe_apprentice: "dangerous_apprentice",
+  violent_feud: "household_violence",
+  church_relief_abuse: "false_charity",
+  rumor_or_warning: "panic_rumor_armed",
+  manor_order: "corrupt_tax"
+});
+
+/** The abstract domains bounding what a guarded visitor is holding back. */
+export function withheldDomains(visit) {
+  const tagged = visit?.issue?.blueprint?.responseDomains;
+  if (Array.isArray(tagged) && tagged.length) return tagged;
+  /* The trailing number distinguishes variants of one family and says nothing
+     about the matter. A returning visit arrives without its blueprint, so the
+     family has to be found by name. */
+  const family = String(visit?.issue?.scenarioId || "").replace(/_\d+$/, "");
+  return responseDomainsForFamily(family)
+    || responseDomainsForFamily(HAND_WRITTEN_FAMILIES[family] || "")
+    || null;
+}
+
+export function withheldDomain(visit) {
+  const domains = withheldDomains(visit);
+  if (!domains) return "";
+  const readable = domains
+    .slice(0, 4)
+    .map((domain) => String(domain).replace(/_/g, " ").trim())
+    .filter(Boolean);
+  if (!readable.length) return "";
+  return ` What you are holding back is the sort of trouble a priest would answer with ${readable.join(", ")}.`
+    + " Say nothing of the thing itself yet, and do not ask for any of that outright - it is the remedy,"
+    + " not the matter. Only let what you do say be the kind of trouble that would call for it,"
+    + " and do not reach for some other sort of trouble to talk around instead.";
 }
 
 function spokenScenarioFact(text, state, person) {
@@ -1861,8 +1935,22 @@ export function contradictedKinship(state, person, text) {
      cannot express, and reading it as a claim about the mother would have the
      priest interrogate a truthful villager. */
   const patterns = [
-    new RegExp(`\\b([A-Z][a-z]{2,})\\s+is\\s+my\\s+(${words})\\b(?!['\u2019]?s\\b)`, "g"),
-    new RegExp(`\\bmy\\s+(${words})\\b(?!['\u2019]?s\\b)\\s*,\\s*([A-Z][a-z]{2,})\\b`, "g")
+    /* "My" opens a sentence as often as "my" sits inside one, and the pattern
+       cannot simply be made case-insensitive: that would let the name itself
+       match in lowercase, and "he is my wife" would be read as a claim about
+       somebody called He. */
+    new RegExp(`\\b([A-Z][a-z]{2,})\\s+is\\s+[Mm]y\\s+(${words})\\b(?!['\u2019]?s\\b)`, "g"),
+    /* The appositive - "my mother, Anwyn" - but only where the name really is
+       an aside. In "Mericia is my wife, Isette is my hunter" the comma parts
+       two clauses and Isette is the subject of the second, not a second name
+       for the wife; a villager listing his household truthfully was being
+       accused of calling his hunter his wife. A finite verb after the name
+       gives it away. */
+    new RegExp(
+      `\\b[Mm]y\\s+(${words})\\b(?!['\u2019]?s\\b)\\s*,\\s*([A-Z][a-z]{2,})\\b`
+      + `(?!\\s+(?:is|was|are|were|has|had|will|would|does|did|shall|should|can|could|may|might|must)\\b)`,
+      "g"
+    )
   ];
   for (const [index, pattern] of patterns.entries()) {
     let match = pattern.exec(speech);
@@ -1873,6 +1961,15 @@ export function contradictedKinship(state, person, text) {
          claiming anything. */
       const lead = speech.slice(Math.max(0, match.index - 60), match.index);
       if (/\b(?:said|says|swore|told|tells|claimed|claims|insisted|if|whether|suppose|unless)\b[^.!?]*$/i.test(lead)) {
+        match = pattern.exec(speech);
+        continue;
+      }
+      /* An appositive cannot claim a relation that the same sentence has
+         already given to somebody else: in "Mericia is my wife, Isette ..."
+         the wife is Mericia, and whatever follows the comma is something new.
+         The lookahead above catches this when a verb follows; this catches it
+         from the other side, where the kin word is already spoken for. */
+      if (index === 1 && /\b[A-Z][a-z]{2,}\s+(?:is|was)\s+$/.test(lead)) {
         match = pattern.exec(speech);
         continue;
       }
@@ -2975,7 +3072,17 @@ export class ParishAiClient extends EventTarget {
         scene: visit.issue.openingContext || null,
         factualDraft: visit.issue.opening,
         permittedFacts: mayDiscloseMatter ? (visit.scenarioFacts || []).map((fact) => fact.text) : [],
-        confessionIsGuarded: visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed
+        confessionIsGuarded: visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed,
+        /* A guarded opening is written with no permitted facts at all, which
+           leaves the model with the hour, the place and nothing to be guarded
+           about - so it invents a deed, and the invented one becomes the
+           visit. A confession recorded as a hidden fever opened as the theft
+           of wood from a cart, and everything after it hung on that. These are
+           the scenario's abstract domains, which bound the kind of trouble
+           without giving away the act. */
+        withheldDomains: (visit.issue.kind === "confession" && !visit.hiddenConcernDisclosed)
+          ? (withheldDomains(visit) || []).map((domain) => String(domain).replace(/_/g, " "))
+          : []
       }
     };
     const prompt = [
@@ -2991,6 +3098,7 @@ export class ParishAiClient extends EventTarget {
       "End simply with: 'What would you have me do, Father?' Do not list proposed solutions, alternatives, or a menu of choices in the opening question.",
       "Never use stock design phrases such as 'the matter came to a head', 'the decision is driven by', 'the profitable choice', 'I find myself troubled', 'I am hoping you might offer some guidance', 'how best to proceed', 'I need your advice on the choice itself', 'what course of action would you counsel', or 'I understand a decision is expected'.",
       "If confessionIsGuarded is true, do not reveal the hidden act or permitted facts yet. Give a specific but guarded opening shaped by the person's occupation, stress, and reason for seeking the priest.",
+      "When confessionIsGuarded is true, meeting.withheldDomains lists what a priest would answer this trouble with - not the trouble itself. Say nothing of the act, but let the guarded opening be the sort of matter that would call for those things, and do not reach for some other sort of trouble to talk around. Do not ask for any of them outright: they describe the remedy, and the visitor has not yet said what he needs it for.",
       "Return only the opening field required by the schema.",
       `CONTEXT_JSON=${JSON.stringify(context)}`
     ].join("\n");
@@ -3002,7 +3110,15 @@ export class ParishAiClient extends EventTarget {
       { forbidSelfDenial: Boolean(establishedSelfAction) }
     );
     generated.opening = naturalizeDialogueNames(state, person, generated.opening);
-    validateOpeningGrounding(generated.opening, context, state);
+    /* The grounding check whitelists whatever appears anywhere in the context,
+       so putting the domains into it would let a guarded opening speak of a
+       debt merely because "debt" is one of the tags - which is the withheld
+       matter leaking out through the validator instead of the prompt. The
+       domains steer the model; they must not license it. */
+    validateOpeningGrounding(generated.opening, {
+      ...context,
+      meeting: { ...context.meeting, withheldDomains: [] }
+    }, state);
     if (visit.intent.desiredOutcome === "guidance") {
       generated.opening = generalizeOpeningQuestion(generated.opening).slice(0, 800);
     }
@@ -3213,7 +3329,7 @@ export class ParishAiClient extends EventTarget {
         ? "You have already admitted that the worry which brought you here was mistaken. That is settled. Do not go looking for some other hidden wrong to put in its place; speak plainly about what is actually left to do, or accept the priest's counsel and be at peace."
         : "",
       guarded && !visit.intent.retiredConcern
-        ? "You have NOT yet told the priest your real secret. Do not blurt it out and do not invent one."
+        ? `You have NOT yet told the priest your real secret. Do not blurt it out and do not invent one.${withheldDomain(visit)}`
         : "",
       !guarded && visit.intent.hiddenConcern && !visit.intent.retiredConcern
         ? `You have already told the priest this, and may speak of it freely: ${visit.intent.hiddenConcern}`

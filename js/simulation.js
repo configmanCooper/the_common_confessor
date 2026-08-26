@@ -881,17 +881,33 @@ function scenarioArchetypes(state, person, relation, victim, rng) {
 }
 
 function issueFromThread(thread, person) {
+  /* A returning confession from a reticent villager must not restate the very
+     thing he is still holding back. The opening used to read "I have returned
+     because this matter remains unresolved: <the whole summary>", which is the
+     hidden concern verbatim - so the visitor arrived having already said what
+     the engine still had him guarding, and the transcript and the record
+     disagreed from the first line.
+
+     But he is only still guarding it if he never said it. Once he has told the
+     priest, the matter is out however reticent a man he is, and making him
+     withhold it a second time would have the priest draw out something he was
+     already told. */
+  const stillGuarded = thread.kind === "confession"
+    && person.personality.candor < 55
+    && !thread.secretDisclosed;
   return {
     kind: thread.kind,
     location: thread.location,
     gravity: Math.max(1, Math.min(5, Math.ceil(thread.pressure / 20))),
-    opening: `Father, I have returned because this matter remains unresolved: ${thread.summary}`,
+    opening: stillGuarded
+      ? "Father, I have returned. What I brought you before is still not settled, and I am no readier to say the whole of it."
+      : `Father, I have returned because this matter remains unresolved: ${thread.summary}`,
     detail: thread.summary,
     relatedPersonId: thread.relatedPersonId,
     relatedName: null,
     scenarioId: thread.scenarioId,
     scenarioFacts: JSON.parse(JSON.stringify(thread.facts)),
-    openingDisclosesHidden: thread.kind !== "confession" || person.personality.candor >= 55,
+    openingDisclosesHidden: !stillGuarded,
     threadId: thread.id,
     returningIssue: true
   };
@@ -1341,6 +1357,30 @@ function issueForPerson(state, person) {
     issue.detail = issue.scenarioFacts.find((fact) => fact.id === "concrete_matter")?.text || archetype.facts[0];
     issue.openingDisclosesHidden = issue.kind !== "confession" || person.personality.candor >= 55;
     if (issue.kind === "confession" && !issue.openingDisclosesHidden) {
+      /* A reticent penitent still has to be reticent about something.
+
+         This used to hand the model an opening with no subject in it at all -
+         "Something I did after market closed, beside the mill road, may cause
+         another person to suffer" - carrying the time, the place and the
+         whispering, and nothing whatever about the matter. A model that must
+         produce a first line will supply the missing subject itself, and it
+         has no reason to supply the one on file. In one watched run a
+         confession recorded as a hidden fever was opened as the theft of wood
+         from a cart, and from that first line onward the visit, its
+         consequences, its follow-ups and every audit of it hung on a thread
+         whose own summary was a lie.
+
+         It is also where the premise inertia came from. A villager seeded with
+         "something I did may cause another to suffer" and no deed will hunt
+         for a deed however long the priest reasons with him, because nothing
+         he establishes can ever be the thing he was sent to confess.
+
+         So the subject is bounded without being disclosed. The opening still
+         withholds the deed - that is the whole point of a hidden concern, and
+         the model must not be told it until the visitor discloses it - but the
+         model is no longer left to guess what kind of matter it is. What it is
+         about travels separately, in the instructions, as a domain rather than
+         a deed. */
       issue.opening = `Forgive me, Father. Something I did ${timing}, ${place}, may cause another person to suffer. ${witness} I am not yet certain I can say every part aloud.`;
     }
     return attachIssueThread(state, issue, person);
@@ -3109,6 +3149,11 @@ export function recordExchange(state, playerText, response, { record = true } = 
     if (thread) {
       thread.visibility = disclosedVisibility;
       thread.publicAwareness = 0;
+      /* A thing said once stays said. Disclosure used to leave no mark on the
+         thread, only on the visit, so a villager who came back about the same
+         unresolved matter was guarded all over again and the priest had to
+         draw out something he had already been told. */
+      thread.secretDisclosed = true;
     }
     /* The concern is already a sentence, so it supplies its own stop. */
     visit.history.push({

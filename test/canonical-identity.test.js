@@ -342,3 +342,50 @@ test("calling a member of your own household a neighbour is still caught", () =>
     return;
   }
 });
+
+test("a comma between two clauses is not an appositive", () => {
+  /* A man listing his household truthfully - "Mericia is my wife, Isette is my
+     hunter, and Stebba keeps the yard" - was reported as claiming that Isette
+     was his wife, because the appositive pattern "my wife, Isette" fell across
+     the comma that parts the two clauses. He was then challenged over a lie he
+     had not told, which is worse than the fault it was meant to catch. */
+  const state = createGame("appositive-across-a-comma");
+  const speaker = state.residents.find((resident) => resident.spouseId && resident.alive !== false);
+  const spouse = state.residents.find((resident) => resident.id === speaker.spouseId);
+  const other = state.residents.find((resident) => (
+    resident.id !== speaker.id && resident.id !== spouse.id && resident.alive !== false
+  ));
+  const kinWord = spouse.sex === "female" ? "wife" : "husband";
+
+  const truthful = `${spouse.firstName} is my ${kinWord}, ${other.firstName} is my hunter.`;
+  assert.deepEqual(
+    contradictedKinship(state, speaker, truthful),
+    [],
+    `a truthful list was called a lie: ${truthful}`
+  );
+});
+
+test("a real appositive is still read as one", () => {
+  /* Narrowing the pattern must not switch it off. "My wife, Mericia, keeps the
+     accounts" names the wife and has to keep working. */
+  const state = createGame("appositive-still-works");
+  const speaker = state.residents.find((resident) => resident.spouseId && resident.alive !== false);
+  const spouse = state.residents.find((resident) => resident.id === speaker.spouseId);
+  const stranger = state.residents.find((resident) => (
+    resident.id !== speaker.id
+      && resident.id !== speaker.spouseId
+      && resident.householdId !== speaker.householdId
+      && resident.alive !== false
+  ));
+  const kinWord = spouse.sex === "female" ? "wife" : "husband";
+
+  /* Naming the true spouse must pass. */
+  assert.deepEqual(
+    contradictedKinship(state, speaker, `My ${kinWord}, ${spouse.firstName}, keeps the accounts.`),
+    []
+  );
+  /* Naming somebody else's must not. */
+  const wrong = contradictedKinship(state, speaker, `My ${kinWord}, ${stranger.firstName}, keeps the accounts.`);
+  assert.equal(wrong.length, 1, `an appositive naming the wrong person went unchallenged`);
+  assert.match(wrong[0], new RegExp(stranger.firstName));
+});

@@ -384,3 +384,17 @@ export function buildGeneratedScenarioArchetypes(context) {
 }
 
 export const GENERATED_SCENARIO_ARCHETYPE_COUNT = FAMILIES.length * VARIANTS.length;
+
+/* The abstract tags for a scenario family, by name.
+ *
+ * A guarded visitor has to be given the kind of trouble he is holding back
+ * without being given the trouble itself, and these are the only description
+ * of a scenario in the whole catalogue that is not the deed. They are reached
+ * by family name because a scenario is not always carrying its blueprint: a
+ * returning visit rebuilds its issue from the thread, and the blueprint does
+ * not survive that trip.
+ */
+export function responseDomainsForFamily(familyId) {
+  const domains = FAMILY_RESPONSE_DOMAINS[String(familyId || "")];
+  return Array.isArray(domains) && domains.length ? domains : null;
+}
