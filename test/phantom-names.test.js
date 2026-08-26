@@ -141,3 +141,39 @@ test("an office is never stated twice over", async () => {
     );
   }
 });
+
+test("a villager quoting the priest's instruction is not accused of inventing people", () => {
+  /* Counsel is mostly instructions, and a visitor repeats them back. One
+     answering "I cannot promise yet to Give me Ednard's exact account from
+     arrival to blow" was reported twice over as having spoken of parishioners
+     named Give and Until, and the priest was sent to interrogate an honest
+     woman about two verbs. The quoted clause begins mid-line, so the
+     sentence-start test cannot clear it. */
+  const echoed = "I cannot promise yet to Give me Ednard's exact account from arrival to blow, "
+    + "including what each man said. Until I have spoken to him I can say no more.";
+  const found = unknownPersonNames(state, echoed);
+  assert.ok(!found.includes("Give"), `Give was taken for a person: ${found.join(", ")}`);
+  assert.ok(!found.includes("Until"), `Until was taken for a person: ${found.join(", ")}`);
+});
+
+test("common words capitalised mid-clause are never taken for names", () => {
+  const lines = [
+    "He asked me to Speak plainly and to Tell him what I saw.",
+    "There is more: Whether the debt was paid I cannot say.",
+    "He said only this - Nothing was taken from the store that night.",
+    "I will do it, though Perhaps not before the feast."
+  ];
+  for (const line of lines) {
+    assert.deepEqual(unknownPersonNames(state, line), [], line);
+  }
+});
+
+test("a genuine phantom is still caught in the same breath as a quoted instruction", () => {
+  /* Clearing ordinary words must not clear real inventions standing beside
+     them, or the guard has been traded away rather than sharpened. */
+  const found = unknownPersonNames(
+    state,
+    "He told me to Give the bread to Jerimiah, and I gave it to Jerimiah gladly."
+  );
+  assert.deepEqual(found, ["Jerimiah"]);
+});

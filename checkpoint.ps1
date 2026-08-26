@@ -77,6 +77,14 @@ function Stop-WithMessage([string]$message) {
 
 # Ordered newest first, which is the order `list` prints them in.
 $CHECKPOINTS = [ordered]@{
+  "playthrough-fixes" = @{
+    Commit = "adb05a3"
+    What   = "A neighbouring parish is a place and a saint is a saint, an unproven kinship is not called a lie, and the priest finishes his sentence."
+  }
+  "canonical-kinship" = @{
+    Commit = "c8e8cbd"
+    What   = "A villager is told how each named person stands to them, so a mother is not answered as a neighbour."
+  }
   "no-phantom-gifts" = @{
     Commit = "a9030ce"
     What   = "A priest who refuses keeps his stores; a gift is read from the clause that offered it; a worry may turn out to be nothing."

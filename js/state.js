@@ -21,7 +21,7 @@ import {
   PROMPT_TRACE_MAX_CHARS
 } from "./dialogue_planner.js";
 
-export const STATE_SCHEMA_VERSION = 20;
+export const STATE_SCHEMA_VERSION = 21;
 const COMMAND_TYPES = new Set([
   "begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon",
   "request_visits", "set_mode", "rewind_turn", "buy_at_market",
@@ -1094,8 +1094,16 @@ export function migrateState(rawState) {
      that the worry which brought them was mistaken. Both now change what the
      engine does with a recorded reply, so a schema-19 command log would replay
      differently from the state it produced and the save would be refused. The
-     history is snapshotted instead, exactly as earlier behaviour changes did. */
-  if (detectedVersion === 19) {
+     history is snapshotted instead, exactly as earlier behaviour changes did.
+
+     Schema 21: the priest's summonses are carried out.
+     An officer_duty and an authority_petition are aimed at a person, but the
+     only branch that could resolve them looked their target up among the
+     neighbouring parishes, found nothing, and marked the errand failed. Every
+     summons the priest ever sent died that way. They now run, which changes
+     what the same command log produces, so schema-20 history is snapshotted
+     alongside schema-19. */
+  if (detectedVersion === 19 || detectedVersion === 20) {
     verifyIntegrity(state);
     upgradeDialoguePlannerState(state);
     upgradeRobustFrameworkState(state);
@@ -1114,7 +1122,10 @@ export function migrateState(rawState) {
     state.nextCommandSequence = 1;
     state.replayBase = {
       kind: "migration",
-      sourceSchemaVersion: 19,
+      /* Not a literal. This branch serves every version that needs its history
+         snapshotted, so writing 19 here told a schema-20 save it had come from
+         19, and the integrity check then refused it. */
+      sourceSchemaVersion: detectedVersion,
       source: cloneJson(rawState),
       snapshot: migrationSnapshot
     };
@@ -1500,8 +1511,16 @@ export function validateState(state) {
       }
     } else if (state.replayBase.kind === "migration") {
       requireObject(state.replayBase.source, "Replay migration source");
-      if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].includes(state.replayBase.sourceSchemaVersion)
-        || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== state.replayBase.sourceSchemaVersion) {
+      /* This was a hand-written list of version numbers, and it was not
+         extended when the schema went to 19 or to 20. The effect was silent
+         and total: a save from either of those versions failed integrity, the
+         loader caught the throw, and the player was handed a fresh parish with
+         their own one discarded. Any version that existed before the current
+         one is a legitimate thing to have migrated from, so it is asked as a
+         question rather than kept as a list that has to be remembered. */
+      const from = state.replayBase.sourceSchemaVersion;
+      if (!Number.isInteger(from) || from < 2 || from >= STATE_SCHEMA_VERSION
+        || Number(state.replayBase.source.schemaVersion ?? state.replayBase.source.version) !== from) {
         throw new Error("Replay migration source is invalid");
       }
       const remigrated = migrateState(state.replayBase.source);

@@ -3344,6 +3344,132 @@ function addChronicle(state, title, text, tone = "neutral", event = {}) {
   state.chronicle = state.chronicle.slice(0, 250);
 }
 
+/* What comes of sending the watch. An officer who goes out has to come back
+   with something, or the priest learns nothing from having sent him and the
+   act was only a gesture. The outcome is settled from the officer's own
+   standing and the weight of the matter, and it always returns to the priest's
+   door as a report, carrying the errand it answers. */
+function resolveOfficerDuty(state, commitment, parentEventId) {
+  const officer = state.residents.find((resident) => resident.id === commitment.actorId);
+  const subject = state.residents.find((resident) => resident.id === commitment.targetId);
+  if (!officer?.active || !officer.alive || !subject?.active || !subject.alive) {
+    commitment.status = "failed";
+    return;
+  }
+  const purpose = commitment.payload?.purpose || "protect";
+  const thread = state.issueThreads.find((entry) => (
+    entry.status === "open" && (entry.subjectIds || []).includes(subject.id)
+  ));
+  const rng = new SeededRng(`${state.seed}:officer-duty:${commitment.id}`);
+  /* A steady officer with the parish behind him gets further than a harried
+     one sent against a matter that has already turned dangerous. */
+  const chance = clamp(
+    58
+      + officer.morale * 0.2
+      - officer.stress * 0.25
+      - (thread ? thread.danger * 0.15 : 0),
+    15,
+    90
+  );
+  const succeeded = rng.next() * 100 < chance;
+  commitment.status = succeeded ? "fulfilled" : "failed";
+
+  let title = "";
+  let account = "";
+  if (purpose === "investigate") {
+    if (succeeded) {
+      if (thread) thread.pressure = clamp(thread.pressure - 15);
+      title = `${officer.name} looks into the matter of ${subject.name}`;
+      account = `${officer.name} asked what needed asking about ${subject.name} and came away with a clearer account than the parish had before.`;
+    } else {
+      /* Being questioned to no purpose is not nothing. It is remembered. */
+      subject.stress = clamp(subject.stress + 8);
+      title = `${officer.name} learns nothing of ${subject.name}`;
+      account = `${officer.name} put his questions about ${subject.name} and got no further than the parish already stood. ${subject.name} was left knowing they had been asked after.`;
+    }
+  } else if (succeeded) {
+    if (thread) thread.danger = clamp(thread.danger - 15);
+    subject.stress = clamp(subject.stress - 8);
+    state.town.metrics.safety = clamp(state.town.metrics.safety + 2);
+    title = `${officer.name} keeps the peace about ${subject.name}`;
+    account = `${officer.name} was seen where he was wanted, and nothing came against ${subject.name} while he stood there.`;
+  } else {
+    if (thread) thread.danger = clamp(thread.danger + 8);
+    title = `The watch does not hold about ${subject.name}`;
+    account = `${officer.name} could not be everywhere, and ${subject.name} was left without the protection the priest intended.`;
+  }
+
+  addChronicle(state, title, account, succeeded ? "change" : "danger", {
+    type: succeeded ? "officer_duty_fulfilled" : "officer_duty_failed",
+    parentId: commitment.sourceEventId || parentEventId,
+    actorId: officer.id,
+    targetId: subject.id,
+    facts: { commitmentId: commitment.id, purpose, subjectName: subject.name }
+  });
+  commitment.fulfilledEventId = state.chronicle[0].eventId;
+
+  addStructuredMemory(state, officer, {
+    summary: succeeded
+      ? `I did as the priest asked concerning ${subject.name}.`
+      : `I could not do what the priest asked concerning ${subject.name}.`,
+    sourceEventId: commitment.fulfilledEventId,
+    emotion: succeeded ? "resolved" : "troubled",
+    type: "interaction"
+  });
+
+  /* The officer brings it back himself, so the priest hears the outcome of his
+     own instruction rather than being told the parish simply changed.
+
+     He can only come once. Officers are few - the agent may send the same man
+     on as many as eight errands, and every duty falls due the next day - so
+     several outcomes routinely land in one pass, and the queue admits only one
+     visit per person. Rather than let the rest fall silent, they are gathered
+     into the visit he is already making and he reports on all of them. */
+  const errand = {
+    commitmentId: commitment.id,
+    purpose,
+    kept: succeeded,
+    promise: purpose === "investigate"
+      ? `look into the matter concerning ${subject.name}`
+      : `keep the peace around ${subject.name}`,
+    concernedId: subject.id,
+    concernedName: subject.name
+  };
+  const already = state.eventQueue.find((event) => (
+    ["resident_followup", "priest_summons"].includes(event.type)
+      && event.sourcePersonId === officer.id
+  ));
+  if (already) {
+    const errands = Array.isArray(already.payload?.errands) ? already.payload.errands : [];
+    errands.push(errand);
+    already.payload = { ...(already.payload || {}), errands };
+    if (already.payload.commitmentId == null) Object.assign(already.payload, errand);
+    already.reason = officerReportReason(officer, errands);
+    return;
+  }
+  scheduleResidentFollowup(
+    state,
+    officer.id,
+    officerReportReason(officer, [errand]),
+    commitment.fulfilledEventId,
+    "resident_followup",
+    { ...errand, errands: [errand] }
+  );
+}
+
+/** What the officer has come to say, however many errands he carries. */
+function officerReportReason(officer, errands) {
+  if (errands.length === 1) {
+    const [only] = errands;
+    return only.kept
+      ? `${officer.name} went at the priest's asking to ${only.promise}, and returns to report what he found.`
+      : `${officer.name} went at the priest's asking to ${only.promise}, and returns to report that he could not.`;
+  }
+  const named = errands.slice(0, 3).map((entry) => entry.promise).join("; ");
+  const rest = errands.length > 3 ? `, and ${errands.length - 3} more` : "";
+  return `${officer.name} went at the priest's asking on several errands - ${named}${rest} - and returns to report what came of them.`;
+}
+
 export function executeDueCommitments(state, parentEventId) {
   for (const commitment of state.commitments
     .filter((entry) => entry.status === "open" && entry.dueDay <= state.calendar.absoluteDay)
@@ -3418,6 +3544,24 @@ export function executeDueCommitments(state, parentEventId) {
       continue;
     }
     const parish = state.neighboringParishes.find((entry) => entry.id === commitment.targetId);
+    /* A commitment whose target is not a neighbouring parish used to fall
+       through to a silent "failed". That swallowed every summons the priest
+       ever sent: an officer_duty and an authority_petition are aimed at a
+       person, so the lookup found nothing and the record said the errand had
+       failed while the bailiff had in fact gone and the steward was already on
+       the road. Thirteen of eighteen commitments in a fourteen-day run were
+       failed this way, none of them truly. Each kind is now carried out. */
+    if (commitment.type === "officer_duty") {
+      resolveOfficerDuty(state, commitment, parentEventId);
+      continue;
+    }
+    if (commitment.type === "authority_petition") {
+      /* The petition is the sending, not the answer. The steward or the lord
+         travels as a queued external_visit and speaks for himself when he
+         arrives; what completes here is that the message got there. */
+      commitment.status = "fulfilled";
+      continue;
+    }
     if (!parish) {
       commitment.status = "failed";
       continue;

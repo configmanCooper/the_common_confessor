@@ -1470,7 +1470,25 @@ const NON_NAME_CAPITALS = new Set([
      being told April is nobody who lives here. */
   "January", "February", "March", "April", "May", "June", "July", "August",
   "September", "October", "November", "December",
-  "Spring", "Summer", "Autumn", "Winter", "Harvest", "Michaelmastide"
+  "Spring", "Summer", "Autumn", "Winter", "Harvest", "Michaelmastide",
+  /* Ordinary words that arrive capitalised in the middle of a clause because
+     the villager is quoting the priest back at himself. A visitor answering
+     "I cannot promise yet to Give me Ednard's exact account" was being
+     reported as having spoken of a parishioner named Give, and the priest was
+     sent to interrogate an honest woman about a man who was a verb. The
+     sentence-start test cannot clear these, because the quoted instruction
+     begins mid-line. Imperatives first, since counsel is mostly instructions. */
+  "Give", "Tell", "Speak", "Come", "Go", "Bring", "Send", "Take", "Keep",
+  "Make", "Let", "Ask", "Answer", "Say", "Show", "Pray", "Forgive", "Bless",
+  "Remember", "Return", "Stay", "Stop", "Wait", "Hold", "Look", "Listen",
+  "Think", "Consider", "Confess", "Repent", "Swear", "Promise", "Put", "Set",
+  /* Conjunctions and question words, which open a quoted clause just as often
+     and are never anybody's name. */
+  "Until", "Unless", "Whether", "Before", "After", "When", "While", "Since",
+  "Because", "Though", "Although", "However", "Whenever", "Wherever", "Whoever",
+  "What", "Where", "Which", "Who", "Whom", "Whose", "Why", "How", "Nothing",
+  "Nobody", "Never", "Always", "Perhaps", "Please", "Here", "Now", "Yet",
+  "Still", "Only", "Even", "Also", "Almost", "Enough", "Rather", "Indeed"
 ]);
 
 /* The saints a parish actually names, and the feasts it keeps time by. These
