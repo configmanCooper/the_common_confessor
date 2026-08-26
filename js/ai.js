@@ -2271,15 +2271,22 @@ export function unsupportedDebtClaims(state, person, visit, text) {
 
   const claims = [];
   /* Only first-person obligations count. Denials, and debts owed by other
-     people, are not claims about this household's ledger. */
-  const pattern = new RegExp(
-    `\\b(?:I|we)\\s+(?:still\\s+|now\\s+)?(?:owe|owed)\\b(?![^.]*\\bnothing\\b)([^.!?]*)`,
-    "gi"
-  );
+     people, are not claims about this household's ledger.
+
+     The denial check used to look for "nothing" alone, and for a negation in
+     the twelve characters before the verb. "We owe no one anything" slipped
+     through both - the negation sits after the verb and the word is "anything"
+     - so a villager stating plainly that his household was clear of debt was
+     reported for inventing one, and the priest was sent to relieve a debt the
+     man had just denied having. Every ordinary way of saying it is covered. */
+  const pattern = new RegExp(`\\b(?:I|we)\\s+(?:still\\s+|now\\s+)?(?:owe|owed)\\b([^.!?]*)`, "gi");
+  const DENIES_A_DEBT = /^\s*(?:no\b|nobody|no\s+one|no-one|nothing|none|not\b|nought|naught|neither)/i;
   let match = pattern.exec(speech);
   while (match !== null) {
     const clause = match[1] || "";
-    const negated = /\bnot\b|\bno\b|\bnothing\b|\bnever\b/i.test(speech.slice(Math.max(0, match.index - 12), match.index));
+    const negated = /\bnot\b|\bno\b|\bnothing\b|\bnever\b/i.test(speech.slice(Math.max(0, match.index - 12), match.index))
+      || DENIES_A_DEBT.test(clause)
+      || /\b(?:nothing|nobody|no\s+one|no-one|none)\b/i.test(clause);
     if (!negated) {
       const figure = clause.match(new RegExp(`\\b(\\d+)\\s+${MONEY_WORDS}`, "i"));
       const worded = new RegExp(

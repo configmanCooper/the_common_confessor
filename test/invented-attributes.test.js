@@ -21,7 +21,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createGame, beginVisit, materializeResident, recordExchange } from "../js/simulation.js";
-import { unsupportedAgeClaims, unknownPersonNames } from "../js/ai.js";
+import { unsupportedAgeClaims, unknownPersonNames, unsupportedDebtClaims } from "../js/ai.js";
 import { naturalClient } from "./semantic-test-client.js";
 
 function scene(seed) {
@@ -238,5 +238,52 @@ test("a pronoun carrying a true age is left alone", () => {
   assert.deepEqual(
     unsupportedAgeClaims(state, person, `${other.firstName} spoke to me. She is ${other.age} years old.`),
     []
+  );
+});
+
+/** A visit whose household is clear and whose matter is not about money. */
+function clearOfDebt() {
+  for (let index = 0; index < 20; index += 1) {
+    const state = createGame(`debt-denial-${index}`);
+    const visit = beginVisit(state);
+    const person = materializeResident(state, visit.personId, true);
+    const household = state.households.find((entry) => entry.id === person.householdId);
+    const moneyFacts = (visit.scenarioFacts || [])
+      .map((fact) => String(fact.text))
+      .filter((fact) => /\bdebt|owes?|owed|unpaid|wages\b/i.test(fact));
+    if (Number(household.debt) > 0.5 || moneyFacts.length) continue;
+    return { state, visit, person };
+  }
+  return null;
+}
+
+test("a villager denying a debt is not accused of inventing one", async () => {
+  /* "We owe no one anything" was reported as claiming a debt: the denial sits
+     after the verb and the word is "anything", so neither half of the old
+     negation check saw it. The priest was then sent to relieve a debt the man
+     had just told him he did not have - a false accusation, which is worse
+     than the invention it guards against. */
+  const found = clearOfDebt();
+  assert.ok(found, "no debt-free visit could be generated");
+  const { state, visit, person } = found;
+  for (const line of [
+    "My son Hugh is nineteen. The nine measures of grain are sacks. We owe no one anything.",
+    "We owe nothing to anybody, Father.",
+    "I owe no man a penny.",
+    "We owe none of them anything.",
+    "I do not owe twenty pennies.",
+    "We owe not a farthing."
+  ]) {
+    assert.deepEqual(unsupportedDebtClaims(state, person, visit, line), [], line);
+  }
+});
+
+test("an invented debt is still caught", () => {
+  /* Clearing the denials must not switch the guard off: a villager naming a
+     sum his household does not owe sends the priest to work on nothing. */
+  const { state, visit, person } = clearOfDebt();
+  assert.deepEqual(
+    unsupportedDebtClaims(state, person, visit, "I owe twenty silver pennies to the miller."),
+    ["twenty silver pennies"]
   );
 });
