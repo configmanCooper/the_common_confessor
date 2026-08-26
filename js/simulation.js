@@ -1882,9 +1882,77 @@ const DISCLAIMS_KNOWLEDGE = new RegExp(
   "i"
 );
 
+/* A worry that turns out to be nothing.
+ *
+ * A villager came convinced that a harmless rhyme he had sung carried some
+ * hidden danger. Pressed, he established that a neighbour had brought herbs,
+ * that he had sung to a two-year-old, and that nobody had been in peril - and
+ * then kept hunting for a secret wrongdoing anyway, because his encounter had
+ * been seeded with "something I did may cause another person to suffer" and
+ * nothing was ever allowed to conclude otherwise.
+ *
+ * A confession that resolves into "I was mistaken" is a real outcome, and a
+ * better one than an invented crime. But mistaking a confession for a
+ * retraction is far worse than the inertia this fixes: "I was wrong to take
+ * the flour" is an admission, not a withdrawal, and treating it as one would
+ * silently erase the wrongdoing from the record. So the retraction must be
+ * about the fear rather than the deed, must be the visitor's own words rather
+ * than somebody else's, and must not sit beside an admission.
+ */
+const CONCERN_WAS_MISTAKEN = new RegExp(
+  /* "I was mistaken." standing on its own withdraws the worry. "I was mistaken
+     about the day" corrects a detail, and "perhaps I am mistaken, but I heard
+     him at the mill" concedes nothing at all - both used to silence the whole
+     confession from a subordinate clause. */
+  "\\bI\\s+(?:was|am)\\s+(?:mistaken|in\\s+error)\\s*(?=[.,;!]|$)"
+  + "|\\bI\\s+(?:was|am)\\s+mistaken\\s+(?:in|to)\\s+(?:fear|fearing|come|coming|doubt|doubting|suspect|suspecting)\\b"
+  + "|\\bI\\s+(?:was|am)\\s+mistaken\\s+about\\s+(?:it|the\\s+whole|this\\s+matter|all\\s+of\\s+it)\\b"
+  + "|\\bI\\s+was\\s+wrong\\s+to\\s+(?:fear|worry|doubt|suspect|accuse|come)\\b"
+  + "|\\bthere\\s+(?:was|is)\\s+no\\s+(?:harm|danger|wrong|crime|theft|malice)\\s+in\\s+it\\b"
+  + "|\\bno\\s+(?:harm|danger|ill)\\s+(?:was|has been)\\s+done\\s+(?:at all|by it|by me)?\\b"
+  + "|\\bnobody\\s+(?:was|has been)\\s+(?:hurt|harmed|endangered|in danger)\\b"
+  + "|\\bno\\s+one\\s+(?:was|has been)\\s+(?:hurt|harmed|endangered|in danger)\\b"
+  + "|\\bmy\\s+(?:fear|fears|worry|alarm)\\s+(?:was|were)\\s+(?:unfounded|groundless|misplaced|foolish)\\b"
+  + "|\\bI\\s+feared\\s+(?:more|worse)\\s+than\\b",
+  "i"
+);
+/* A hedge is not a retraction. */
+const HEDGED_MISTAKE = /\b(?:perhaps|maybe|may\s+be|might\s+be|it\s+may\s+be|possibly)\b[^.!?]{0,24}?\bmistaken\b/i;
+/* Somebody else saying it was nothing is not the visitor concluding so. */
+const REPORTED_SPEECH = /\b(?:he|she|they|we)\s+(?:said|says|swore|swears|told|tells|claimed|claims|insisted)\b|\bmy\s+\w+\s+(?:said|says|tells|told)\b|\baccording to\b/i;
+/* An admission standing beside a retraction means the deed still happened.
+   Denials must not count: "I was mistaken, Father. I did nothing wrong" is the
+   most natural way of all to withdraw a worry, and blocking it would bring
+   back the very inertia this exists to cure. */
+const ADMITS_A_DEED = new RegExp(
+  "\\bI\\s+did(?!\\s+(?:not|nothing|no\\b|never))\\b"
+  + "|\\bI\\s+took(?!\\s+(?:fright|ill|fever|no\\b|nothing))\\b"
+  + "|\\bI\\s+(?:stole|struck|hit|hurt|harmed|killed|lied|cheated|burned|broke|moved|sold|hid|concealed|forged|poached)"
+  + "(?!\\s+(?:not|nothing|no\\b|never))\\b"
+  + "|\\bI\\s+have\\s+(?:taken|stolen|struck|hurt|harmed|lied|hidden|concealed|kept)\\b"
+  + "|\\bI\\s+was\\s+the\\s+one\\b",
+  "i"
+);
+
 function reconcileVisitObjectives(visit, person, spokenReply) {
   if (!visit?.intent) return;
-  if (!DISCLAIMS_KNOWLEDGE.test(String(spokenReply || ""))) return;
+  const reply = String(spokenReply || "");
+  /* A worry the visitor has just abandoned stops driving the visit - but only
+     where they are withdrawing a fear rather than admitting a deed, and only
+     in their own voice. Nothing was actually disclosed here, so the disclosure
+     flag is deliberately left alone: setting it would suppress the real
+     disclosure path for the rest of the visit and record no secret. */
+  if (!visit.intent.premiseDispelled
+    && CONCERN_WAS_MISTAKEN.test(reply)
+    && !HEDGED_MISTAKE.test(reply)
+    && !REPORTED_SPEECH.test(reply)
+    && !ADMITS_A_DEED.test(reply)) {
+    visit.intent.premiseDispelled = true;
+    for (const fact of visit.scenarioFacts || []) {
+      if (fact.category === "premise" || fact.category === "harm") fact.speakable = false;
+    }
+  }
+  if (!DISCLAIMS_KNOWLEDGE.test(reply)) return;
   const names = [person?.firstName, person?.name, person?.surname]
     .filter(Boolean)
     .map((value) => String(value));

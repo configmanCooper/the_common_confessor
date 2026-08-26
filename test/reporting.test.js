@@ -10,7 +10,7 @@ import {
   materializeResident,
   recordExchange
 } from "../js/simulation.js";
-import { compactReplayHistory, deserializeState, sealState, serializeState } from "../js/state.js";
+import { compactReplayHistory, deserializeState, sealState, serializeState, STATE_SCHEMA_VERSION } from "../js/state.js";
 import { completeGeneratedText } from "../js/text.js";
 
 function finishQuietly(state) {
@@ -219,7 +219,7 @@ test("schema-14 saves gain partial report baselines without fabricated history",
   legacy.version = 14;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 19);
+  assert.equal(migrated.schemaVersion, STATE_SCHEMA_VERSION);
   assert.deepEqual(migrated.visitArchive, []);
   assert.deepEqual(migrated.periodReports, []);
   assert.equal(migrated.periodTracking.dayStart.partial, true);

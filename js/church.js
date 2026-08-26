@@ -55,11 +55,106 @@ export function churchResourceRows(resources) {
   }));
 }
 
+/* A refusal to give, as opposed to any negation anywhere in the sentence.
+ *
+ * The parser used to look only for a giving verb near a first-person subject,
+ * so "I do not think I may give alms today" opened the stores - a priest who
+ * had just refused alms in as many words watched a dose of medicine leave them.
+ * A player's stores are scarce and must never be spent by an act they declined
+ * to make.
+ *
+ * The negation has to attach to the giving. Matching a bare "not" anywhere in
+ * the clause is too blunt: "The bread is given freely, not owed" is a gift, and
+ * the "not" there is about obligation. So this looks for a denial shortly
+ * before the verb, or a nothing-at-all shortly after it.
+ */
+/* The things a church actually hands out. Binding a refusal's "no" to one of
+   these is what separates "I will give you no medicine" from "no matter what
+   the reeve says, I will give you grain" - the second is a gift, and blocking
+   it would have the priest hand over bread that the parish never records. */
+const REFUSABLE_GOODS = "(?:bread|loaf|loaves|grain|corn|flour|sacks?|medicine|physic|herbs?|"
+  + "coin|money|pennies|penny|silver|alms|food|victuals|fish|cheese|onions|beans|"
+  + "firewood|wood|fuel|help|aid|charity|relief|succour|assistance)";
+
+export const REFUSES_TO_GIVE = new RegExp(
+  "\\b(?:not|never|cannot|can\\s?not|can't|won't|shan't|mustn't|don't|doesn't|didn't|unable|unwilling|refuse[ds]?|deny|denied|withhold)\\b"
+  + "[^.!?]{0,40}?\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b"
+  /* "I will give you no medicine" - the determiner "no" is the commonest way
+     to refuse in English and was missed entirely. It only counts against an
+     actual good, so "no questions asked" and "no trouble" are left alone. */
+  + `|\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b[^.!?]{0,15}?\\bno\\s+${REFUSABLE_GOODS}\\b`
+  + "|\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share)\\b[^.!?]{0,15}?\\b(?:nothing|none)\\b"
+  + "|\\b(?:nothing|none)\\b[^.!?]{0,20}?\\bto\\s+(?:give|offer|spare|share)\\b"
+  + `|\\bno\\s+${REFUSABLE_GOODS}\\b[^.!?]{0,25}?\\b(?:to\\s+|can\\s+|could\\s+|will\\s+|shall\\s+|may\\s+)?(?:give|offer|spare|share)\\b`
+  + "|\\bstores?\\s+(?:are|is)\\s+(?:empty|exhausted|bare)\\b"
+  + "|\\bbeyond (?:my|our) means\\b",
+  "i"
+);
+/* A hypothetical or conditional offer is a discussion of giving, not a gift.
+   The marker must come before the giving verb: "take this bread, and if you
+   need more come again" is a gift followed by an invitation, not a condition
+   on the gift. */
+export const MERELY_CONSIDERING = new RegExp(
+  "\\b(?:if|whether|should\\s+i|shall\\s+i|might|perhaps|suppose|unless|provided\\s+that|in\\s+the\\s+event)\\b"
+  + "[^.!?]{0,40}?\\b(?:give|giving|gives|provide|offer|lend|spare|send|hand|grant|share|take)\\b",
+  "i"
+);
+
+/* Splitting an utterance into the separate things it says.
+ *
+ * One place, used by every gate, because two gates disagreeing about where a
+ * sentence ends is how a refused resource gets handed over. The terminator is
+ * kept with its sentence: the previous splitter consumed the question mark and
+ * then tested for one, so its question guard could never fire and a priest
+ * asking "shall the church give you bread?" was recorded as having offered.
+ */
+export function offerClauses(text) {
+  return String(text || "")
+    .toLowerCase()
+    .split(/(?<=[.!?;:])/)
+    /* A question is an enquiry, whatever else it contains. */
+    .filter((sentence) => !sentence.includes("?"))
+    /* Commas are left alone: "here, two loaves for your children" is one act,
+       and splitting it would separate the giving from the thing given. The
+       same is true of "and" inside an enumeration - "take two sacks of grain,
+       four loaves, and a bundle of firewood" is one act of giving, and cutting
+       it at the "and" orphans the firewood from the verb that hands it over.
+       So "and" only starts a new clause where a new subject follows it, or
+       where it introduces a fresh instruction - "tell me what you did at the
+       mill, and take this bread home with you" is a question followed by a
+       gift. Contrastive joins always split, since that is exactly where a
+       priest changes his mind. */
+    .flatMap((sentence) => sentence.split(
+      /\bbut\b|\byet\b|\bwhile\b|\band\s+(?=(?:i|we|the\s+church|it)\b)|\band\s+(?=(?:take|here|carry|keep)\b)/
+    ))
+    .map((clause) => clause.replace(/[.!?;:]+\s*$/, "").trim())
+    .filter(Boolean);
+}
+
+/* The clauses that actually hand something over, and nothing else. */
+export function outgoingOfferClauses(text) {
+  const outgoingPattern = /\b(?:church|we|i)\b.{0,35}\b(?:will|shall|can|may)\b.{0,20}\b(?:give|provide|offer|lend|spare)\b|\b(?:take|receive)\b.{0,30}\bfrom the church\b/;
+  return offerClauses(text).filter((clause) => (
+    outgoingPattern.test(clause)
+    && !REFUSES_TO_GIVE.test(clause)
+    && !MERELY_CONSIDERING.test(clause)
+  ));
+}
+
 export function parseChurchTransferIntent(text) {
-  const speech = String(text || "").toLowerCase();
-  const outgoing = /\b(?:church|we|i)\b.{0,35}\b(?:will|shall|can|may)\b.{0,20}\b(?:give|provide|offer|lend|spare)\b|\b(?:take|receive)\b.{0,30}\bfrom the church\b/.test(speech);
-  const incoming = /\b(?:donate|give|bring|contribute|offer)\b.{0,35}\b(?:to|for)\s+(?:the\s+)?church\b|\bchurch\b.{0,30}\b(?:accept|receive)\b/.test(speech);
-  if (!outgoing && !incoming) return null;
+  const clauses = offerClauses(text);
+  const outgoingPattern = /\b(?:church|we|i)\b.{0,35}\b(?:will|shall|can|may)\b.{0,20}\b(?:give|provide|offer|lend|spare)\b|\b(?:take|receive)\b.{0,30}\bfrom the church\b/;
+  const incomingPattern = /\b(?:donate|give|bring|contribute|offer)\b.{0,35}\b(?:to|for)\s+(?:the\s+)?church\b|\bchurch\b.{0,30}\b(?:accept|receive)\b/;
+  const plain = (clause) => !REFUSES_TO_GIVE.test(clause) && !MERELY_CONSIDERING.test(clause);
+  /* The resource must be named in the clause that offers it. Scanning the whole
+     utterance let "I shall give you bread, but not medicine" hand over the
+     medicine, because the longest alias won regardless of which clause it sat
+     in. */
+  const outgoingClause = clauses.find((clause) => outgoingPattern.test(clause) && plain(clause));
+  const incomingClause = clauses.find((clause) => incomingPattern.test(clause) && plain(clause));
+  if (!outgoingClause && !incomingClause) return null;
+  const incoming = Boolean(incomingClause) && !outgoingClause;
+  const speech = incoming ? incomingClause : outgoingClause;
   let matched = null;
   for (const [resource, aliases] of Object.entries(RESOURCE_ALIASES)) {
     for (const alias of aliases) {
@@ -75,7 +170,7 @@ export function parseChurchTransferIntent(text) {
   const word = nearby.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|a|an)\W*$/);
   const amount = clamp(numeric ? Number(numeric[1]) : NUMBER_WORDS[word?.[1]] || 1, 1, 100);
   return {
-    direction: incoming && !outgoing ? "incoming" : "outgoing",
+    direction: incoming ? "incoming" : "outgoing",
     resource: matched.resource,
     amount
   };

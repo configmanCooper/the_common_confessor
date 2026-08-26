@@ -10,7 +10,7 @@ import {
   replayGame,
   validateDeparturePlan
 } from "../js/simulation.js";
-import { deserializeState, sealState, serializeState } from "../js/state.js";
+import { deserializeState, sealState, serializeState, STATE_SCHEMA_VERSION } from "../js/state.js";
 
 test("new parishes begin with named church stores", () => {
   const state = createGame("church-resource-start");
@@ -76,7 +76,7 @@ test("schema-10 parishes gain church stores during migration", () => {
   legacy.version = 10;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 19);
+  assert.equal(migrated.schemaVersion, STATE_SCHEMA_VERSION);
   assert.equal(migrated.churchResources.bread, 18);
   assert.doesNotThrow(() => serializeState(migrated));
 });

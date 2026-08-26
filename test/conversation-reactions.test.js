@@ -17,7 +17,7 @@ import {
   validateDeparturePlan
 } from "../js/simulation.js";
 import { getRelationship } from "../js/population.js";
-import { deserializeState, sealState } from "../js/state.js";
+import { deserializeState, sealState, STATE_SCHEMA_VERSION } from "../js/state.js";
 
 function reactionState(seed) {
   const state = createGame(seed);
@@ -383,7 +383,7 @@ test("schema-13 active visits migrate into schema-14 reaction state", () => {
   legacy.version = 13;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 19);
+  assert.equal(migrated.schemaVersion, STATE_SCHEMA_VERSION);
   assert.ok(migrated.currentVisit.reactionState);
   assert.deepEqual(migrated.currentVisit.turnAudits, []);
   assert.ok(migrated.currentVisit.continuity);

@@ -15,10 +15,13 @@ import { analyzePlayerTurn } from "./dialogue_clauses.js";
 import {
   churchDonationCapacity,
   churchResourceRows,
+  MERELY_CONSIDERING,
   mentionsChurchResource,
   namesChurchResource,
+  offerClauses,
   parseChurchTransferIntent,
-  readDonationRequest
+  readDonationRequest,
+  REFUSES_TO_GIVE
 } from "./church.js";
 import { completeGeneratedText } from "./text.js";
 
@@ -1931,7 +1934,12 @@ export function stripInventedNames(state, text) {
         (whole, determiner, relation) => `I cannot give you a name for ${String(determiner).toLowerCase()} ${relation}`
       )
       .replace(new RegExp(`\\b(?:is|was)\\s+(?:called|named)\\s+${bare}\\b`, "gi"), "I cannot give you a name")
-      .replace(new RegExp(`\\b${bare}\\b`, "g"), "someone");
+      /* A name is never replaced by a bare "someone". That reads as though the
+         villager is naming a person called Someone, and a priest pressing for
+         an identity gets "Renton's mother is someone" - which is not an answer
+         and not even a refusal. Not knowing is a legitimate thing for a person
+         to say, so the replacement says it. */
+      .replace(new RegExp(`\\b${bare}\\b`, "g"), "someone whose name I do not know");
   }
   return result
     .replace(/\s+/g, " ")
@@ -2199,32 +2207,38 @@ const SENDS_A_MESSAGE = /\bsend(?:s|ing)? (?:word|for|to|someone|him|her|them|a 
 const PRIEST_IS_THE_GIVER = /\b(?:(?:i|we|the parish|the church) (?:will |shall |can |could |would |am going to |must |may )?(?:give|gives|send|sends|spare|spares|share|shares|provide|provides|offer|offers|lend|lends|grant|grants|supply|supplies|deliver|delivers|fetch|bring|brings|have|has)|let me|you (?:may|shall|can) have|you to have|from the church|out of (?:our|the church) stores)\b/;
 const HELD_OUT = /^(?:take|here|carry|keep)\b/;
 
-function givingClauses(text) {
-  return String(text || "")
-    .toLowerCase()
-    /* Sentences first, then only the joins that genuinely start a new thought.
-       Commas are left alone: "here, two loaves for your children" is one act,
-       and splitting it would separate the giving from the thing given. */
-    .split(/[.!?;:]+/)
-    .flatMap((sentence) => (
-      /\?/.test(sentence) ? [] : sentence.split(/\band\b|\bbut\b|\bwhile\b/)
-    ))
-    .map((clause) => clause.trim())
-    .filter(Boolean);
+/* Clause splitting lives in church.js as offerClauses, so that every gate
+   agrees about where a sentence ends. Two gates disagreeing about that is how
+   a refused resource gets handed over. */
+
+/* The clauses in which the priest genuinely hands something over.
+ *
+ * Returning the clauses rather than a yes/no matters: one real offer in a turn
+ * used to unlock every resource named anywhere in that turn, so "I cannot give
+ * you medicine, but I will give you bread" licensed the medicine as well. Each
+ * thing that leaves the stores has to have been offered in its own right, and
+ * that can only be checked against the clause that offered it. */
+export function givingClausesIn(text) {
+  const qualifying = [];
+  for (const clause of offerClauses(text)) {
+    if (!mentionsChurchResource(clause)) continue;
+    if (ASKS_ABOUT_THEIRS.test(clause)) continue;
+    /* A refusal is not an offer. A priest who said "I do not think I may give
+       alms today, though I am sorry to refuse you" was recorded as having
+       offered, which licensed the model's account of a gift and emptied a dose
+       of medicine from the stores. A player's stores are scarce and must never
+       be spent by an act the player declined to make. */
+    if (REFUSES_TO_GIVE.test(clause)) continue;
+    if (MERELY_CONSIDERING.test(clause)) continue;
+    if (SENDS_A_MESSAGE.test(clause) && !PRIEST_IS_THE_GIVER.test(clause.replace(SENDS_A_MESSAGE, ""))) continue;
+    if (!PRIEST_IS_THE_GIVER.test(clause) && !HELD_OUT.test(clause)) continue;
+    if (TRANSFER_VERBS.test(clause) || HANDING_OVER.test(clause)) qualifying.push(clause);
+  }
+  return qualifying;
 }
 
 export function mentionsGiving(text) {
-  const speech = String(text || "");
-  /* A question mark anywhere in a sentence makes the whole sentence an enquiry,
-     and the clause splitter above has already dropped those. */
-  for (const clause of givingClauses(speech)) {
-    if (!mentionsChurchResource(clause)) continue;
-    if (ASKS_ABOUT_THEIRS.test(clause)) continue;
-    if (SENDS_A_MESSAGE.test(clause) && !PRIEST_IS_THE_GIVER.test(clause.replace(SENDS_A_MESSAGE, ""))) continue;
-    if (!PRIEST_IS_THE_GIVER.test(clause) && !HELD_OUT.test(clause)) continue;
-    if (TRANSFER_VERBS.test(clause) || HANDING_OVER.test(clause)) return true;
-  }
-  return false;
+  return givingClausesIn(text).length > 0;
 }
 
 const naturalConversationSchema = {
@@ -2866,6 +2880,8 @@ export class ParishAiClient extends EventTarget {
       "- Only name people you know or who were already named. Never invent an official, expert, place, or institution; say plainly if no one suitable exists.",
       "- This also means ordinary villagers. Every soul in this parish is already named, and the names above are the only ones you have. Never make up a personal name for a neighbour, a fellow worker, an apprentice, a sick man, or a child. Speak of them by role or relation instead: 'my neighbour', 'the other two workers', 'the old man at the end of the lane', 'my sister's boy'. An invented name becomes a person who does not exist, and the priest will go looking for them.",
       "- Never invent money. Do not name a sum you owe, a sum owed to you, a loan, a creditor, or a price, unless it was given to you above. If your household owes nothing, do not hint that it does. The priest acts on what you tell him, and he will set about relieving a debt that was never real.",
+      "- When the priest asks who somebody is and you have not been told, say plainly that you do not know: 'I never learned her name', 'I could not tell you', 'I only know him by sight'. Do not answer with a placeholder such as 'someone' or 'a person', which is not an answer, and do not reach for a name to fill the gap. Not knowing is an honest answer and the priest can work with it.",
+      "- Your worry may turn out to be nothing. The matter that brought you here is what you believed when you set out, not a proven fact. If the priest's questions show that you were mistaken, that you feared more than the case warranted, that you misheard, or that no real harm was done at all, then say so and let it go. Do not hunt for a hidden wrong to justify having come. An honest 'I think I was wrong to fear it' is a good end to a visit.",
       "- Never give anyone an office or trade they do not hold. The people listed above are shown with their actual work; use it or use their plain name. Do not call a man Bailiff, Reeve, Watchman or Master of anything unless that is truly his office, because the priest can send for these people and will act on the authority you name.",
       "- The people above are listed with their sex and their age in years. Never contradict either. Do not call a woman he, do not speak of a child as a grown man or a suitor, do not give anyone an age, and do not describe an infant as able to work, court, marry or speak for themselves.",
       "- The same holds for families and households. Surnames in this village are the ones listed above and no others: never speak of \"the Blackwood family\" or any house you have not been told exists. If you mean a household, name someone in it, or say \"the family up the lane\" without giving them a surname.",
@@ -2900,6 +2916,9 @@ export class ParishAiClient extends EventTarget {
          when its subject disappeared. */
       visit.intent.retiredConcern
         ? `You have already told the priest, plainly, that you do not have this knowledge: ${visit.intent.retiredConcern} That matter is settled and you are no longer holding anything back about it. Do not return to fearing to reveal it, and do not hint that you know more than you have said.`
+        : "",
+      visit.intent.premiseDispelled
+        ? "You have already admitted that the worry which brought you here was mistaken. That is settled. Do not go looking for some other hidden wrong to put in its place; speak plainly about what is actually left to do, or accept the priest's counsel and be at peace."
         : "",
       guarded && !visit.intent.retiredConcern
         ? "You have NOT yet told the priest your real secret. Do not blurt it out and do not invent one."
@@ -3212,14 +3231,17 @@ export class ParishAiClient extends EventTarget {
        as a gift — handing over the whole stock of firewood during a
        conversation about letters. Nothing leaves the stores unless the priest
        actually offered something in the words he just spoke. */
-    const priestOffered = mentionsGiving(playerText) || stagedGifts.length > 0;
+    const givingClauses = givingClausesIn(playerText);
+    const priestOffered = givingClauses.length > 0 || stagedGifts.length > 0;
     /* Offering one thing is not offering everything. Staging firewood licensed
        the visitor's account of a loaf of bread, because the gate asked only
        whether *something* had been offered. Each thing that leaves the stores
-       has to have been offered in its own right. */
+       has to have been offered in its own right, which means naming it in the
+       clause that offered it: "I cannot give you medicine, but I will give you
+       bread" hands over bread only. */
     const offeredResource = (key) => (
       stagedGifts.some((gift) => gift.resource === key)
-      || (mentionsGiving(playerText) && namesChurchResource(playerText, key))
+      || givingClauses.some((clause) => namesChurchResource(clause, key))
     );
     if (requestedGifts.length && !priestOffered) {
       transformations.push({

@@ -21,7 +21,7 @@ import {
   PROMPT_TRACE_MAX_CHARS
 } from "./dialogue_planner.js";
 
-export const STATE_SCHEMA_VERSION = 19;
+export const STATE_SCHEMA_VERSION = 20;
 const COMMAND_TYPES = new Set([
   "begin_visit", "conversation_exchange", "finish_visit", "deliver_sermon",
   "request_visits", "set_mode", "rewind_turn", "buy_at_market",
@@ -1083,6 +1083,38 @@ export function migrateState(rawState) {
     state.replayBase = {
       kind: "migration",
       sourceSchemaVersion: 18,
+      source: cloneJson(rawState),
+      snapshot: migrationSnapshot
+    };
+    sealState(state);
+  }
+  /* Schema 20: gifts and dispelled premises.
+     A refusal used to open the church stores - "I do not think I may give alms
+     today" handed over a dose of medicine - and a visitor could not conclude
+     that the worry which brought them was mistaken. Both now change what the
+     engine does with a recorded reply, so a schema-19 command log would replay
+     differently from the state it produced and the save would be refused. The
+     history is snapshotted instead, exactly as earlier behaviour changes did. */
+  if (detectedVersion === 19) {
+    verifyIntegrity(state);
+    upgradeDialoguePlannerState(state);
+    upgradeRobustFrameworkState(state);
+    state.schemaVersion = STATE_SCHEMA_VERSION;
+    state.version = STATE_SCHEMA_VERSION;
+    const migrationSnapshot = cloneJson({
+      ...state,
+      commandLog: [],
+      aiProposals: [],
+      nextCommandSequence: 1,
+      replayBase: null
+    });
+    sealState(migrationSnapshot);
+    state.commandLog = [];
+    state.aiProposals = [];
+    state.nextCommandSequence = 1;
+    state.replayBase = {
+      kind: "migration",
+      sourceSchemaVersion: 19,
       source: cloneJson(rawState),
       snapshot: migrationSnapshot
     };

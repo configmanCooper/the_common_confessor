@@ -17,7 +17,7 @@ import {
   classifyPriestSpeech,
   detectConfidentialityBreach
 } from "../js/conversation.js";
-import { deserializeState, sealState, serializeState } from "../js/state.js";
+import { deserializeState, sealState, serializeState, STATE_SCHEMA_VERSION } from "../js/state.js";
 
 test("priest speech intent drives mechanics while AI deltas are ignored", () => {
   const first = createGame("deterministic-conversation-mechanics");
@@ -617,7 +617,7 @@ test("schema-v3 saves migrate strings into structured conversation state", () =>
   delete legacy.integrityHash;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 19);
+  assert.equal(migrated.schemaVersion, STATE_SCHEMA_VERSION);
   assert.equal(typeof migrated.residents[0].memories[0], "object");
   assert.equal(migrated.residents[0].memories[0].privateMemory, true);
   assert.equal(typeof migrated.priest.promises[0], "object");

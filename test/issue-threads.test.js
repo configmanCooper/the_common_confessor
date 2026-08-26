@@ -8,7 +8,7 @@ import {
   materializeResident,
   recordExchange
 } from "../js/simulation.js";
-import { deserializeState, sealState, serializeState } from "../js/state.js";
+import { deserializeState, sealState, serializeState, STATE_SCHEMA_VERSION } from "../js/state.js";
 
 function finishQuietly(state) {
   beginVisit(state);
@@ -147,7 +147,7 @@ test("schema-12 parishes gain empty issue-thread state", () => {
   legacy.version = 12;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 19);
+  assert.equal(migrated.schemaVersion, STATE_SCHEMA_VERSION);
   assert.deepEqual(migrated.issueThreads, []);
   assert.equal(migrated.nextIssueThreadSequence, 1);
 });

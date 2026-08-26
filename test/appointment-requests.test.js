@@ -9,7 +9,7 @@ import {
   recordExchange,
   requestVisits
 } from "../js/simulation.js";
-import { deserializeState, sealState, serializeState } from "../js/state.js";
+import { deserializeState, sealState, serializeState, STATE_SCHEMA_VERSION } from "../js/state.js";
 
 function finishCurrentVisit(state) {
   const visit = beginVisit(state);
@@ -91,7 +91,7 @@ test("schema-11 parishes gain requested-visit scheduling state", () => {
   legacy.version = 11;
   sealState(legacy);
   const migrated = deserializeState(JSON.stringify(legacy));
-  assert.equal(migrated.schemaVersion, 19);
+  assert.equal(migrated.schemaVersion, STATE_SCHEMA_VERSION);
   assert.deepEqual(migrated.visitRequests, []);
   assert.equal(migrated.nextVisitRequestSequence, 1);
 });
