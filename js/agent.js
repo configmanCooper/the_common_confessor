@@ -16,6 +16,7 @@
 import { EXTERNAL_ROLES, SERMON_THEMES } from "./data.js";
 import { churchResourceRows, namesChurchResource } from "./church.js";
 import { availableOfficers, marketIsOpen, marketOffer } from "./simulation.js";
+import { completeGeneratedText } from "./text.js";
 
 export const AGENT_MOVE_KINDS = Object.freeze([
   "speak",
@@ -289,6 +290,23 @@ export function legalMoves(state) {
 /** Validate a model's choice against the enumerated list. Nothing else is
     trusted: an unknown index, a missing sentence, or an invented theme is
     refused here rather than reaching the simulation. */
+/* The priest's own words, ended where he actually stopped.
+ *
+ * The model is given a length limit and writes right up to it, so his speech
+ * arrived cut mid-sentence - "tell me plainly whether you" - and the villager
+ * then answered half a question. The text is already within the limit by the
+ * time it gets here, so trimming by length does nothing; what is needed is to
+ * fall back to the last thing he finished saying. */
+function endedSentence(value, maximum) {
+  const text = completeGeneratedText(value, maximum).trim();
+  if (!text || /[.!?"'\u201d\u2019]$/.test(text)) return text;
+  const stop = Math.max(text.lastIndexOf("."), text.lastIndexOf("!"), text.lastIndexOf("?"));
+  /* Only if something substantial survives: a single clipped sentence is
+     better delivered whole than reduced to nothing. */
+  if (stop >= Math.floor(text.length * 0.4)) return text.slice(0, stop + 1).trim();
+  return text;
+}
+
 export function validateAgentChoice(moves, choice) {
   if (!choice || typeof choice !== "object") {
     return { ok: false, error: "The agent returned no choice." };
@@ -339,7 +357,7 @@ export function validateAgentChoice(moves, choice) {
       if (!move.themes.includes(theme)) {
         return { ok: false, error: `"${theme}" is not one of the sermon themes: ${move.themes.join(", ")}.` };
       }
-      return { ok: true, move, text: text.slice(0, 1200), theme, reason };
+      return { ok: true, move, text: endedSentence(text, 1200), theme, reason };
     }
     let gives = [];
     if (move.allowsGifts && Array.isArray(choice.gives)) {
@@ -366,7 +384,10 @@ export function validateAgentChoice(moves, choice) {
         gives.push({ resource: row.key, amount });
       }
     }
-    return { ok: true, move, text: text.slice(0, 600), gives, reason };
+    /* Cutting at a fixed length leaves the priest's speech ending mid-sentence
+       - "tell me plainly whether you" - and the villager then answers half a
+       question. Trim back to the last thing he actually finished saying. */
+    return { ok: true, move, text: endedSentence(text, 600), gives, reason };
   }
   return { ok: true, move, reason };
 }

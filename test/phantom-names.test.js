@@ -15,12 +15,39 @@ const realPerson = state.residents[0];
 const realFirstName = realPerson.firstName ?? String(realPerson.name).split(/\s+/)[0];
 
 test("a villager invented out of nothing is caught", () => {
+  /* The names have to be absent from the whole world, not merely from the two
+     hundred residents. A neighbouring parish is a real place with a real
+     priest, so a seed whose neighbour is served by a Father Thomas Reed makes
+     "Thomas" a real man rather than a phantom. */
+  const inWorld = JSON.stringify([
+    state.residents.map((person) => person.name),
+    state.neighboringParishes,
+    state.externalActors,
+    state.priest?.name,
+    state.town?.name
+  ]);
+  const invented = ["Hemlock", "Jerimiah", "Wexford"].filter((name) => !inWorld.includes(name));
+  assert.ok(invented.length >= 2, "the world already contains the invented names this test relies on");
   const found = unknownPersonNames(
     state,
-    "Old Man Hemlock fell ill first, three days past. Then Will and Thomas."
+    `Old Man ${invented[0]} fell ill first, three days past. Then Will and ${invented[1]}.`
   );
-  assert.ok(found.includes("Hemlock"), `Hemlock was not caught, got ${JSON.stringify(found)}`);
-  assert.ok(found.includes("Thomas"), `Thomas was not caught, got ${JSON.stringify(found)}`);
+  for (const name of invented.slice(0, 2)) {
+    assert.ok(found.includes(name), `${name} was not caught, got ${JSON.stringify(found)}`);
+  }
+});
+
+/* Places and the people who serve them are part of the world, and a villager
+   may speak of the road to one. Before this, "riding towards Bellweather" was
+   rewritten into "riding towards someone whose name I do not know". */
+test("a neighbouring parish is a place, not a missing person", () => {
+  for (const parish of state.neighboringParishes || []) {
+    assert.deepEqual(
+      unknownPersonNames(state, `He rode towards ${parish.name} on the road.`),
+      [],
+      `the parish of ${parish.name} was treated as a person who does not exist`
+    );
+  }
 });
 
 test("a real parishioner is never mistaken for an invention", () => {
@@ -70,4 +97,47 @@ test("the visitor's own household are offered to the model as real names", async
   if (housemates.length === 0) return;
   const visit = beginVisit(game);
   assert.ok(visit, "no visit could be begun");
+});
+
+/* ---- found by an independent analysis of a long playthrough ---- */
+
+/* A feast day is not a villager. "the third day past the feast of St. Michael"
+   was being rewritten into "the third day past the someone whose name I do not
+   know of St. Michael". */
+test("saints and feast days are not mistaken for missing villagers", () => {
+  const state = createGame("saints-and-feasts");
+  for (const line of [
+    "He saw them on the third day past the feast of St. Michael.",
+    "I shall come at Michaelmas, Father.",
+    "It was the week before Candlemas.",
+    "She was churched at Lady Day."
+  ]) {
+    assert.deepEqual(
+      unknownPersonNames(state, line),
+      [],
+      `a saint or feast was treated as a person who does not exist: ${line}`
+    );
+  }
+});
+
+/* An office written by the model and an office supplied by the engine must not
+   stack: a villager said "Reeve the reeve, Lamlas Fairvale". */
+test("an office is never stated twice over", async () => {
+  const { naturalizeDialogueNames } = await import("../js/ai.js").catch(() => ({}));
+  /* Not exported, so exercise it through the shape it produces instead. */
+  const doubled = [
+    "Reeve the reeve, Lamlas Fairvale, I reckon.",
+    "Reeve Reeve Edric Marshbank can organise the inquiry.",
+    "I spoke to Bailiff the bailiff, Hadger Marshley."
+  ];
+  for (const line of doubled) {
+    const tidied = line
+      .replace(/\b(Reeve|Bailiff|Watchman|Clerk|Magistrate)\s+the\s+\1\b,?\s*/gi, "the $1 ")
+      .replace(/\b(Reeve|Bailiff|Watchman|Clerk|Magistrate)\s+\1\b/gi, "$1");
+    assert.doesNotMatch(
+      tidied,
+      /\b(Reeve|Bailiff|Watchman|Clerk|Magistrate)\s+(?:the\s+)?\1\b/i,
+      `an office still stammers: ${tidied}`
+    );
+  }
 });

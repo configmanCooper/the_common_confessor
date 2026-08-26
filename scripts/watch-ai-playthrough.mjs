@@ -228,7 +228,7 @@ function writeTranscript(state) {
         continue;
       }
       if (exchange.requestedVisit) {
-        lines.push(`  [the priest sends for ${exchange.requestedVisit}: ${exchange.reason}]`, "");
+        lines.push(`  [the priest sends for ${exchange.requestedVisitName || exchange.requestedVisit}: ${exchange.reason}]`, "");
         continue;
       }
       /* Summonses and petitions are moves, not speech. They were falling
@@ -263,7 +263,13 @@ function writeTranscript(state) {
         lines.push(`        !! the record disagrees — ${finding.claim}; ${finding.truth}`);
       }
       if (exchange.churchGift) {
-        lines.push(`        >>> gave ${exchange.churchGift.amount} ${exchange.churchGift.unit} of ${exchange.churchGift.label.toLowerCase()} from the church stores`);
+        /* "gave 1 doses" is a template showing through. One of a thing takes
+           the singular. */
+        const gift = exchange.churchGift;
+        const unit = gift.amount === 1
+          ? String(gift.unit).replace(/ies$/, "y").replace(/ves$/, "f").replace(/s$/, "")
+          : gift.unit;
+        lines.push(`        >>> gave ${gift.amount} ${unit} of ${String(gift.label).toLowerCase()} from the church stores`);
       }
       lines.push("");
     }
@@ -534,8 +540,15 @@ async function main() {
       }
       if (decision.move.kind === "request_visit") {
         requestVisits(state, [decision.move.personId], decision.reason);
-        visitLog.exchanges.push({ requestedVisit: decision.move.personId, reason: decision.reason });
-        recent.push(`Asked ${decision.move.personId} to come`);
+        /* The player never sees an internal id. "the priest sends for
+           person-014" is a debug line, not a sentence. */
+        const asked = state.residents.find((resident) => resident.id === decision.move.personId);
+        visitLog.exchanges.push({
+          requestedVisit: decision.move.personId,
+          requestedVisitName: asked ? `${asked.name}, ${asked.occupation}` : decision.move.personId,
+          reason: decision.reason
+        });
+        recent.push(`Asked ${asked?.firstName || decision.move.personId} to come`);
         continue;
       }
       if (decision.move.kind !== "speak") break;
@@ -565,6 +578,11 @@ async function main() {
         transformations: (response.promptTrace?.transformations || []).map((entry) => entry.type),
         churchGift: response.churchAidApplied || null,
         churchGifts: response.churchAidsApplied || [],
+        /* What the priest deliberately chose to hand over, as distinct from
+           what was read out of his words. Without this the log cannot tell an
+           explicit gift from an inferred one, which is exactly the distinction
+           that matters when auditing whether the stores were spent fairly. */
+        stagedGifts: decision.gives || [],
         understoodAs: response.promptTrace?.understoodPlayerAs || ""
       };
       /* The playtesting priest checks every answer against the parish record

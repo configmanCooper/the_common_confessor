@@ -124,7 +124,10 @@ function naturalizeDialogueNames(state, speaker, text) {
     /* Where the reference still contains the full name - which happens when an
        office holder shares a surname and must be named in full - replacing the
        name with it would stack the office on every pass and give "Reeve Reeve
-       Reeve Edric Marshbank". Skip once the text already reads correctly. */
+       Reeve Edric Marshbank". Skip once the text already reads correctly.
+
+       The model may also have written the office itself, which is how "Reeve
+       Lamlas Fairvale" became "Reeve the reeve, Lamlas Fairvale". */
     if (reference.includes(resident.name) && result.includes(reference)) continue;
     const before = result;
     result = result.replace(
@@ -138,10 +141,16 @@ function naturalizeDialogueNames(state, speaker, text) {
      opening in lower case. Only tidy where something was actually replaced, so
      that an untouched line is not recorded as having been repaired. */
   if (!substituted) return result;
-  return result.replace(
-    /(^|[.!?]\s+)([a-z])/g,
-    (whole, lead, letter) => `${lead}${letter.toUpperCase()}`
-  );
+  return result
+    /* An office written by the model and an office supplied here must not
+       stack: "Reeve" + "the reeve, Lamlas Fairvale" reads as a stammer. */
+    .replace(/\b(Reeve|Bailiff|Watchman|Clerk|Magistrate)\s+the\s+\1\b,?\s*/gi, "the $1 ")
+    .replace(/\b(Reeve|Bailiff|Watchman|Clerk|Magistrate)\s+\1\b/gi, "$1")
+    .replace(/\s{2,}/g, " ")
+    .replace(
+      /(^|[.!?]\s+)([a-z])/g,
+      (whole, lead, letter) => `${lead}${letter.toUpperCase()}`
+    );
 }
 
 function spokenScenarioFact(text, state, person) {
@@ -1464,6 +1473,25 @@ const NON_NAME_CAPITALS = new Set([
   "Spring", "Summer", "Autumn", "Winter", "Harvest", "Michaelmastide"
 ]);
 
+/* The saints a parish actually names, and the feasts it keeps time by. These
+   are not villagers, and a date told by one is not a person: "the third day
+   past the feast of St. Michael" was being rewritten into "the third day past
+   the someone whose name I do not know of St. Michael". */
+const SAINTS_AND_FEASTS = new Set([
+  "Michael", "Michaelmas", "Martin", "Martinmas", "Andrew", "Peter", "Paul",
+  "Thomas", "James", "John", "Luke", "Mark", "Matthew", "Stephen", "Nicholas",
+  "Anne", "Anthony", "Agnes", "Catherine", "Margaret", "Mary", "Magdalene",
+  "Bartholomew", "Barnabas", "Clement", "Crispin", "Dunstan", "Edmund",
+  "George", "Giles", "Gregory", "Hilary", "Lawrence", "Leonard", "Lucy",
+  "Swithin", "Valentine", "Wilfrid", "Jude", "Martha", "Botolph", "Chad",
+  "Candlemas", "Lammas", "Whitsuntide", "Hallowmas", "Hocktide", "Shrovetide",
+  "Trinity", "Pentecost", "Epiphany", "Ascension", "Nativity", "Annunciation",
+  "Assumption", "Purification", "Corpus", "Christi", "Rood", "Ladyday",
+  /* Words that only ever appear as part of a feast's name. */
+  "Lady", "Day", "Holy", "Cross", "Eve", "Advent", "Lent", "Easter",
+  "Christmas", "Whitsun", "Saints", "Souls", "Innocents", "Twelfth"
+]);
+
 /* The people this villager may name, and nobody else.
 
    The parish is a closed population, so the surest way to stop the model
@@ -1691,6 +1719,19 @@ export function peopleThePriestNamed(state, person, playerText) {
         rows.push(`${word} is you — the priest of this parish.`);
         continue;
       }
+      /* Nor is a place. */
+      const parish = (state.neighboringParishes || []).find((entry) => (
+        String(entry.name || "").split(/\s+/).includes(word)
+        || String(entry.churchName || "").split(/\s+/).includes(word)
+      ));
+      if (parish) {
+        const days = Number(parish.travelDays);
+        const distance = Number.isFinite(days)
+          ? (days === 1 ? "a day off" : `${days} days off`)
+          : "a few days off";
+        rows.push(`${word} is not a person: it is the neighbouring parish of ${parish.name}, ${distance}.`);
+        continue;
+      }
       rows.push(`${word}: no person of that name lives in this parish, and none ever has. If the priest asks after them, say plainly that you know no such person.`);
       continue;
     }
@@ -1718,31 +1759,85 @@ export function peopleThePriestNamed(state, person, playerText) {
   return rows.slice(0, 8);
 }
 
-/* Kinship the record contradicts.
+/* Kinship the record positively contradicts.
  *
  * A woman told the priest that a neighbour had claimed sanctuary, when the
  * record had that woman down as her own mother, in the same household. Kinship
  * is not decoration: the priest decides whom to summon, whom to believe and
- * where a duty lies on the strength of it. */
-const KIN_WORDS = {
-  mother: (kin) => kin === "your mother",
-  father: (kin) => kin === "your father",
-  wife: (kin) => kin === "your wife" || kin === "your late wife",
-  husband: (kin) => kin === "your husband" || kin === "your late husband",
-  son: (kin) => String(kin).startsWith("your son"),
-  daughter: (kin) => String(kin).startsWith("your daughter"),
-  brother: (kin) => kin === "your brother",
-  sister: (kin) => kin === "your sister",
-  neighbour: (kin) => ["known to you", "known to you, now dead", "not known to you personally"].includes(kin),
-  neighbor: (kin) => ["known to you", "known to you, now dead", "not known to you personally"].includes(kin),
-  stranger: (kin) => kin === "not known to you personally"
+ * where a duty lies on the strength of it.
+ *
+ * But the record is incomplete, and silence is not denial. Two brothers in one
+ * house may have no recorded parent between them - the parish only records a
+ * parent where the ages allow it - so "Belger is my brother" is unproven
+ * rather than false. Flagging it would have the priest interrogate a truthful
+ * boy about his own family. A claim is only contradicted where the record
+ * holds something that positively excludes it.
+ */
+const CLOSE_KIN = new Set([
+  "your wife", "your husband", "your late wife", "your late husband",
+  "your mother", "your father", "your son", "your daughter",
+  "your son, who died", "your daughter, who died",
+  "your brother", "your sister", "your grandmother", "your grandfather",
+  "your granddaughter", "your grandson"
+]);
+
+/* Each returns true when the claim stands, false when the record excludes it,
+   and null when the record simply does not know. */
+const KIN_CLAIMS = {
+  mother: (state, person, other, kin) => {
+    if (kin === "your mother") return true;
+    if (CLOSE_KIN.has(kin)) return false;
+    /* A recorded parent list that does not name her excludes her. */
+    return (person.parentIds || []).length ? false : null;
+  },
+  father: (state, person, other, kin) => {
+    if (kin === "your father") return true;
+    if (CLOSE_KIN.has(kin)) return false;
+    return (person.parentIds || []).length ? false : null;
+  },
+  wife: (state, person, other, kin) => {
+    if (kin === "your wife" || kin === "your late wife") return true;
+    if (CLOSE_KIN.has(kin)) return false;
+    /* Being married to somebody else, or to nobody, settles it. */
+    return person.spouseId || person.widowedFromId ? false : null;
+  },
+  husband: (state, person, other, kin) => {
+    if (kin === "your husband" || kin === "your late husband") return true;
+    if (CLOSE_KIN.has(kin)) return false;
+    return person.spouseId || person.widowedFromId ? false : null;
+  },
+  son: (state, person, other, kin) => {
+    if (String(kin).startsWith("your son")) return true;
+    if (CLOSE_KIN.has(kin)) return false;
+    return null;
+  },
+  daughter: (state, person, other, kin) => {
+    if (String(kin).startsWith("your daughter")) return true;
+    if (CLOSE_KIN.has(kin)) return false;
+    return null;
+  },
+  /* Siblinghood is the least well recorded relation of all, so only a
+     different close tie disproves it. */
+  brother: (state, person, other, kin) => (kin === "your brother" ? true : (CLOSE_KIN.has(kin) ? false : null)),
+  sister: (state, person, other, kin) => (kin === "your sister" ? true : (CLOSE_KIN.has(kin) ? false : null)),
+  /* Living under the speaker's own roof is recorded, and settles this: a man
+     does not call the boy in his house a neighbour. */
+  neighbour: (state, person, other, kin) => (
+    CLOSE_KIN.has(kin) || kin === "of your household" ? false : true
+  ),
+  neighbor: (state, person, other, kin) => (
+    CLOSE_KIN.has(kin) || kin === "of your household" ? false : true
+  ),
+  stranger: (state, person, other, kin) => (
+    CLOSE_KIN.has(kin) || kin === "of your household" ? false : null
+  )
 };
 
 export function contradictedKinship(state, person, text) {
   const speech = String(text || "");
   if (!speech.trim() || !person) return [];
   const found = new Map();
-  const words = Object.keys(KIN_WORDS).join("|");
+  const words = Object.keys(KIN_CLAIMS).join("|");
   /* "Anwyn is my mother", "my mother, Anwyn" - both orders. The kin word must
      end there: "Janton is my mother's sister" is an in-law relation the record
      cannot express, and reading it as a claim about the mother would have the
@@ -1770,19 +1865,21 @@ export function contradictedKinship(state, person, text) {
       const bearers = (state.residents || []).filter((resident) => (
         resident.name === name || resident.firstName === name || resident.surname === name
       ));
-      const test = KIN_WORDS[claimed];
-      if (bearers.length && test && !bearers.some((other) => {
-        const kin = kinshipTo(state, person, other);
-        return kin && test(kin);
-      })) {
-        const other = bearers[0];
-        /* Stated as what they said, not as its negation: the challenge and the
-           retry note both quote this back, and quoting the opposite of what a
-           villager said is no way to get them to correct it. */
-        found.set(
-          `${other.name} is your ${claimed}`,
-          `${other.name} is ${kinshipTo(state, person, other)}`
-        );
+      const test = KIN_CLAIMS[claimed];
+      if (bearers.length && test) {
+        const verdicts = bearers.map((other) => test(state, person, other, kinshipTo(state, person, other)));
+        /* Only where every bearer is positively excluded. An unknown leaves it
+           alone: the record not knowing is not the villager lying. */
+        if (verdicts.every((verdict) => verdict === false)) {
+          const other = bearers[0];
+          /* Stated as what they said, not as its negation: the challenge and
+             the retry note both quote this back, and quoting the opposite of
+             what a villager said is no way to get them to correct it. */
+          found.set(
+            `${other.name} is your ${claimed}`,
+            `${other.name} is ${kinshipTo(state, person, other)}`
+          );
+        }
       }
       match = pattern.exec(speech);
     }
@@ -1814,11 +1911,28 @@ export function unknownPersonNames(state, text) {
   }
   for (const actor of state.externalActors || []) remember(actor.name);
   remember(state.town?.name);
+  /* Places are not people. The neighbouring parishes are real, they are named
+     in the state, and a villager may speak of the road to one of them - but
+     the phantom check knew only residents, so "riding towards Bellweather" was
+     rewritten into "riding towards someone whose name I do not know". */
+  for (const parish of state.neighboringParishes || []) {
+    remember(parish.name);
+    remember(parish.churchName);
+    remember(parish.priestName);
+  }
+  for (const property of (state.households || []).flatMap((home) => home.properties || [])) {
+    remember(property.location);
+  }
   /* The priest himself. He is not one of the two hundred residents, so without
      this a villager saying "Father Benedict" was told no such person exists -
      and the strip turned him into "Father someone". */
   remember(state.priest?.name);
+  /* A word that follows a saint's title, or precedes one, is part of a name
+     the parish venerates rather than a villager who does not exist. A feast
+     day was being rewritten into "the third day past the someone whose name I
+     do not know of St. Michael". */
   for (const word of NON_NAME_CAPITALS) known.add(word.toLowerCase());
+  for (const saint of SAINTS_AND_FEASTS) known.add(saint.toLowerCase());
 
   /* Any word the writer also used in lowercase is an ordinary word that
      happened to start a sentence, not somebody's name. */

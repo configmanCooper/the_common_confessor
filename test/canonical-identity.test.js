@@ -284,3 +284,61 @@ test("ordinary speech naming no kinship is left alone", () => {
     []
   );
 });
+
+/* The record is incomplete, and silence is not denial. Two brothers in one
+   house may have no recorded parent between them, because the parish only
+   records a parent where the ages allow it, so "Belger is my brother" is
+   unproven rather than false. Both of these are verbatim from a live run. */
+test("a kinship the record cannot settle is left alone", () => {
+  for (let seed = 0; seed < 20; seed += 1) {
+    const state = createGame(`kin-unsettled-${seed}`);
+    /* Two people of one household with no recorded tie of any kind between
+       them: not spouses, not parent and child, no parent in common. The record
+       simply does not say whether they are siblings. */
+    const untied = (person, other) => (
+      other.id !== person.id
+      && other.alive !== false
+      && other.householdId === person.householdId
+      && person.spouseId !== other.id && other.spouseId !== person.id
+      && person.widowedFromId !== other.id && other.widowedFromId !== person.id
+      && !(person.childrenIds || []).includes(other.id)
+      && !(other.childrenIds || []).includes(person.id)
+      && !(person.parentIds || []).includes(other.id)
+      && !(other.parentIds || []).includes(person.id)
+      && !(person.parentIds || []).some((id) => (other.parentIds || []).includes(id))
+    );
+    const pair = state.residents.find((person) => (
+      person.alive !== false && state.residents.some((other) => untied(person, other))
+    ));
+    if (!pair) continue;
+    const other = state.residents.find((entry) => untied(pair, entry));
+    const word = other.sex === "female" ? "sister" : "brother";
+    assert.deepEqual(
+      contradictedKinship(state, pair, `${other.firstName} is my ${word}.`),
+      [],
+      `the record does not know whether ${other.name} is a sibling, so it must not call it a lie`
+    );
+    return;
+  }
+});
+
+/* Living under the speaker's own roof is recorded, and does settle it: a man
+   does not call the boy in his own house a neighbour. */
+test("calling a member of your own household a neighbour is still caught", () => {
+  for (let seed = 0; seed < 20; seed += 1) {
+    const state = createGame(`kin-housemate-${seed}`);
+    const person = state.residents.find((entry) => (
+      entry.alive !== false
+      && state.residents.some((other) => (
+        other.id !== entry.id && other.alive !== false && other.householdId === entry.householdId
+      ))
+    ));
+    if (!person) continue;
+    const housemate = state.residents.find((entry) => (
+      entry.id !== person.id && entry.alive !== false && entry.householdId === person.householdId
+    ));
+    const found = contradictedKinship(state, person, `I will send word to my neighbour, ${housemate.firstName}.`);
+    assert.ok(found.length > 0, `${housemate.name} shares a roof and was called a neighbour`);
+    return;
+  }
+});
