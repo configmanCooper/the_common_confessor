@@ -77,6 +77,10 @@ function Stop-WithMessage([string]$message) {
 
 # Ordered newest first, which is the order `list` prints them in.
 $CHECKPOINTS = [ordered]@{
+  "relationship-decay" = @{
+    Commit = "aaa0966"
+    What   = "A grudge nobody feeds cools over the seasons, while a consuming hatred outlasts the man who holds it."
+  }
   "gifts-are-acts" = @{
     Commit = "f0fc771"
     What   = "Nothing leaves the church stores because of anything anybody said, and a villager cannot invent an hour, a surname, an age or a plan the priest forbade."
